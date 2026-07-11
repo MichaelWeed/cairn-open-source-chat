@@ -4,7 +4,10 @@ version = "0.0.0"
 description = "Cairn support-chat backend"
 requires-python = ">=3.11"
 dependencies = [
+    "fastapi==0.138.1",
     "pydantic>=2.13.4",
+    "pydantic-settings>=2.14.2",
+    "uvicorn[standard]==0.49.0",
 ]
 
 [dependency-groups]
@@ -12,6 +15,7 @@ dev = [
     "ruff==0.15.20",
     "mypy==1.18.2",
     "pytest>=8.3",
+    "httpx>=0.28.1",
 ]
 
 [tool.ruff]
@@ -32,7 +36,7 @@ testpaths = ["tests"]
 [tool.uv]
 # Pin transitive deps that would otherwise resolve to a version inside the
 # 14-day dependency cooldown window (MASTER_PLAN.md §4).
-constraint-dependencies = ["typing-extensions==4.15.0"]
+constraint-dependencies = ["typing-extensions==4.15.0", "websockets==16.0"]
 
 [build-system]
 requires = ["hatchling"]

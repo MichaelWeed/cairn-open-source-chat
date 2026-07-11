@@ -9,6 +9,10 @@ Per `CLAUDE.md` / `MASTER_PLAN.md` §3: every new dependency gets a one-line jus
 * **pytest** — test runner for `make validate`.
 * **typing-extensions** (transitive, via mypy) — constrained to 4.15.0 via `[tool.uv] constraint-dependencies` because the resolver's default pick was inside the cooldown window.
 * **pydantic** — the frozen contract models in `backend/app/api/contracts.py` (task 1.4): request/response validation, `extra="forbid"`, and JSON round-tripping for the chat API and SSE events.
+* **fastapi** — the app framework (task 1.5): app factory, `/healthz`/`/readyz`, and (from 1.7) the chat endpoint. Pinned to 0.138.1 (cooldown-compliant as of 2026-07-11).
+* **uvicorn[standard]** — ASGI server to run the FastAPI app. Pinned to 0.49.0; `websockets` (a transitive dep) constrained to 16.0 via `[tool.uv] constraint-dependencies` for the same reason.
+* **pydantic-settings** — env-var config loader (`app/config.py`), consistent with the frozen-Pydantic-models approach already used for the API contracts.
+* **httpx** (dev) — required by FastAPI's `TestClient` for the app-skeleton tests.
 
 ## Widget (`widget/package-lock.json`)
 
