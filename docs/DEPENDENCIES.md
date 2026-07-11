@@ -14,6 +14,7 @@ Per `CLAUDE.md` / `MASTER_PLAN.md` §3: every new dependency gets a one-line jus
 * **pydantic-settings** — env-var config loader (`app/config.py`), consistent with the frozen-Pydantic-models approach already used for the API contracts.
 * **httpx** — runtime dependency as of task 1.6: `OllamaProvider` uses it to stream `/api/chat`. Also (still) used by FastAPI's `TestClient` in tests.
 * **pytest-asyncio** (dev) — runs the provider adapters' `async def test_*` functions (task 1.6); `asyncio_mode = "auto"` in `pyproject.toml` so tests don't need per-function markers.
+* **chromadb** — embedded vector store (task 2.1), `PersistentClient` mode (no server process). Pulls a large transitive tree (numpy, onnxruntime, opentelemetry, grpcio, etc. — chromadb's own dependencies, not ours to trim); ~10 transitive deps needed cooldown pins, recorded via `[tool.uv] constraint-dependencies`. Bumped `requires-python` to `>=3.12` because `numpy` (a chromadb dependency) dropped 3.11 support — harmless since local dev and the Docker image already run 3.13. `osv-scanner.toml` documents one exception: a Critical pre-auth code-injection CVE (GHSA-f4j7-r4q5-qw2c) in chromadb's HTTP server API, which this project never runs (embedded mode only, no fixed chromadb version exists yet).
 
 ## Widget (`widget/package-lock.json`)
 

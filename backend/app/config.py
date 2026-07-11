@@ -4,6 +4,7 @@ from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_DB_PATH = Path("data/cairn.db")
+DEFAULT_CHROMA_PATH = Path("data/chroma")
 
 
 class Settings(BaseSettings):
@@ -15,6 +16,8 @@ class Settings(BaseSettings):
     origin_allowlist: str = "http://localhost:8080"
     chat_message_max_chars: int = 500
     database_path: Path = DEFAULT_DB_PATH
+    chroma_path: Path = DEFAULT_CHROMA_PATH
+    embedding_model: str = "nomic-embed-text"
 
     rate_limit_ip_capacity: float = 20
     rate_limit_ip_refill_per_minute: float = 20

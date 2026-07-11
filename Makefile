@@ -38,7 +38,8 @@ build-widget:
 	cd widget && npm ci && npm run typecheck && npm run build && npm run check-size
 
 lockfile-audit:
-	osv-scanner scan source --lockfile=backend/uv.lock --lockfile=widget/package-lock.json
+	osv-scanner scan source --config osv-scanner.toml \
+		--lockfile=backend/uv.lock --lockfile=widget/package-lock.json
 
 cooldown-check:
 	python3 scripts/check_cooldown.py

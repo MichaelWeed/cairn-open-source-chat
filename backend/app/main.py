@@ -18,6 +18,7 @@ from app.providers.base import Provider
 from app.providers.echo import EchoProvider
 from app.providers.ollama import OllamaProvider
 from app.ratelimit import RateLimiter
+from app.vectorstore import get_chroma_client, get_document_collection
 
 logger = logging.getLogger("app")
 
@@ -40,7 +41,15 @@ def create_app(settings: Settings | None = None, provider: Provider | None = Non
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.db = bootstrap(settings.database_path)
-        logger.info("app started", extra={"database_path": str(settings.database_path)})
+        app.state.chroma_client = get_chroma_client(settings)
+        app.state.document_collection = get_document_collection(app.state.chroma_client, settings)
+        logger.info(
+            "app started",
+            extra={
+                "database_path": str(settings.database_path),
+                "chroma_path": str(settings.chroma_path),
+            },
+        )
         try:
             yield
         finally:
@@ -79,7 +88,13 @@ def create_app(settings: Settings | None = None, provider: Provider | None = Non
         except sqlite3.Error:
             db_ok = False
 
-        checks = {"database": db_ok}
+        try:
+            app.state.chroma_client.heartbeat()
+            vector_store_ok = True
+        except Exception:
+            vector_store_ok = False
+
+        checks = {"database": db_ok, "vector_store": vector_store_ok}
         ready = all(checks.values())
         body = {"status": "ok" if ready else "not_ready", "checks": checks}
         return JSONResponse(body, status_code=200 if ready else 503)

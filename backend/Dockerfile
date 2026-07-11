@@ -31,7 +31,8 @@ RUN mkdir -p /data && chown -R cairn:cairn /app /data
 USER cairn
 
 ENV PATH="/app/.venv/bin:${PATH}" \
-    DATABASE_PATH=/data/cairn.db
+    DATABASE_PATH=/data/cairn.db \
+    CHROMA_PATH=/data/chroma
 
 EXPOSE 8000
 CMD ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]

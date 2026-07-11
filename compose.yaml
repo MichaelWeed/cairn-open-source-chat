@@ -12,6 +12,8 @@ services:
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:8b-instruct}
       ORIGIN_ALLOWLIST: http://localhost:8080
       PROVIDER: ${PROVIDER:-echo}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-fake}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text}
       ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-}
     volumes:
       - cairn_data:/data

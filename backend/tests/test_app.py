@@ -12,7 +12,8 @@ from app.main import create_app
 
 @pytest.fixture
 def app(tmp_path: Path) -> FastAPI:
-    return create_app(Settings(database_path=tmp_path / "test.db"))
+    settings = Settings(database_path=tmp_path / "test.db", chroma_path=tmp_path / "chroma")
+    return create_app(settings)
 
 
 @pytest.fixture
@@ -33,6 +34,7 @@ def test_readyz(client: TestClient) -> None:
     body = resp.json()
     assert body["status"] == "ok"
     assert body["checks"]["database"] is True
+    assert body["checks"]["vector_store"] is True
 
 
 class _BrokenConnection:
@@ -53,9 +55,25 @@ def test_readyz_reports_unready_when_db_unavailable(app: FastAPI, client: TestCl
     assert resp.json()["checks"]["database"] is False
 
 
+class _BrokenChromaClient:
+    def heartbeat(self) -> int:
+        raise RuntimeError("simulated chroma failure")
+
+
+def test_readyz_reports_unready_when_vector_store_unavailable(
+    app: FastAPI, client: TestClient
+) -> None:
+    app.state.chroma_client = _BrokenChromaClient()
+    resp = client.get("/readyz")
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["checks"]["vector_store"] is False
+    assert body["checks"]["database"] is True
+
+
 def test_database_file_created(tmp_path: Path) -> None:
     db_path = tmp_path / "nested" / "test.db"
-    settings = Settings(database_path=db_path)
+    settings = Settings(database_path=db_path, chroma_path=tmp_path / "chroma")
     app = create_app(settings)
     with TestClient(app):
         assert db_path.exists()

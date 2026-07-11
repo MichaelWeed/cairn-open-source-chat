@@ -25,7 +25,8 @@ def test_default_provider_env_is_case_insensitive(monkeypatch: pytest.MonkeyPatc
 
 
 def test_demo_page_served(tmp_path: Path) -> None:
-    app = create_app(Settings(database_path=tmp_path / "test.db"), provider=EchoProvider())
+    settings = Settings(database_path=tmp_path / "test.db", chroma_path=tmp_path / "chroma")
+    app = create_app(settings, provider=EchoProvider())
     with TestClient(app) as client:
         resp = client.get("/demo")
     assert resp.status_code == 200

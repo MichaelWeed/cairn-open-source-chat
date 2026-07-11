@@ -34,7 +34,9 @@ def parse_sse(body: str) -> list[tuple[str, str]]:
 @pytest.fixture
 def app(tmp_path: Path) -> FastAPI:
     settings = Settings(
-        database_path=tmp_path / "test.db", origin_allowlist="http://widget.example"
+        database_path=tmp_path / "test.db",
+        chroma_path=tmp_path / "chroma",
+        origin_allowlist="http://widget.example",
     )
     return create_app(settings, provider=EchoProvider())
 
@@ -94,7 +96,7 @@ def test_missing_origin_header_allowed(client: TestClient) -> None:
 
 
 def test_provider_failure_yields_error_event(tmp_path: Path) -> None:
-    settings = Settings(database_path=tmp_path / "test.db")
+    settings = Settings(database_path=tmp_path / "test.db", chroma_path=tmp_path / "chroma")
     app = create_app(settings, provider=FailingProvider())
     with TestClient(app) as client:
         resp = client.post("/api/v1/chat/message", json={"session_id": "s1", "message": "hi"})
@@ -107,7 +109,11 @@ def test_provider_failure_yields_error_event(tmp_path: Path) -> None:
 
 
 def test_ip_rate_limit_exhausted_yields_error_event(tmp_path: Path) -> None:
-    settings = Settings(database_path=tmp_path / "test.db", rate_limit_ip_capacity=1)
+    settings = Settings(
+        database_path=tmp_path / "test.db",
+        chroma_path=tmp_path / "chroma",
+        rate_limit_ip_capacity=1,
+    )
     app = create_app(settings, provider=EchoProvider())
     with TestClient(app) as client:
         first = client.post("/api/v1/chat/message", json={"session_id": "s1", "message": "hi"})
@@ -123,6 +129,7 @@ def test_ip_rate_limit_exhausted_yields_error_event(tmp_path: Path) -> None:
 def test_session_rate_limit_exhausted_yields_error_event(tmp_path: Path) -> None:
     settings = Settings(
         database_path=tmp_path / "test.db",
+        chroma_path=tmp_path / "chroma",
         rate_limit_ip_capacity=1000,
         rate_limit_session_capacity=1,
     )
