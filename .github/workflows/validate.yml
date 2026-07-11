@@ -11,5 +11,32 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.9.13"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Python (for scripts/check_cooldown.py)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install osv-scanner
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/google/osv-scanner/main/scripts/install-osv-scanner-preferred-arch.sh | bash -s -- "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install grype
+        run: curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Install cyclonedx-py
+        run: uv tool install cyclonedx-bom && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       - name: make validate
         run: make validate

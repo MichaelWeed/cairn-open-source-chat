@@ -7,8 +7,8 @@ dependencies = []
 
 [dependency-groups]
 dev = [
-    "ruff>=0.8",
-    "mypy>=1.13",
+    "ruff==0.15.20",
+    "mypy==1.18.2",
     "pytest>=8.3",
 ]
 
@@ -26,6 +26,11 @@ files = ["app", "tests"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.uv]
+# Pin transitive deps that would otherwise resolve to a version inside the
+# 14-day dependency cooldown window (MASTER_PLAN.md §4).
+constraint-dependencies = ["typing-extensions==4.15.0"]
 
 [build-system]
 requires = ["hatchling"]

@@ -1,0 +1,1577 @@
+{
+  "$schema": "http://cyclonedx.org/schema/bom-1.6.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "version": 1,
+  "metadata": {
+    "tools": {
+      "components": [
+        {
+          "type": "application",
+          "name": "npm",
+          "version": "11.9.0"
+        },
+        {
+          "type": "library",
+          "name": "cyclonedx-library",
+          "group": "@cyclonedx",
+          "version": "10.1.0",
+          "author": "Jan Kowalleck",
+          "description": "Core functionality of CycloneDX for JavaScript (Node.js or WebBrowser).",
+          "licenses": [
+            {
+              "license": {
+                "id": "Apache-2.0"
+              }
+            }
+          ],
+          "externalReferences": [
+            {
+              "url": "https://github.com/CycloneDX/cyclonedx-javascript-library/issues",
+              "type": "issue-tracker",
+              "comment": "as detected from PackageJson property \"bugs.url\""
+            },
+            {
+              "url": "git+https://github.com/CycloneDX/cyclonedx-javascript-library.git",
+              "type": "vcs",
+              "comment": "as detected from PackageJson property \"repository.url\""
+            },
+            {
+              "url": "https://github.com/CycloneDX/cyclonedx-javascript-library#readme",
+              "type": "website",
+              "comment": "as detected from PackageJson property \"homepage\""
+            }
+          ]
+        },
+        {
+          "type": "application",
+          "name": "cyclonedx-npm",
+          "group": "@cyclonedx",
+          "version": "5.0.0",
+          "author": "Jan Kowalleck",
+          "description": "Create CycloneDX Software Bill of Materials (SBOM) from NPM projects.",
+          "licenses": [
+            {
+              "license": {
+                "id": "Apache-2.0"
+              }
+            }
+          ],
+          "externalReferences": [
+            {
+              "url": "https://github.com/CycloneDX/cyclonedx-node-npm/issues",
+              "type": "issue-tracker",
+              "comment": "as detected from PackageJson property \"bugs.url\""
+            },
+            {
+              "url": "git+https://github.com/CycloneDX/cyclonedx-node-npm.git",
+              "type": "vcs",
+              "comment": "as detected from PackageJson property \"repository.url\""
+            },
+            {
+              "url": "https://github.com/CycloneDX/cyclonedx-node-npm#readme",
+              "type": "website",
+              "comment": "as detected from PackageJson property \"homepage\""
+            }
+          ]
+        }
+      ]
+    },
+    "component": {
+      "type": "application",
+      "name": "cairn-widget",
+      "version": "0.0.0",
+      "bom-ref": "cairn-widget@0.0.0",
+      "purl": "pkg:npm/cairn-widget@0.0.0",
+      "properties": [
+        {
+          "name": "cdx:npm:package:path",
+          "value": ""
+        },
+        {
+          "name": "cdx:npm:package:private",
+          "value": "true"
+        }
+      ]
+    },
+    "properties": [
+      {
+        "name": "cdx:reproducible",
+        "value": "true"
+      }
+    ]
+  },
+  "components": [
+    {
+      "type": "library",
+      "name": "cyclonedx-library",
+      "group": "@cyclonedx",
+      "version": "10.1.0",
+      "bom-ref": "cairn-widget@0.0.0|@cyclonedx/cyclonedx-library@10.1.0",
+      "author": "Jan Kowalleck",
+      "description": "Core functionality of CycloneDX for JavaScript (Node.js or WebBrowser).",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0",
+            "acknowledgement": "declared"
+          }
+        }
+      ],
+      "purl": "pkg:npm/%40cyclonedx/cyclonedx-library@10.1.0",
+      "externalReferences": [
+        {
+          "url": "https://registry.npmjs.org/@cyclonedx/cyclonedx-library/-/cyclonedx-library-10.1.0.tgz",
+          "type": "distribution",
+          "hashes": [
+            {
+              "alg": "SHA-512",
+              "content": "e32ab4293408037d941c9c05303798e718f66aca77324e65cf1e094555cb39bd1813cc3529e47ad5cd66fe0278b23317a628840df6884d542ef012d4bb2eeddc"
+            }
+          ],
+          "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
+        },
+        {
+          "url": "https://github.com/CycloneDX/cyclonedx-javascript-library/issues",
+          "type": "issue-tracker",
+          "comment": "as detected from PackageJson property \"bugs.url\""
+        },
+        {
+          "url": "git+https://github.com/CycloneDX/cyclonedx-javascript-library.git",
+          "type": "vcs",
+          "comment": "as detected from PackageJson property \"repository.url\""
+        },
+        {
+          "url": "https://github.com/CycloneDX/cyclonedx-javascript-library#readme",
+          "type": "website",
+          "comment": "as detected from PackageJson property \"homepage\""
+        }
+      ],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        },
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@cyclonedx/cyclonedx-library"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "cyclonedx-npm",
+      "group": "@cyclonedx",
+      "version": "5.0.0",
+      "bom-ref": "cairn-widget@0.0.0|@cyclonedx/cyclonedx-npm@5.0.0",
+      "author": "Jan Kowalleck",
+      "description": "Create CycloneDX Software Bill of Materials (SBOM) from NPM projects.",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0",
+            "acknowledgement": "declared"
+          }
+        }
+      ],
+      "purl": "pkg:npm/%40cyclonedx/cyclonedx-npm@5.0.0",
+      "externalReferences": [
+        {
+          "url": "https://registry.npmjs.org/@cyclonedx/cyclonedx-npm/-/cyclonedx-npm-5.0.0.tgz",
+          "type": "distribution",
+          "hashes": [
+            {
+              "alg": "SHA-512",
+              "content": "a44cffa6a6091d0d19bd8e711496be190e408cd2fb24e109097087ca6bcaa36375567cca13544ea64ba676e26df1ad03ba442341f046457a2e190f71a89b4969"
+            }
+          ],
+          "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
+        },
+        {
+          "url": "https://github.com/CycloneDX/cyclonedx-node-npm/issues",
+          "type": "issue-tracker",
+          "comment": "as detected from PackageJson property \"bugs.url\""
+        },
+        {
+          "url": "git+https://github.com/CycloneDX/cyclonedx-node-npm.git",
+          "type": "vcs",
+          "comment": "as detected from PackageJson property \"repository.url\""
+        },
+        {
+          "url": "https://github.com/CycloneDX/cyclonedx-node-npm#readme",
+          "type": "website",
+          "comment": "as detected from PackageJson property \"homepage\""
+        }
+      ],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        },
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@cyclonedx/cyclonedx-npm"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "dom",
+      "group": "@oozcitak",
+      "version": "2.0.2",
+      "bom-ref": "cairn-widget@0.0.0|@oozcitak/dom@2.0.2",
+      "author": "Ozgur Ozcitak",
+      "description": "A modern DOM implementation",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "acknowledgement": "declared"
+          }
+        }
+      ],
+      "purl": "pkg:npm/%40oozcitak/dom@2.0.2",
+      "externalReferences": [
+        {
+          "url": "https://registry.npmjs.org/@oozcitak/dom/-/dom-2.0.2.tgz",
+          "type": "distribution",
+          "hashes": [
+            {
+              "alg": "SHA-512",
+              "content": "1a3a4a8644980b7323e3e95fc04c88d5daa7b0a4e0c06cb8f32b591219b803fc671fff33f4cdd95572abfd81908b7b822ecd401014bec794f624f8ae7840d6f3"
+            }
+          ],
+          "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
+        },
+        {
+          "url": "http://github.com/oozcitak/dom/issues",
+          "type": "issue-tracker",
+          "comment": "as detected from PackageJson property \"bugs.url\""
+        },
+        {
+          "url": "git://github.com/oozcitak/dom.git",
+          "type": "vcs",
+          "comment": "as detected from PackageJson property \"repository.url\""
+        },
+        {
+          "url": "http://github.com/oozcitak/dom",
+          "type": "website",
+          "comment": "as detected from PackageJson property \"homepage\""
+        }
+      ],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        },
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@oozcitak/dom"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "infra",
+      "group": "@oozcitak",
+      "version": "2.0.2",
+      "bom-ref": "cairn-widget@0.0.0|@oozcitak/infra@2.0.2",
+      "author": "Ozgur Ozcitak",
+      "description": "An implementation of the Infra Living Standard",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "acknowledgement": "declared"
+          }
+        }
+      ],
+      "purl": "pkg:npm/%40oozcitak/infra@2.0.2",
+      "externalReferences": [
+        {
+          "url": "https://registry.npmjs.org/@oozcitak/infra/-/infra-2.0.2.tgz",
+          "type": "distribution",
+          "hashes": [
+            {
+              "alg": "SHA-512",
+              "content": "da0f84ee1a04d9d802cff00f3ce10ae6cdeb32126f37148c06b3fe53e8f5396b086ed4a95b1c65523ab5954f1122c149358bfb34c96756c0ae1dc533256fbcbc"
+            }
+          ],
+          "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
+        },
+        {
+          "url": "http://github.com/oozcitak/infra/issues",
+          "type": "issue-tracker",
+          "comment": "as detected from PackageJson property \"bugs.url\""
+        },
+        {
+          "url": "git+https://github.com/oozcitak/infra.git",
+          "type": "vcs",
+          "comment": "as detected from PackageJson property \"repository.url\""
+        },
+        {
+          "url": "http://github.com/oozcitak/infra",
+          "type": "website",
+          "comment": "as detected from PackageJson property \"homepage\""
+        }
+      ],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        },
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@oozcitak/infra"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "url",
+      "group": "@oozcitak",
+      "version": "3.0.0",
+      "bom-ref": "cairn-widget@0.0.0|@oozcitak/url@3.0.0",
+      "author": "Ozgur Ozcitak",
+      "description": "An implementation of the URL Living Standard",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "acknowledgement": "declared"
+          }
+        }
+      ],
+      "purl": "pkg:npm/%40oozcitak/url@3.0.0",
+      "externalReferences": [
+        {
+          "url": "https://registry.npmjs.org/@oozcitak/url/-/url-3.0.0.tgz",
+          "type": "distribution",
+          "hashes": [
+            {
+              "alg": "SHA-512",
+              "content": "64a7c44fc024d70b0b0222d635f16465cfc1ada0dc72e4c9291eacbd361ceec5636d1f88bb4bed5dd883318e28ea36859794d6d93952ee36cb978568bed00959"
+            }
+          ],
+          "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
+        },
+        {
+          "url": "http://github.com/oozcitak/url/issues",
+          "type": "issue-tracker",
+          "comment": "as detected from PackageJson property \"bugs.url\""
+        },
+        {
+          "url": "git+https://github.com/oozcitak/url.git",
+          "type": "vcs",
+          "comment": "as detected from PackageJson property \"repository.url\""
+        },
+        {
+          "url": "http://github.com/oozcitak/url",
+          "type": "website",
+          "comment": "as detected from PackageJson property \"homepage\""
+        }
+      ],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        },
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@oozcitak/url"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "util",
+      "group": "@oozcitak",
+      "version": "10.0.0",
+      "bom-ref": "cairn-widget@0.0.0|@oozcitak/util@10.0.0",
+      "author": "Ozgur Ozcitak",
+      "description": "Utility functions",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "acknowledgement": "declared"
+          }
+        }
+      ],
+      "purl": "pkg:npm/%40oozcitak/util@10.0.0",
+      "externalReferences": [
+        {
+          "url": "https://registry.npmjs.org/@oozcitak/util/-/util-10.0.0.tgz",
+          "type": "distribution",
+          "hashes": [
+            {
+              "alg": "SHA-512",
+              "content": "8405f4a53ffbdf5f7434ba813cf592741546b5b63a54e85660adeaa87aad5d0d602bb912db2cf8fa2bec374ee1a49e88dda78cb4a3fa27a9e9b0428e033b932c"
+            }
+          ],
+          "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
+        },
+        {
+          "url": "http://github.com/oozcitak/util/issues",
+          "type": "issue-tracker",
+          "comment": "as detected from PackageJson property \"bugs.url\""
+        },
+        {
+          "url": "git://github.com/oozcitak/util.git",
+          "type": "vcs",
+          "comment": "as detected from PackageJson property \"repository.url\""
+        },
+        {
+          "url": "http://github.com/oozcitak/util",
+          "type": "website",
+          "comment": "as detected from PackageJson property \"homepage\""
+        }
+      ],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        },
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/@oozcitak/util"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "argparse",
+      "version": "2.0.1",
+      "bom-ref": "cairn-widget@0.0.0|argparse@2.0.1",
+      "description": "CLI arguments parser. Native port of python's argparse.",
+      "licenses": [
+        {
+          "license": {
+            "id": "Python-2.0",
+            "acknowledgement": "declared"
+          }
+        }
+      ],
+      "purl": "pkg:npm/argparse@2.0.1",
+      "externalReferences": [
+        {
+          "url": "https://registry.npmjs.org/argparse/-/argparse-2.0.1.tgz",
+          "type": "distribution",
+          "hashes": [
+            {
+              "alg": "SHA-512",
+              "content": "f3ef56a9e6db173a57f4e47e59ae8edbd6ac22881e44ccdc1ad00835da4c1c7c80835d1fd3969215505b704a867ff3d7c35123019faadbf6c4060dc3beeacadd"
+            }
+          ],
+          "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
+        },
+        {
+          "url": "https://github.com/nodeca/argparse/issues",
+          "type": "issue-tracker",
+          "comment": "as detected from PackageJson property \"bugs.url\""
+        },
+        {
+          "url": "git+https://github.com/nodeca/argparse.git",
+          "type": "vcs",
+          "comment": "as detected from PackageJson property \"repository.url\""
+        },
+        {
+          "url": "https://github.com/nodeca/argparse#readme",
+          "type": "website",
+          "comment": "as detected from PackageJson property \"homepage\""
+        }
+      ],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        },
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/argparse"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "commander",
+      "version": "14.0.3",
+      "bom-ref": "cairn-widget@0.0.0|commander@14.0.3",
+      "author": "TJ Holowaychuk",
+      "description": "the complete solution for node.js command-line programs",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "acknowledgement": "declared"
+          }
+        }
+      ],
+      "purl": "pkg:npm/commander@14.0.3",
+      "externalReferences": [
+        {
+          "url": "https://registry.npmjs.org/commander/-/commander-14.0.3.tgz",
+          "type": "distribution",
+          "hashes": [
+            {
+              "alg": "SHA-512",
+              "content": "1fecb4268fd3d5167da8f3f8121d6991c41c2d1825ada25a48ba323ad1f1bba01aa648d6542cb64a2b75410e31dc39e0f2a0e54ac6447adee0e4fab4e8cbd383"
+            }
+          ],
+          "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
+        },
+        {
+          "url": "https://github.com/tj/commander.js/issues",
+          "type": "issue-tracker",
+          "comment": "as detected from PackageJson property \"bugs.url\""
+        },
+        {
+          "url": "git+https://github.com/tj/commander.js.git",
+          "type": "vcs",
+          "comment": "as detected from PackageJson property \"repository.url\""
+        },
+        {
+          "url": "https://github.com/tj/commander.js#readme",
+          "type": "website",
+          "comment": "as detected from PackageJson property \"homepage\""
+        }
+      ],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        },
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/commander"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "esbuild",
+      "version": "0.28.1",
+      "bom-ref": "cairn-widget@0.0.0|esbuild@0.28.1",
+      "description": "An extremely fast JavaScript and CSS bundler and minifier.",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "acknowledgement": "declared"
+          }
+        }
+      ],
+      "purl": "pkg:npm/esbuild@0.28.1",
+      "externalReferences": [
+        {
+          "url": "https://registry.npmjs.org/esbuild/-/esbuild-0.28.1.tgz",
+          "type": "distribution",
+          "hashes": [
+            {
+              "alg": "SHA-512",
+              "content": "1eb26bbd9bf96b2c41ccf7f0a613a837393338822589fce4d0a26b18ad9cf11e3e2caa4cb6960b41e51d8e7c235affcb665907da569993ee30efca62f7d0f857"
+            }
+          ],
+          "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
+        },
+        {
+          "url": "https://github.com/evanw/esbuild/issues",
+          "type": "issue-tracker",
+          "comment": "as detected from PackageJson property \"bugs.url\""
+        },
+        {
+          "url": "git+https://github.com/evanw/esbuild.git",
+          "type": "vcs",
+          "comment": "as detected from PackageJson property \"repository.url\""
+        },
+        {
+          "url": "https://github.com/evanw/esbuild#readme",
+          "type": "website",
+          "comment": "as detected from PackageJson property \"homepage\""
+        }
+      ],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        },
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/esbuild"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "hosted-git-info",
+      "version": "9.0.3",
+      "bom-ref": "cairn-widget@0.0.0|hosted-git-info@9.0.3",
+      "author": "GitHub Inc.",
+      "description": "Provides metadata and conversions from repository urls for GitHub, Bitbucket and GitLab",
+      "licenses": [
+        {
+          "license": {
+            "id": "ISC",
+            "acknowledgement": "declared"
+          }
+        }
+      ],
+      "purl": "pkg:npm/hosted-git-info@9.0.3",
+      "externalReferences": [
+        {
+          "url": "https://registry.npmjs.org/hosted-git-info/-/hosted-git-info-9.0.3.tgz",
+          "type": "distribution",
+          "hashes": [
+            {
+              "alg": "SHA-512",
+              "content": "1dcfa084ba12b7a41a61952fd1606222f98c0d9b9967ba1a0ef747f0c6df38ee253acc5d5cb12fb82e9e3e81acf47d57f6808bcaaebe35537430aa83fb2771ca"
+            }
+          ],
+          "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
+        },
+        {
+          "url": "https://github.com/npm/hosted-git-info/issues",
+          "type": "issue-tracker",
+          "comment": "as detected from PackageJson property \"bugs.url\""
+        },
+        {
+          "url": "git+https://github.com/npm/hosted-git-info.git",
+          "type": "vcs",
+          "comment": "as detected from PackageJson property \"repository.url\""
+        },
+        {
+          "url": "https://github.com/npm/hosted-git-info",
+          "type": "website",
+          "comment": "as detected from PackageJson property \"homepage\""
+        }
+      ],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        },
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/hosted-git-info"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "js-yaml",
+      "version": "4.3.0",
+      "bom-ref": "cairn-widget@0.0.0|js-yaml@4.3.0",
+      "author": "Vladimir Zapparov",
+      "description": "YAML 1.2 parser and serializer",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "acknowledgement": "declared"
+          }
+        }
+      ],
+      "purl": "pkg:npm/js-yaml@4.3.0",
+      "externalReferences": [
+        {
+          "url": "https://registry.npmjs.org/js-yaml/-/js-yaml-4.3.0.tgz",
+          "type": "distribution",
+          "hashes": [
+            {
+              "alg": "SHA-512",
+              "content": "d6d77bf3c6809e7679aaced5d90211975a308ed6296cab7be3d637c5abaa420c0820617fc575b3d70313101c793b72cade55cb56ea973dd3f18f6068147696f5"
+            }
+          ],
+          "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
+        },
+        {
+          "url": "https://github.com/nodeca/js-yaml/issues",
+          "type": "issue-tracker",
+          "comment": "as detected from PackageJson property \"bugs.url\""
+        },
+        {
+          "url": "git+https://github.com/nodeca/js-yaml.git",
+          "type": "vcs",
+          "comment": "as detected from PackageJson property \"repository.url\""
+        },
+        {
+          "url": "https://github.com/nodeca/js-yaml#readme",
+          "type": "website",
+          "comment": "as detected from PackageJson property \"homepage\""
+        }
+      ],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        },
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/js-yaml"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "lru-cache",
+      "version": "11.5.1",
+      "bom-ref": "cairn-widget@0.0.0|lru-cache@11.5.1",
+      "author": "Isaac Z. Schlueter",
+      "description": "A cache object that deletes the least-recently-used items.",
+      "licenses": [
+        {
+          "license": {
+            "id": "BlueOak-1.0.0",
+            "acknowledgement": "declared"
+          }
+        }
+      ],
+      "purl": "pkg:npm/lru-cache@11.5.1",
+      "externalReferences": [
+        {
+          "url": "https://registry.npmjs.org/lru-cache/-/lru-cache-11.5.1.tgz",
+          "type": "distribution",
+          "hashes": [
+            {
+              "alg": "SHA-512",
+              "content": "44f8a6c3feda31dbf6a2a46bc4ac2f65770f7f006b9ff259db161c63d1eeb3fe8b692dd538029558a5a034b0854a23a6d444978a78ec0e589d554ec996708dd8"
+            }
+          ],
+          "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
+        },
+        {
+          "url": "https://github.com/isaacs/node-lru-cache/issues",
+          "type": "issue-tracker",
+          "comment": "as detected from PackageJson property \"bugs.url\""
+        },
+        {
+          "url": "git+ssh://git@github.com/isaacs/node-lru-cache.git",
+          "type": "vcs",
+          "comment": "as detected from PackageJson property \"repository.url\""
+        },
+        {
+          "url": "https://github.com/isaacs/node-lru-cache#readme",
+          "type": "website",
+          "comment": "as detected from PackageJson property \"homepage\""
+        }
+      ],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        },
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/lru-cache"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "normalize-package-data",
+      "version": "8.0.0",
+      "bom-ref": "cairn-widget@0.0.0|normalize-package-data@8.0.0",
+      "author": "GitHub Inc.",
+      "description": "Normalizes data that can be found in package.json files.",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-2-Clause",
+            "acknowledgement": "declared"
+          }
+        }
+      ],
+      "purl": "pkg:npm/normalize-package-data@8.0.0",
+      "externalReferences": [
+        {
+          "url": "https://registry.npmjs.org/normalize-package-data/-/normalize-package-data-8.0.0.tgz",
+          "type": "distribution",
+          "hashes": [
+            {
+              "alg": "SHA-512",
+              "content": "45693e3c8e37dde11243ba2e9d8c48a7aec262e56c4b5b984a89d7de403aa6cff72d67e35506bfa6d120e98dd3eae00cab5996a57f4f43eab1f90687a6c73b81"
+            }
+          ],
+          "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
+        },
+        {
+          "url": "https://github.com/npm/normalize-package-data/issues",
+          "type": "issue-tracker",
+          "comment": "as detected from PackageJson property \"bugs.url\""
+        },
+        {
+          "url": "git+https://github.com/npm/normalize-package-data.git",
+          "type": "vcs",
+          "comment": "as detected from PackageJson property \"repository.url\""
+        },
+        {
+          "url": "https://github.com/npm/normalize-package-data#readme",
+          "type": "website",
+          "comment": "as detected from PackageJson property \"homepage\""
+        }
+      ],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        },
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/normalize-package-data"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "packageurl-js",
+      "version": "2.0.1",
+      "bom-ref": "cairn-widget@0.0.0|packageurl-js@2.0.1",
+      "author": "the purl authors",
+      "description": "JavaScript library to parse and build \"purl\" aka. package URLs. This is a microlibrary implementing the purl spec at https://github.com/package-url",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "acknowledgement": "declared"
+          }
+        }
+      ],
+      "purl": "pkg:npm/packageurl-js@2.0.1",
+      "externalReferences": [
+        {
+          "url": "https://registry.npmjs.org/packageurl-js/-/packageurl-js-2.0.1.tgz",
+          "type": "distribution",
+          "hashes": [
+            {
+              "alg": "SHA-512",
+              "content": "3798b15e3cd3cb8403407d10f58163a8859deb31faf77e838e99769bd40d1660efe45ba6f2af018e4a4070734ccce144d08c10ac584959ec7700dea44b4392c2"
+            }
+          ],
+          "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
+        },
+        {
+          "url": "https://github.com/package-url/packageurl-js/issues",
+          "type": "issue-tracker",
+          "comment": "as detected from PackageJson property \"bugs.url\""
+        },
+        {
+          "url": "git+https://github.com/package-url/packageurl-js.git",
+          "type": "vcs",
+          "comment": "as detected from PackageJson property \"repository.url\""
+        },
+        {
+          "url": "https://github.com/package-url/packageurl-js#readme",
+          "type": "website",
+          "comment": "as detected from PackageJson property \"homepage\""
+        }
+      ],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        },
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/packageurl-js"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "semver",
+      "version": "7.8.5",
+      "bom-ref": "cairn-widget@0.0.0|semver@7.8.5",
+      "author": "GitHub Inc.",
+      "description": "The semantic version parser used by npm.",
+      "licenses": [
+        {
+          "license": {
+            "id": "ISC",
+            "acknowledgement": "declared"
+          }
+        }
+      ],
+      "purl": "pkg:npm/semver@7.8.5",
+      "externalReferences": [
+        {
+          "url": "https://registry.npmjs.org/semver/-/semver-7.8.5.tgz",
+          "type": "distribution",
+          "hashes": [
+            {
+              "alg": "SHA-512",
+              "content": "63bfca0ec6fc2e3a28669c1aa86cae94ee8342592c8029dc7211c693eb19218e1206f52870c044147e54af57c8e1d57e26f974c3a723bee71a222e34a6e462a0"
+            }
+          ],
+          "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
+        },
+        {
+          "url": "https://github.com/npm/node-semver/issues",
+          "type": "issue-tracker",
+          "comment": "as detected from PackageJson property \"bugs.url\""
+        },
+        {
+          "url": "git+https://github.com/npm/node-semver.git",
+          "type": "vcs",
+          "comment": "as detected from PackageJson property \"repository.url\""
+        },
+        {
+          "url": "https://github.com/npm/node-semver#readme",
+          "type": "website",
+          "comment": "as detected from PackageJson property \"homepage\""
+        }
+      ],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        },
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/semver"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "spdx-correct",
+      "version": "3.2.0",
+      "bom-ref": "cairn-widget@0.0.0|spdx-correct@3.2.0",
+      "description": "correct invalid SPDX expressions",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0",
+            "acknowledgement": "declared"
+          }
+        }
+      ],
+      "purl": "pkg:npm/spdx-correct@3.2.0",
+      "externalReferences": [
+        {
+          "url": "https://registry.npmjs.org/spdx-correct/-/spdx-correct-3.2.0.tgz",
+          "type": "distribution",
+          "hashes": [
+            {
+              "alg": "SHA-512",
+              "content": "90df5d25bbe7c921d42c896e0c7cb7d961d152edce83b07db1b63bb6c14b72d42422a9cc877844ad881d3234d8baa99c5d7fa52b94f596752ddc6ef336cc2664"
+            }
+          ],
+          "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
+        },
+        {
+          "url": "https://github.com/jslicense/spdx-correct.js/issues",
+          "type": "issue-tracker",
+          "comment": "as detected from PackageJson property \"bugs.url\""
+        },
+        {
+          "url": "git+https://github.com/jslicense/spdx-correct.js.git",
+          "type": "vcs",
+          "comment": "as detected from PackageJson property \"repository.url\""
+        },
+        {
+          "url": "https://github.com/jslicense/spdx-correct.js#readme",
+          "type": "website",
+          "comment": "as detected from PackageJson property \"homepage\""
+        }
+      ],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        },
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/spdx-correct"
+        }
+      ],
+      "components": [
+        {
+          "type": "library",
+          "name": "spdx-expression-parse",
+          "version": "3.0.1",
+          "bom-ref": "cairn-widget@0.0.0|spdx-correct@3.2.0|spdx-expression-parse@3.0.1",
+          "author": "Kyle E. Mitchell",
+          "description": "parse SPDX license expressions",
+          "licenses": [
+            {
+              "license": {
+                "id": "MIT",
+                "acknowledgement": "declared"
+              }
+            }
+          ],
+          "purl": "pkg:npm/spdx-expression-parse@3.0.1",
+          "externalReferences": [
+            {
+              "url": "https://registry.npmjs.org/spdx-expression-parse/-/spdx-expression-parse-3.0.1.tgz",
+              "type": "distribution",
+              "hashes": [
+                {
+                  "alg": "SHA-512",
+                  "content": "71ba87ba7b105a724d13a2a155232c31e1f91ff2fd129ca66f3a93437b8bc0d08b675438f35a166a87ea1fb9cee95d3bc655f063a3e141d43621e756c7f64ae1"
+                }
+              ],
+              "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
+            },
+            {
+              "url": "https://github.com/jslicense/spdx-expression-parse.js/issues",
+              "type": "issue-tracker",
+              "comment": "as detected from PackageJson property \"bugs.url\""
+            },
+            {
+              "url": "git+https://github.com/jslicense/spdx-expression-parse.js.git",
+              "type": "vcs",
+              "comment": "as detected from PackageJson property \"repository.url\""
+            },
+            {
+              "url": "https://github.com/jslicense/spdx-expression-parse.js#readme",
+              "type": "website",
+              "comment": "as detected from PackageJson property \"homepage\""
+            }
+          ],
+          "properties": [
+            {
+              "name": "cdx:npm:package:development",
+              "value": "true"
+            },
+            {
+              "name": "cdx:npm:package:path",
+              "value": "node_modules/spdx-correct/node_modules/spdx-expression-parse"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "spdx-exceptions",
+      "version": "2.5.0",
+      "bom-ref": "cairn-widget@0.0.0|spdx-exceptions@2.5.0",
+      "author": "The Linux Foundation",
+      "description": "list of SPDX standard license exceptions",
+      "licenses": [
+        {
+          "license": {
+            "id": "CC-BY-3.0",
+            "acknowledgement": "declared"
+          }
+        }
+      ],
+      "purl": "pkg:npm/spdx-exceptions@2.5.0",
+      "externalReferences": [
+        {
+          "url": "https://registry.npmjs.org/spdx-exceptions/-/spdx-exceptions-2.5.0.tgz",
+          "type": "distribution",
+          "hashes": [
+            {
+              "alg": "SHA-512",
+              "content": "3e2538dabfb13b851b512d5bba8dcb3c992394eef8df45e7e5254085da73cec3c7b236d855f9679c57404e069b9cbb9d7be0aabb6e69e8dfa0da5c3f3c5b1ae3"
+            }
+          ],
+          "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
+        },
+        {
+          "url": "https://github.com/kemitchell/spdx-exceptions.json/issues",
+          "type": "issue-tracker",
+          "comment": "as detected from PackageJson property \"bugs.url\""
+        },
+        {
+          "url": "git+https://github.com/kemitchell/spdx-exceptions.json.git",
+          "type": "vcs",
+          "comment": "as detected from PackageJson property \"repository.url\""
+        },
+        {
+          "url": "https://github.com/kemitchell/spdx-exceptions.json#readme",
+          "type": "website",
+          "comment": "as detected from PackageJson property \"homepage\""
+        }
+      ],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        },
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/spdx-exceptions"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "spdx-expression-parse",
+      "version": "4.0.0",
+      "bom-ref": "cairn-widget@0.0.0|spdx-expression-parse@4.0.0",
+      "author": "Kyle E. Mitchell",
+      "description": "parse SPDX license expressions",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "acknowledgement": "declared"
+          }
+        }
+      ],
+      "purl": "pkg:npm/spdx-expression-parse@4.0.0",
+      "externalReferences": [
+        {
+          "url": "https://registry.npmjs.org/spdx-expression-parse/-/spdx-expression-parse-4.0.0.tgz",
+          "type": "distribution",
+          "hashes": [
+            {
+              "alg": "SHA-512",
+              "content": "0a5c9ae492228ffec2e9b451db6fad9c65db73854a9626ca4958f6887bd5797e62316eecd5221096abbaf7d26438324922187fa54bbc2f4fd52e1f317e50fe2d"
+            }
+          ],
+          "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
+        },
+        {
+          "url": "https://github.com/jslicense/spdx-expression-parse.js/issues",
+          "type": "issue-tracker",
+          "comment": "as detected from PackageJson property \"bugs.url\""
+        },
+        {
+          "url": "git+https://github.com/jslicense/spdx-expression-parse.js.git",
+          "type": "vcs",
+          "comment": "as detected from PackageJson property \"repository.url\""
+        },
+        {
+          "url": "https://github.com/jslicense/spdx-expression-parse.js#readme",
+          "type": "website",
+          "comment": "as detected from PackageJson property \"homepage\""
+        }
+      ],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        },
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/spdx-expression-parse"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "spdx-license-ids",
+      "version": "3.0.23",
+      "bom-ref": "cairn-widget@0.0.0|spdx-license-ids@3.0.23",
+      "author": "Shinnosuke Watanabe",
+      "description": "A list of SPDX license identifiers",
+      "licenses": [
+        {
+          "license": {
+            "id": "CC0-1.0",
+            "acknowledgement": "declared"
+          }
+        }
+      ],
+      "purl": "pkg:npm/spdx-license-ids@3.0.23",
+      "externalReferences": [
+        {
+          "url": "https://registry.npmjs.org/spdx-license-ids/-/spdx-license-ids-3.0.23.tgz",
+          "type": "distribution",
+          "hashes": [
+            {
+              "alg": "SHA-512",
+              "content": "0962dc0821fb54bbb5dd380e1feafca753bf667c21aaffdd6dbea5a96cbaec6fa94f590799e0fff95dfa0156ffbeaf10308430552849e92b25e453e1d1fb9277"
+            }
+          ],
+          "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
+        },
+        {
+          "url": "https://github.com/jslicense/spdx-license-ids/issues",
+          "type": "issue-tracker",
+          "comment": "as detected from PackageJson property \"bugs.url\""
+        },
+        {
+          "url": "git+https://github.com/jslicense/spdx-license-ids.git",
+          "type": "vcs",
+          "comment": "as detected from PackageJson property \"repository.url\""
+        },
+        {
+          "url": "https://github.com/jslicense/spdx-license-ids#readme",
+          "type": "website",
+          "comment": "as detected from PackageJson property \"homepage\""
+        }
+      ],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        },
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/spdx-license-ids"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "typescript",
+      "version": "5.9.3",
+      "bom-ref": "cairn-widget@0.0.0|typescript@5.9.3",
+      "author": "Microsoft Corp.",
+      "description": "TypeScript is a language for application scale JavaScript development",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0",
+            "acknowledgement": "declared"
+          }
+        }
+      ],
+      "purl": "pkg:npm/typescript@5.9.3",
+      "externalReferences": [
+        {
+          "url": "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz",
+          "type": "distribution",
+          "hashes": [
+            {
+              "alg": "SHA-512",
+              "content": "8e5d6f6733c38a72ebf5e52ddc9feded5e8580d130f508ef04f772b33f4a7d00c3e357d0ac2d98e2f290762694a454f86d795bd511e12e9a7cc2d9ba3394e04b"
+            }
+          ],
+          "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
+        },
+        {
+          "url": "https://github.com/microsoft/TypeScript/issues",
+          "type": "issue-tracker",
+          "comment": "as detected from PackageJson property \"bugs.url\""
+        },
+        {
+          "url": "git+https://github.com/microsoft/TypeScript.git",
+          "type": "vcs",
+          "comment": "as detected from PackageJson property \"repository.url\""
+        },
+        {
+          "url": "https://www.typescriptlang.org/",
+          "type": "website",
+          "comment": "as detected from PackageJson property \"homepage\""
+        }
+      ],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        },
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/typescript"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "validate-npm-package-license",
+      "version": "3.0.4",
+      "bom-ref": "cairn-widget@0.0.0|validate-npm-package-license@3.0.4",
+      "author": "Kyle E. Mitchell",
+      "description": "Give me a string and I'll tell you if it's a valid npm package license string",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0",
+            "acknowledgement": "declared"
+          }
+        }
+      ],
+      "purl": "pkg:npm/validate-npm-package-license@3.0.4",
+      "externalReferences": [
+        {
+          "url": "https://registry.npmjs.org/validate-npm-package-license/-/validate-npm-package-license-3.0.4.tgz",
+          "type": "distribution",
+          "hashes": [
+            {
+              "alg": "SHA-512",
+              "content": "0e92a6d948bfc4deff1d0282b69671a11581859f59d24aadca01bc5c280d43c6650e7c6e4265a18f9eba8fc7cde02bb7fc999b86c0e8edf70026ae2cf61dbb13"
+            }
+          ],
+          "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
+        },
+        {
+          "url": "https://github.com/kemitchell/validate-npm-package-license.js/issues",
+          "type": "issue-tracker",
+          "comment": "as detected from PackageJson property \"bugs.url\""
+        },
+        {
+          "url": "git+https://github.com/kemitchell/validate-npm-package-license.js.git",
+          "type": "vcs",
+          "comment": "as detected from PackageJson property \"repository.url\""
+        },
+        {
+          "url": "https://github.com/kemitchell/validate-npm-package-license.js#readme",
+          "type": "website",
+          "comment": "as detected from PackageJson property \"homepage\""
+        }
+      ],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        },
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/validate-npm-package-license"
+        }
+      ],
+      "components": [
+        {
+          "type": "library",
+          "name": "spdx-expression-parse",
+          "version": "3.0.1",
+          "bom-ref": "cairn-widget@0.0.0|validate-npm-package-license@3.0.4|spdx-expression-parse@3.0.1",
+          "author": "Kyle E. Mitchell",
+          "description": "parse SPDX license expressions",
+          "licenses": [
+            {
+              "license": {
+                "id": "MIT",
+                "acknowledgement": "declared"
+              }
+            }
+          ],
+          "purl": "pkg:npm/spdx-expression-parse@3.0.1",
+          "externalReferences": [
+            {
+              "url": "https://registry.npmjs.org/spdx-expression-parse/-/spdx-expression-parse-3.0.1.tgz",
+              "type": "distribution",
+              "hashes": [
+                {
+                  "alg": "SHA-512",
+                  "content": "71ba87ba7b105a724d13a2a155232c31e1f91ff2fd129ca66f3a93437b8bc0d08b675438f35a166a87ea1fb9cee95d3bc655f063a3e141d43621e756c7f64ae1"
+                }
+              ],
+              "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
+            },
+            {
+              "url": "https://github.com/jslicense/spdx-expression-parse.js/issues",
+              "type": "issue-tracker",
+              "comment": "as detected from PackageJson property \"bugs.url\""
+            },
+            {
+              "url": "git+https://github.com/jslicense/spdx-expression-parse.js.git",
+              "type": "vcs",
+              "comment": "as detected from PackageJson property \"repository.url\""
+            },
+            {
+              "url": "https://github.com/jslicense/spdx-expression-parse.js#readme",
+              "type": "website",
+              "comment": "as detected from PackageJson property \"homepage\""
+            }
+          ],
+          "properties": [
+            {
+              "name": "cdx:npm:package:development",
+              "value": "true"
+            },
+            {
+              "name": "cdx:npm:package:path",
+              "value": "node_modules/validate-npm-package-license/node_modules/spdx-expression-parse"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "xmlbuilder2",
+      "version": "4.0.3",
+      "bom-ref": "cairn-widget@0.0.0|xmlbuilder2@4.0.3",
+      "author": "Ozgur Ozcitak",
+      "description": "An XML builder for node.js",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT",
+            "acknowledgement": "declared"
+          }
+        }
+      ],
+      "purl": "pkg:npm/xmlbuilder2@4.0.3",
+      "externalReferences": [
+        {
+          "url": "https://registry.npmjs.org/xmlbuilder2/-/xmlbuilder2-4.0.3.tgz",
+          "type": "distribution",
+          "hashes": [
+            {
+              "alg": "SHA-512",
+              "content": "6f1f10d524dcb6735a683ca65a791f40b2a87ecd2618d37bacb2daa49946b95dd596f7a00fb2ece2080c8c4dda512588b420b35343c4bf8e6523cee24a282208"
+            }
+          ],
+          "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
+        },
+        {
+          "url": "https://github.com/oozcitak/xmlbuilder2/issues",
+          "type": "issue-tracker",
+          "comment": "as detected from PackageJson property \"bugs.url\""
+        },
+        {
+          "url": "git+https://github.com/oozcitak/xmlbuilder2.git",
+          "type": "vcs",
+          "comment": "as detected from PackageJson property \"repository.url\""
+        },
+        {
+          "url": "https://github.com/oozcitak/xmlbuilder2",
+          "type": "website",
+          "comment": "as detected from PackageJson property \"homepage\""
+        }
+      ],
+      "properties": [
+        {
+          "name": "cdx:npm:package:development",
+          "value": "true"
+        },
+        {
+          "name": "cdx:npm:package:path",
+          "value": "node_modules/xmlbuilder2"
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "cairn-widget@0.0.0",
+      "dependsOn": [
+        "cairn-widget@0.0.0|@cyclonedx/cyclonedx-npm@5.0.0",
+        "cairn-widget@0.0.0|esbuild@0.28.1",
+        "cairn-widget@0.0.0|typescript@5.9.3"
+      ]
+    },
+    {
+      "ref": "cairn-widget@0.0.0|@cyclonedx/cyclonedx-library@10.1.0",
+      "dependsOn": [
+        "cairn-widget@0.0.0|packageurl-js@2.0.1",
+        "cairn-widget@0.0.0|spdx-expression-parse@4.0.0",
+        "cairn-widget@0.0.0|xmlbuilder2@4.0.3"
+      ]
+    },
+    {
+      "ref": "cairn-widget@0.0.0|@cyclonedx/cyclonedx-npm@5.0.0",
+      "dependsOn": [
+        "cairn-widget@0.0.0|@cyclonedx/cyclonedx-library@10.1.0",
+        "cairn-widget@0.0.0|commander@14.0.3",
+        "cairn-widget@0.0.0|normalize-package-data@8.0.0",
+        "cairn-widget@0.0.0|packageurl-js@2.0.1",
+        "cairn-widget@0.0.0|spdx-expression-parse@4.0.0",
+        "cairn-widget@0.0.0|xmlbuilder2@4.0.3"
+      ]
+    },
+    {
+      "ref": "cairn-widget@0.0.0|@oozcitak/dom@2.0.2",
+      "dependsOn": [
+        "cairn-widget@0.0.0|@oozcitak/infra@2.0.2",
+        "cairn-widget@0.0.0|@oozcitak/url@3.0.0",
+        "cairn-widget@0.0.0|@oozcitak/util@10.0.0"
+      ]
+    },
+    {
+      "ref": "cairn-widget@0.0.0|@oozcitak/infra@2.0.2",
+      "dependsOn": [
+        "cairn-widget@0.0.0|@oozcitak/util@10.0.0"
+      ]
+    },
+    {
+      "ref": "cairn-widget@0.0.0|@oozcitak/url@3.0.0",
+      "dependsOn": [
+        "cairn-widget@0.0.0|@oozcitak/infra@2.0.2",
+        "cairn-widget@0.0.0|@oozcitak/util@10.0.0"
+      ]
+    },
+    {
+      "ref": "cairn-widget@0.0.0|@oozcitak/util@10.0.0"
+    },
+    {
+      "ref": "cairn-widget@0.0.0|argparse@2.0.1"
+    },
+    {
+      "ref": "cairn-widget@0.0.0|commander@14.0.3"
+    },
+    {
+      "ref": "cairn-widget@0.0.0|esbuild@0.28.1"
+    },
+    {
+      "ref": "cairn-widget@0.0.0|hosted-git-info@9.0.3",
+      "dependsOn": [
+        "cairn-widget@0.0.0|lru-cache@11.5.1"
+      ]
+    },
+    {
+      "ref": "cairn-widget@0.0.0|js-yaml@4.3.0",
+      "dependsOn": [
+        "cairn-widget@0.0.0|argparse@2.0.1"
+      ]
+    },
+    {
+      "ref": "cairn-widget@0.0.0|lru-cache@11.5.1"
+    },
+    {
+      "ref": "cairn-widget@0.0.0|normalize-package-data@8.0.0",
+      "dependsOn": [
+        "cairn-widget@0.0.0|hosted-git-info@9.0.3",
+        "cairn-widget@0.0.0|semver@7.8.5",
+        "cairn-widget@0.0.0|validate-npm-package-license@3.0.4"
+      ]
+    },
+    {
+      "ref": "cairn-widget@0.0.0|packageurl-js@2.0.1"
+    },
+    {
+      "ref": "cairn-widget@0.0.0|semver@7.8.5"
+    },
+    {
+      "ref": "cairn-widget@0.0.0|spdx-correct@3.2.0",
+      "dependsOn": [
+        "cairn-widget@0.0.0|spdx-correct@3.2.0|spdx-expression-parse@3.0.1",
+        "cairn-widget@0.0.0|spdx-license-ids@3.0.23"
+      ]
+    },
+    {
+      "ref": "cairn-widget@0.0.0|spdx-correct@3.2.0|spdx-expression-parse@3.0.1",
+      "dependsOn": [
+        "cairn-widget@0.0.0|spdx-exceptions@2.5.0",
+        "cairn-widget@0.0.0|spdx-license-ids@3.0.23"
+      ]
+    },
+    {
+      "ref": "cairn-widget@0.0.0|spdx-exceptions@2.5.0"
+    },
+    {
+      "ref": "cairn-widget@0.0.0|spdx-expression-parse@4.0.0",
+      "dependsOn": [
+        "cairn-widget@0.0.0|spdx-exceptions@2.5.0",
+        "cairn-widget@0.0.0|spdx-license-ids@3.0.23"
+      ]
+    },
+    {
+      "ref": "cairn-widget@0.0.0|spdx-license-ids@3.0.23"
+    },
+    {
+      "ref": "cairn-widget@0.0.0|typescript@5.9.3"
+    },
+    {
+      "ref": "cairn-widget@0.0.0|validate-npm-package-license@3.0.4",
+      "dependsOn": [
+        "cairn-widget@0.0.0|spdx-correct@3.2.0",
+        "cairn-widget@0.0.0|validate-npm-package-license@3.0.4|spdx-expression-parse@3.0.1"
+      ]
+    },
+    {
+      "ref": "cairn-widget@0.0.0|validate-npm-package-license@3.0.4|spdx-expression-parse@3.0.1",
+      "dependsOn": [
+        "cairn-widget@0.0.0|spdx-exceptions@2.5.0",
+        "cairn-widget@0.0.0|spdx-license-ids@3.0.23"
+      ]
+    },
+    {
+      "ref": "cairn-widget@0.0.0|xmlbuilder2@4.0.3",
+      "dependsOn": [
+        "cairn-widget@0.0.0|@oozcitak/dom@2.0.2",
+        "cairn-widget@0.0.0|@oozcitak/infra@2.0.2",
+        "cairn-widget@0.0.0|@oozcitak/util@10.0.0",
+        "cairn-widget@0.0.0|js-yaml@4.3.0"
+      ]
+    }
+  ]
+}

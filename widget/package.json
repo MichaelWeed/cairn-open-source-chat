@@ -9,7 +9,11 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@cyclonedx/cyclonedx-npm": "5.0.0",
     "esbuild": "^0.28.1",
     "typescript": "^5.7.0"
+  },
+  "overrides": {
+    "lru-cache": "11.5.1"
   }
 }
