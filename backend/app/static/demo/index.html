@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Cairn demo</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --fg: #1a1a1a;
+    --bg: #fff;
+    --border: #ccc;
+    --user: #1a1a1a;
+    --assistant: #197a33;
+    --error: #d1293d;
+    --status: #767676;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fg: #e8e8e8;
+      --bg: #1a1a1a;
+      --border: #444;
+      --user: #e8e8e8;
+      --assistant: #4ade80;
+      --error: #ff6b81;
+      --status: #999;
+    }
+  }
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; color: var(--fg); background: var(--bg); }
+  #log { border: 1px solid var(--border); border-radius: 8px; padding: 1rem; min-height: 200px; margin-bottom: 1rem; }
+  .msg { margin-bottom: 0.75rem; white-space: pre-wrap; }
+  .msg.user { color: var(--user); }
+  .msg.assistant { color: var(--assistant); }
+  .msg.error { color: var(--error); }
+  .status { color: var(--status); font-size: 0.85em; }
+  form { display: flex; gap: 0.5rem; }
+  input[type=text] { flex: 1; padding: 0.5rem; }
+  button { padding: 0.5rem 1rem; }
+</style>
+</head>
+<body>
+<h1>Cairn — demo</h1>
+<p>Exercises the real <code>POST /api/v1/chat/message</code> SSE round trip (task 1.7/1.8). This is not the production widget — that's Phase 6.</p>
+<div id="log"></div>
+<form id="form">
+  <input id="input" type="text" placeholder="Ask something" autocomplete="off" required />
+  <button type="submit">Send</button>
+</form>
+
+<script>
+(function () {
+  const SESSION_KEY = "cairn_demo_session_id";
+  const sessionId = sessionStorage.getItem(SESSION_KEY) ?? crypto.randomUUID();
+  sessionStorage.setItem(SESSION_KEY, sessionId);
+
+  const log = document.getElementById("log");
+  const form = document.getElementById("form");
+  const input = document.getElementById("input");
+
+  function appendMessage(role, text) {
+    const div = document.createElement("div");
+    div.className = `msg ${role}`;
+    div.textContent = text;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+    return div;
+  }
+
+  function parseSseBlock(block) {
+    let eventType = "message";
+    const dataLines = [];
+    for (const line of block.split("\n")) {
+      if (line.startsWith("event: ")) eventType = line.slice("event: ".length);
+      else if (line.startsWith("data: ")) dataLines.push(line.slice("data: ".length));
+    }
+    return { eventType, data: dataLines.join("\n") };
+  }
+
+  async function sendMessage(message) {
+    appendMessage("user", message);
+    const assistantDiv = appendMessage("assistant", "");
+    const statusDiv = appendMessage("status", "");
+    statusDiv.classList.add("status");
+
+    let response;
+    try {
+      response = await fetch("/api/v1/chat/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, message, history: [] }),
+      });
+    } catch (err) {
+      appendMessage("error", `Network error: ${err}`);
+      return;
+    }
+
+    if (!response.ok || !response.body) {
+      appendMessage("error", `Request failed: HTTP ${response.status}`);
+      return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let boundary;
+      while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+        const block = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        if (!block.trim()) continue;
+
+        const { eventType, data } = parseSseBlock(block);
+        const payload = data ? JSON.parse(data) : {};
+
+        if (eventType === "status") {
+          statusDiv.textContent = payload.label ?? "";
+        } else if (eventType === "chunk") {
+          assistantDiv.textContent += payload.delta ?? "";
+        } else if (eventType === "error") {
+          appendMessage("error", `${payload.code}: ${payload.message}`);
+        } else if (eventType === "done") {
+          statusDiv.textContent = "";
+        }
+        // "ping" carries no payload worth rendering.
+      }
+    }
+  }
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const message = input.value.trim();
+    if (!message) return;
+    input.value = "";
+    sendMessage(message);
+  });
+})();
+</script>
+</body>
+</html>

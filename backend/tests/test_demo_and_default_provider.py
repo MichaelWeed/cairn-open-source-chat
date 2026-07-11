@@ -1,0 +1,33 @@
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.config import Settings
+from app.main import _default_provider, create_app
+from app.providers.echo import EchoProvider
+from app.providers.ollama import OllamaProvider
+
+
+def test_default_provider_is_echo_without_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PROVIDER", raising=False)
+    assert isinstance(_default_provider(Settings()), EchoProvider)
+
+
+def test_default_provider_is_ollama_when_env_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PROVIDER", "ollama")
+    assert isinstance(_default_provider(Settings()), OllamaProvider)
+
+
+def test_default_provider_env_is_case_insensitive(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PROVIDER", "OLLAMA")
+    assert isinstance(_default_provider(Settings()), OllamaProvider)
+
+
+def test_demo_page_served(tmp_path: Path) -> None:
+    app = create_app(Settings(database_path=tmp_path / "test.db"), provider=EchoProvider())
+    with TestClient(app) as client:
+        resp = client.get("/demo")
+    assert resp.status_code == 200
+    assert "Cairn" in resp.text
+    assert "text/html" in resp.headers["content-type"]

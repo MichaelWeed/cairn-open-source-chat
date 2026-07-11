@@ -22,6 +22,16 @@ Per `CLAUDE.md` / `MASTER_PLAN.md` §3: every new dependency gets a one-line jus
 * **@cyclonedx/cyclonedx-npm** — generates the widget SBOM for `make validate`'s SBOM-diff gate. Pinned to 5.0.0 (6.0.0 was inside the cooldown window). Installed with `libxmljs2`/`ajv` (its optional XML/JSON-validation backends) omitted via `widget/.npmrc` (`omit=optional`) — we only need JSON SBOM output, and that dependency subtree pulled in several packages that were themselves inside the cooldown window.
 * **lru-cache** (transitive, via cyclonedx-npm → hosted-git-info) — pinned to 11.5.1 via `overrides` in `widget/package.json`; the resolver's default pick was inside the cooldown window.
 
+## Container image (`backend/Dockerfile`, task 1.8)
+
+Not a lockfile, but pinned the same way for the same reason — recorded here after `grype` found real, fixable CVEs in the base image during task 1.8:
+
+* **Base image**: `python:3.13-slim`, not 3.11 (the project only requires `>=3.11`). The 3.11-slim base had several CVEs in the system CPython interpreter itself with fixes available only on the 3.13+ branch.
+* **`apt-get upgrade`** at build time, layered on top of the pinned base digest — picks up Debian's current security patches (fixed several `perl-base`/`libc`-family CVEs that were stale in the pinned base layer).
+* **`pip`, `wheel`, `setuptools==82.0.1`** upgraded before installing `uv` — the base image's bundled versions had known CVEs, including a `jaraco-context`/`wheel` copy vendored *inside* `setuptools` that a plain `pip install --upgrade wheel` doesn't touch.
+* **`uv==0.11.25`** — pinned well past 0.9.13 (the local dev toolchain's version, independent of this) specifically to clear GHSA-4gg8-gxpx-9rph (Medium).
+* **`.grype.yaml`** documents four remaining exceptions: CVEs fixed only in Python 3.15 alpha/beta/unreleased builds — not appropriate to chase by running pre-release Python in production. Re-check on 3.15 GA.
+
 ## Tooling (not in a lockfile — installed via Homebrew locally, via CI steps in `.github/workflows/validate.yml`)
 
 * **osv-scanner** — lockfile vulnerability audit (`make validate`).

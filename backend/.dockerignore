@@ -1,0 +1,11 @@
+.venv
+__pycache__
+.mypy_cache
+.ruff_cache
+.pytest_cache
+tests
+sbom.cdx.json
+data
+*.db
+*.db-wal
+*.db-shm

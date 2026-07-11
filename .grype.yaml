@@ -1,0 +1,20 @@
+# Narrow, documented exceptions to the image-scan gate (make image-scan,
+# task 1.8). Each entry needs a reason and a re-check condition — this is
+# not a place to silence noise, only to record a real judgment call.
+ignore:
+  - vulnerability: CVE-2026-15308
+    reason: >-
+      Fixed only in Python 3.15.0 (not yet released). Re-check when 3.15 is
+      GA or a 3.13.x/3.14.x backport lands.
+  - vulnerability: CVE-2025-15366
+    reason: >-
+      Fixed only in Python 3.15.0a6 (alpha) — no stable release exists.
+      Re-check on 3.15 GA.
+  - vulnerability: CVE-2025-15367
+    reason: >-
+      Fixed only in Python 3.15.0a6 (alpha) — no stable release exists.
+      Re-check on 3.15 GA.
+  - vulnerability: CVE-2026-12003
+    reason: >-
+      Fixed only in Python 3.15.0b3 (beta) — no stable release exists.
+      Re-check on 3.15 GA.

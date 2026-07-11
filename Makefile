@@ -1,11 +1,22 @@
-.PHONY: validate verify eval release \
+.PHONY: validate verify eval release up down \
 	no-stub-check lint-backend test-backend build-widget \
-	lockfile-audit cooldown-check gen-sbom sbom-check
+	lockfile-audit cooldown-check gen-sbom sbom-check digest-pin-lint image-scan
+
+# Docker and Podman are both first-class (MASTER_PLAN.md §3) — compose.yaml
+# stays within the vendor-neutral Compose Specification, and this picks
+# whichever engine is installed rather than hardcoding one. Override with
+# COMPOSE_CMD=<cmd> if both are installed and you want a specific one.
+COMPOSE_CMD ?= $(shell command -v docker >/dev/null 2>&1 && echo "docker compose" || echo "podman compose")
 
 # Same command locally (pre-push hook) and in CI (.github/workflows/validate.yml)
-# — see MASTER_PLAN.md §3. Image-scan (grype) and digest-pin lint land in task
-# 1.8 once Dockerfiles/compose.yaml exist to scan.
-validate: no-stub-check lint-backend test-backend build-widget lockfile-audit cooldown-check sbom-check
+# — see MASTER_PLAN.md §3.
+validate: no-stub-check lint-backend test-backend build-widget lockfile-audit cooldown-check sbom-check digest-pin-lint image-scan
+
+up:
+	$(COMPOSE_CMD) up --build
+
+down:
+	$(COMPOSE_CMD) down
 
 # Scoped to source directories, not docs/*.md — the plan and README
 # discuss this policy in prose, which isn't a stub marker.
@@ -43,6 +54,23 @@ gen-sbom:
 sbom-check: gen-sbom
 	@git diff --exit-code -- backend/sbom.cdx.json widget/sbom.cdx.json \
 		|| (echo "SBOM drifted from the committed version — see comment above this target" && exit 1)
+
+digest-pin-lint:
+	python3 scripts/check_digest_pins.py
+
+# Requires a running Docker/Podman engine. Builds the backend image and
+# scans it — the one part of `make validate` that isn't just source code.
+# Image tag assumes docker compose's <project>-<service> naming; adjust if
+# your podman-compose version tags built images differently.
+# --only-fixed: gate on vulnerabilities with an available fix (so the gate
+# can actually be made green by upgrading) — not on not-yet-fixed/wont-fix
+# OS-baseline CVEs no code change here can address. scripts/verify.sh is
+# the unfiltered operator-side scan against a live vuln DB (MASTER_PLAN.md
+# §4). .grype.yaml documents the few exceptions where "fixed" means only
+# in a Python pre-release.
+image-scan:
+	$(COMPOSE_CMD) build backend
+	grype cairn-backend:latest --fail-on medium --only-fixed
 
 # Operator gate — see MASTER_PLAN.md §4 and scripts/verify.sh.
 verify:

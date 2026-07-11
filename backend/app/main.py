@@ -1,11 +1,14 @@
 import logging
+import os
 import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api.chat import router as chat_router
 from app.config import Settings, get_settings
@@ -13,9 +16,21 @@ from app.db import bootstrap
 from app.logging_config import configure_logging
 from app.providers.base import Provider
 from app.providers.echo import EchoProvider
+from app.providers.ollama import OllamaProvider
 from app.ratelimit import RateLimiter
 
 logger = logging.getLogger("app")
+
+STATIC_DIR = Path(__file__).parent / "static"
+
+
+def _default_provider(settings: Settings) -> Provider:
+    # No provider registry yet (that's Phase 5's admin surface). PROVIDER
+    # lets the demo page (task 1.8) exercise both round trips: `echo`
+    # (default — offline, deterministic) or `ollama`.
+    if os.environ.get("PROVIDER", "echo").lower() == "ollama":
+        return OllamaProvider(base_url=settings.ollama_base_url, model=settings.ollama_model)
+    return EchoProvider()
 
 
 def create_app(settings: Settings | None = None, provider: Provider | None = None) -> FastAPI:
@@ -33,10 +48,7 @@ def create_app(settings: Settings | None = None, provider: Provider | None = Non
 
     app = FastAPI(title="Cairn", lifespan=lifespan)
     app.state.settings = settings
-    # No provider registry yet (that's Phase 5's admin surface) — defaults
-    # to the offline, deterministic EchoProvider. The demo page (task 1.8)
-    # wires up OllamaProvider explicitly for the "via Ollama" round trip.
-    app.state.provider = provider or EchoProvider()
+    app.state.provider = provider or _default_provider(settings)
     app.state.ip_rate_limiter = RateLimiter(
         settings.rate_limit_ip_capacity, settings.rate_limit_ip_refill_per_minute
     )
@@ -52,6 +64,7 @@ def create_app(settings: Settings | None = None, provider: Provider | None = Non
     )
 
     app.include_router(chat_router)
+    app.mount("/demo", StaticFiles(directory=STATIC_DIR / "demo", html=True), name="demo")
 
     @app.get("/healthz")
     async def healthz() -> JSONResponse:

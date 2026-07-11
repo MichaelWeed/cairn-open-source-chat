@@ -1,0 +1,28 @@
+# Compose Specification only — no Docker-specific extensions — so this
+# runs unmodified under `docker compose` or `podman compose`/`podman-compose`.
+# See MASTER_PLAN.md §3 and DEVELOPER_README.md §2.
+services:
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "8080:8000"
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:8b-instruct}
+      ORIGIN_ALLOWLIST: http://localhost:8080
+      PROVIDER: ${PROVIDER:-echo}
+      ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-}
+    volumes:
+      - cairn_data:/data
+    depends_on:
+      - ollama
+
+  ollama:
+    image: docker.io/ollama/ollama@sha256:509fdf54e23bd50d87af646cb51c0a7a203d6a83cc4d6695b3b08c5be1c62c0a
+    volumes:
+      - ollama_data:/root/.ollama
+
+volumes:
+  cairn_data:
+  ollama_data:
