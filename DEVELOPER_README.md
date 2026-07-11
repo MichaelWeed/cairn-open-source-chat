@@ -29,15 +29,17 @@ Design invariants:
 
 ## 2. Quick Start (Local)
 
-Prerequisites: Docker with Compose; for the local model path, Ollama with an 8B-class instruct model pulled.
+Prerequisites: Docker or Podman, with Compose (`docker compose` or `podman compose`/`podman-compose`); for the local model path, Ollama with an 8B-class instruct model pulled.
 
 ```
 git clone <repo> && cd cairn
 cp .env.example .env            # set OLLAMA_BASE_URL, ADMIN_BOOTSTRAP_PASSWORD
-docker compose up               # digest-pinned images
+make up                         # digest-pinned images; uses whichever engine is installed
 # open http://localhost:8080/admin  -> ingest the bundled sample corpus
 # open http://localhost:8080/demo   -> widget test page
 ```
+
+`compose.yaml` stays within the vendor-neutral Compose Specification (no Docker-specific extensions), so it runs unmodified under either engine. `make up`/`make down` detect the available `COMPOSE_CMD`; set it explicitly (`COMPOSE_CMD=podman compose make up`) if both are installed and you want a specific one.
 
 Embed on any page:
 
