@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Installed to .git/hooks/pre-push by task 1.1. Mirrors .github/workflows/validate.yml
+# exactly — see MASTER_PLAN.md §3: one gate, two trigger points.
+set -euo pipefail
+make validate
