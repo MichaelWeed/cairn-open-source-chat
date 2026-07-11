@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     chat_message_max_chars: int = 500
     database_path: Path = DEFAULT_DB_PATH
 
+    rate_limit_ip_capacity: float = 20
+    rate_limit_ip_refill_per_minute: float = 20
+    rate_limit_session_capacity: float = 10
+    rate_limit_session_refill_per_minute: float = 10
+
     @property
     def origins(self) -> list[str]:
         return [origin.strip() for origin in self.origin_allowlist.split(",") if origin.strip()]
