@@ -8,6 +8,7 @@ Per `CLAUDE.md` / `MASTER_PLAN.md` §3: every new dependency gets a one-line jus
 * **mypy** — type-check gate in `make validate`; pinned to 1.18.2 to avoid the new `librt`/`ast-serialize` Rust-core deps introduced in mypy 2.x, which weren't past the 14-day cooldown window.
 * **pytest** — test runner for `make validate`.
 * **typing-extensions** (transitive, via mypy) — constrained to 4.15.0 via `[tool.uv] constraint-dependencies` because the resolver's default pick was inside the cooldown window.
+* **pydantic** — the frozen contract models in `backend/app/api/contracts.py` (task 1.4): request/response validation, `extra="forbid"`, and JSON round-tripping for the chat API and SSE events.
 
 ## Widget (`widget/package-lock.json`)
 
