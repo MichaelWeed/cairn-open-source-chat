@@ -2175,6 +2175,44 @@
       "version": "2.46.4"
     },
     {
+      "bom-ref": "pypdf==6.14.2",
+      "description": "A pure-python PDF library capable of splitting, merging, cropping, and transforming PDF files",
+      "externalReferences": [
+        {
+          "comment": "from packaging metadata Project-URL: Documentation",
+          "type": "documentation",
+          "url": "https://pypdf.readthedocs.io/en/latest/"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: Bug Reports",
+          "type": "issue-tracker",
+          "url": "https://github.com/py-pdf/pypdf/issues"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: Source",
+          "type": "other",
+          "url": "https://github.com/py-pdf/pypdf"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: Changelog",
+          "type": "release-notes",
+          "url": "https://pypdf.readthedocs.io/en/latest/meta/CHANGELOG.html"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "acknowledgement": "declared",
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "name": "pypdf",
+      "purl": "pkg:pypi/pypdf@6.14.2",
+      "type": "library",
+      "version": "6.14.2"
+    },
+    {
       "bom-ref": "pyproject_hooks==1.2.0",
       "description": "Wrappers to call pyproject.toml-based build backend hooks.",
       "externalReferences": [
@@ -3626,6 +3664,12 @@
       "ref": "pydantic_core==2.46.4"
     },
     {
+      "dependsOn": [
+        "typing_extensions==4.15.0"
+      ],
+      "ref": "pypdf==6.14.2"
+    },
+    {
       "ref": "pyproject_hooks==1.2.0"
     },
     {
@@ -3696,6 +3740,7 @@
         "httpx==0.28.1",
         "pydantic-settings==2.14.2",
         "pydantic==2.13.4",
+        "pypdf==6.14.2",
         "uvicorn==0.49.0"
       ],
       "ref": "root-component"
