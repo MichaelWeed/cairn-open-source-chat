@@ -1,6 +1,16 @@
 # Compose Specification only — no Docker-specific extensions — so this
 # runs unmodified under `docker compose` or `podman compose`/`podman-compose`.
 # See MASTER_PLAN.md §3 and DEVELOPER_README.md §2.
+#
+# `name` is pinned rather than left to the checkout-directory default:
+# `make image-scan` looks up the built image as `cairn-backend:latest`,
+# and Compose otherwise derives that prefix from the current directory's
+# basename — which is `cairn` on a fresh clone but not in a git worktree
+# (e.g. `.claude/worktrees/<branch>`) or GitHub Actions' checkout dir
+# (`cairn-open-source-chat`, per the remote). Pinning it keeps the image
+# tag — and therefore the validate gate — independent of where the repo
+# happens to be checked out.
+name: cairn
 services:
   backend:
     build:
