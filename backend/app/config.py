@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     database_path: Path = DEFAULT_DB_PATH
     chroma_path: Path = DEFAULT_CHROMA_PATH
     embedding_model: str = "nomic-embed-text"
+    retrieval_top_k: int = 4
 
     rate_limit_ip_capacity: float = 20
     rate_limit_ip_refill_per_minute: float = 20

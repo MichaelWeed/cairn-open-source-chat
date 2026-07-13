@@ -76,3 +76,27 @@ async def test_ollama_sends_expected_request_body() -> None:
         "stream": True,
         "messages": [{"role": "user", "content": "prior"}, {"role": "user", "content": "hi"}],
     }
+
+
+async def test_ollama_prepends_context_as_system_message() -> None:
+    captured: dict[str, object] = {}
+    reply = json.dumps({"message": {"content": "ok"}, "done": True}).encode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json.loads(request.content)
+        return httpx.Response(200, content=reply, request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = OllamaProvider(base_url="http://ollama:11434", model="test-model", client=client)
+
+    context = "<retrieved-context>30 day returns</retrieved-context>"
+    chunks = [c async for c in provider.stream(message="hi", history=[], context=context)]
+    assert chunks == ["ok"]
+    assert captured["json"] == {
+        "model": "test-model",
+        "stream": True,
+        "messages": [
+            {"role": "system", "content": context},
+            {"role": "user", "content": "hi"},
+        ],
+    }
