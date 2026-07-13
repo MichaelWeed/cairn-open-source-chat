@@ -1,12 +1,12 @@
 """Retrieval pipeline: pulls the relevant chunks out of the vector store
-(app/vectorstore.py, task 2.1) and turns them into the two things the chat
-endpoint needs — a `citations` SSE payload and the fixed, delimited prompt
-block handed to the provider. See MASTER_PLAN.md task 2.4 and
+(app/vectorstore.py, task 2.1) and turns them into the things the chat
+endpoint needs — a confidence-gated refusal decision (task 2.5), a
+`citations` SSE payload, and the fixed, delimited prompt block handed to
+the provider (task 2.4). See MASTER_PLAN.md tasks 2.4/2.5 and
 DEVELOPER_README.md §4 (contract) / §5 (prompt-injection defense).
 
-Confidence-based refusal (task 2.5) and defenses against a chunk's own text
-trying to break out of the `<chunk>` delimiter (task 4.4, adversarial
-suite) are deliberately out of scope here.
+Defenses against a chunk's own text trying to break out of the `<chunk>`
+delimiter (task 4.4, adversarial suite) are deliberately out of scope here.
 """
 
 from dataclasses import dataclass
@@ -16,6 +16,20 @@ from chromadb.api.models.Collection import Collection
 from app.api.contracts import CitationSource
 
 DEFAULT_TOP_K = 4
+
+# Chroma's default space is L2 (squared Euclidean) — lower means closer,
+# unbounded above, and its scale depends entirely on the embedding model in
+# use. 1.2 is a starting point for normalized-ish embeddings, not a
+# validated number: per DEVELOPER_README.md §6, tune this per corpus and
+# embedding model using the eval harness's correct-refusal-rate metric
+# (task 2.6) before trusting it in production.
+DEFAULT_MAX_DISTANCE = 1.2
+
+REFUSAL_MESSAGE = (
+    "I don't have enough information in the knowledge base to answer that "
+    "confidently, so I don't want to guess. Try rephrasing your question, "
+    "or ask about something covered in the documentation."
+)
 
 SYSTEM_PROMPT_HEADER = (
     "You are Cairn, a customer-support assistant. Answer only using facts "
@@ -35,6 +49,7 @@ class RetrievedChunk:
     source: str
     chunk_index: int
     text: str
+    distance: float
 
 
 def retrieve_chunks(
@@ -53,6 +68,7 @@ def retrieve_chunks(
     result = collection.query(query_texts=[query], n_results=min(top_k, count))
     documents = result["documents"][0] if result["documents"] else []
     metadatas = result["metadatas"][0] if result["metadatas"] else []
+    distances = result["distances"][0] if result["distances"] else []
 
     return [
         RetrievedChunk(
@@ -60,9 +76,24 @@ def retrieve_chunks(
             source=str(metadata["source"]),
             chunk_index=int(metadata["chunk_index"]),  # type: ignore[arg-type]
             text=text,
+            distance=float(distance),
         )
-        for text, metadata in zip(documents, metadatas, strict=True)
+        for text, metadata, distance in zip(documents, metadatas, distances, strict=True)
     ]
+
+
+def should_refuse(chunks: list[RetrievedChunk], max_distance: float = DEFAULT_MAX_DISTANCE) -> bool:
+    """The citation-required / low-confidence refusal gate (task 2.5).
+
+    Refuse — never call the provider — unless at least one retrieved chunk
+    is within `max_distance` of the query. This is deliberately the single
+    gate for both policies at once: whenever this returns `False`, `chunks`
+    is guaranteed non-empty, so an answer is never generated without at
+    least one citation to back it.
+    """
+    if not chunks:
+        return True
+    return min(chunk.distance for chunk in chunks) > max_distance
 
 
 def build_citations(chunks: list[RetrievedChunk]) -> list[CitationSource]:

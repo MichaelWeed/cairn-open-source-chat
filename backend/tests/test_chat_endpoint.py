@@ -72,8 +72,57 @@ def client(app: FastAPI) -> Iterator[TestClient]:
         yield c
 
 
-def test_happy_path_round_trip(client: TestClient) -> None:
-    resp = client.post(
+def _ingest(
+    app: FastAPI, settings: Settings, filename: str, content: bytes, document_id: str = "doc-1"
+) -> None:
+    """Ingest via the app's own in-process collection handle (task 2.7's
+    constraint) — `app.state.document_collection` only exists once the
+    app's lifespan has started, so call this from inside a `with
+    TestClient(app):` block, never against a bare `app`.
+
+    app.state.db belongs to the lifespan's thread; sqlite3 connections
+    aren't shareable across threads, so ingest through our own connection
+    to the same file rather than reusing app.state.db.
+    """
+    ingest_db = bootstrap(settings.database_path)
+    ingest_upload(
+        db=ingest_db,
+        collection=app.state.document_collection,
+        document_id=document_id,
+        filename=filename,
+        content=content,
+    )
+    ingest_db.close()
+
+
+@pytest.fixture
+def grounded_app(tmp_path: Path) -> FastAPI:
+    # FakeEmbeddingFunction hashes whole documents into vectors that aren't
+    # semantically meaningful (see app/embeddings/fake.py) — its L2
+    # distances don't correlate with textual relevance, so tests that want
+    # to exercise the "confident enough to answer" path set max_distance
+    # generously rather than relying on the fake embedder to score a real
+    # match as close.
+    settings = Settings(
+        database_path=tmp_path / "test.db",
+        chroma_path=tmp_path / "chroma",
+        origin_allowlist="http://widget.example",
+        retrieval_max_distance=1000.0,
+    )
+    app = create_app(settings, provider=EchoProvider())
+    with TestClient(app):
+        _ingest(app, settings, "faq.md", b"Our return window is 30 days from delivery.")
+    return app
+
+
+@pytest.fixture
+def grounded_client(grounded_app: FastAPI) -> Iterator[TestClient]:
+    with TestClient(grounded_app) as c:
+        yield c
+
+
+def test_happy_path_round_trip(grounded_client: TestClient) -> None:
+    resp = grounded_client.post(
         "/api/v1/chat/message",
         json={"session_id": "s1", "message": "hi there"},
         headers={"origin": "http://widget.example"},
@@ -86,8 +135,8 @@ def test_happy_path_round_trip(client: TestClient) -> None:
     assert types[-1] == "done"
 
 
-def test_chunks_reconstruct_message(client: TestClient) -> None:
-    resp = client.post(
+def test_chunks_reconstruct_message(grounded_client: TestClient) -> None:
+    resp = grounded_client.post(
         "/api/v1/chat/message",
         json={"session_id": "s1", "message": "hello world"},
         headers={"origin": "http://widget.example"},
@@ -95,6 +144,46 @@ def test_chunks_reconstruct_message(client: TestClient) -> None:
     events = parse_sse(resp.text)
     deltas = [json.loads(data)["delta"] for t, data in events if t == "chunk"]
     assert "".join(deltas) == "hello world"
+
+
+def test_refuses_and_skips_provider_when_nothing_ingested(client: TestClient) -> None:
+    resp = client.post(
+        "/api/v1/chat/message",
+        json={"session_id": "s1", "message": "hi there"},
+        headers={"origin": "http://widget.example"},
+    )
+    assert resp.status_code == 200
+    events = parse_sse(resp.text)
+    types = [t for t, _ in events]
+    assert "citations" not in types
+
+    deltas = [json.loads(data)["delta"] for t, data in events if t == "chunk"]
+    assert "".join(deltas) != "hi there"  # not an echo — the provider was never called
+    assert "don't have enough information" in "".join(deltas)
+
+    done_body = json.loads(next(data for t, data in events if t == "done"))
+    assert done_body["finish_reason"] == "refused"
+
+
+def test_refuses_when_confidence_below_threshold_despite_matching_chunk(tmp_path: Path) -> None:
+    settings = Settings(
+        database_path=tmp_path / "test.db",
+        chroma_path=tmp_path / "chroma",
+        retrieval_max_distance=0.0001,  # unreachably strict — forces refusal
+    )
+    app = create_app(settings, provider=EchoProvider())
+
+    with TestClient(app) as client:
+        _ingest(app, settings, "faq.md", b"Our return window is 30 days from delivery.")
+        resp = client.post(
+            "/api/v1/chat/message", json={"session_id": "s1", "message": "return window"}
+        )
+
+    events = parse_sse(resp.text)
+    types = [t for t, _ in events]
+    assert "citations" not in types
+    done_body = json.loads(next(data for t, data in events if t == "done"))
+    assert done_body["finish_reason"] == "refused"
 
 
 def test_message_over_cap_rejected(client: TestClient) -> None:
@@ -121,9 +210,14 @@ def test_missing_origin_header_allowed(client: TestClient) -> None:
 
 
 def test_provider_failure_yields_error_event(tmp_path: Path) -> None:
-    settings = Settings(database_path=tmp_path / "test.db", chroma_path=tmp_path / "chroma")
+    settings = Settings(
+        database_path=tmp_path / "test.db",
+        chroma_path=tmp_path / "chroma",
+        retrieval_max_distance=1000.0,  # must clear the refusal gate to reach the provider
+    )
     app = create_app(settings, provider=FailingProvider())
     with TestClient(app) as client:
+        _ingest(app, settings, "faq.md", b"Our return window is 30 days from delivery.")
         resp = client.post("/api/v1/chat/message", json={"session_id": "s1", "message": "hi"})
     events = parse_sse(resp.text)
     assert events[-1][0] == "error"
@@ -169,7 +263,11 @@ def test_session_rate_limit_exhausted_yields_error_event(tmp_path: Path) -> None
 
 
 def test_retrieval_grounds_the_reply_and_emits_citations(tmp_path: Path) -> None:
-    settings = Settings(database_path=tmp_path / "test.db", chroma_path=tmp_path / "chroma")
+    settings = Settings(
+        database_path=tmp_path / "test.db",
+        chroma_path=tmp_path / "chroma",
+        retrieval_max_distance=1000.0,  # see grounded_app fixture docstring above
+    )
     provider = CapturingProvider()
     app = create_app(settings, provider=provider)
 

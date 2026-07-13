@@ -19,7 +19,15 @@ from app.api.contracts import (
     StatusEvent,
 )
 from app.providers.base import Provider
-from app.retrieval import DEFAULT_TOP_K, build_citations, build_context_block, retrieve_chunks
+from app.retrieval import (
+    DEFAULT_MAX_DISTANCE,
+    DEFAULT_TOP_K,
+    REFUSAL_MESSAGE,
+    build_citations,
+    build_context_block,
+    retrieve_chunks,
+    should_refuse,
+)
 
 logger = logging.getLogger("app")
 
@@ -67,6 +75,7 @@ async def chat_event_stream(
     body: ChatMessageRequest,
     collection: Collection,
     top_k: int = DEFAULT_TOP_K,
+    max_distance: float = DEFAULT_MAX_DISTANCE,
     ping_interval: float = PING_INTERVAL_SECONDS,
 ) -> AsyncIterator[ChatEvent]:
     yield StatusEvent(state="retrieving", label="Searching the knowledge base")
@@ -75,6 +84,12 @@ async def chat_event_stream(
     except Exception:
         logger.exception("retrieval failed", extra={"session_id": body.session_id})
         chunks = []
+
+    if should_refuse(chunks, max_distance):
+        yield StatusEvent(state="refusing", label="No confident match found")
+        yield ChunkEvent(delta=REFUSAL_MESSAGE)
+        yield DoneEvent(finish_reason="refused")
+        return
 
     citations = build_citations(chunks)
     if citations:
@@ -133,5 +148,11 @@ async def chat_message(request: Request, body: ChatMessageRequest) -> StreamingR
     provider: Provider = request.app.state.provider
     collection: Collection = request.app.state.document_collection
     return _sse_response(
-        chat_event_stream(provider, body, collection, top_k=settings.retrieval_top_k)
+        chat_event_stream(
+            provider,
+            body,
+            collection,
+            top_k=settings.retrieval_top_k,
+            max_distance=settings.retrieval_max_distance,
+        )
     )
