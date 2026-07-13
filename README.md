@@ -23,6 +23,8 @@ Support teams get burned by two failure modes: bots that make things up, and bot
 
 * [DEVELOPER_README.md](DEVELOPER_README.md) — architecture, API contract, security model, quick start.
 * [MASTER_PLAN.md](MASTER_PLAN.md) — phases, task board, delivery model.
+* [docs/SECURITY.md](docs/SECURITY.md) — what's actually built and tested today vs. planned; vulnerability reporting.
+* [docs/PRIVACY.md](docs/PRIVACY.md) — what data is handled, where it lives, and data segregation (this is a single-tenant deployment, not a multi-tenant SaaS).
 
 ## Get in touch
 
