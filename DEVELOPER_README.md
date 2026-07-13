@@ -133,6 +133,8 @@ Single instance is still the design point for a v1 self-hosted install. Horizont
 
 The direction that avoids this: run Chroma in **client/server mode** (`chromadb.HttpClient` talking to one `chroma run` server process/container) instead of embedded `PersistentClient`, so every app replica is a stateless network client and the Chroma server process is the single owner of on-disk state — the same pattern SQLite already can't support across hosts, worth keeping in mind if a future write volume outgrows one SQLite writer too.
 
+**This is not a drop-in swap from a security standpoint.** `osv-scanner.toml` carries a documented, narrowly-scoped exception for a Critical pre-auth code-injection CVE (`GHSA-f4j7-r4q5-qw2c`) in chromadb's HTTP server API — ignored today specifically *because* this project only runs `PersistentClient` (embedded, no network listener). That exception's own text says to re-check immediately if HTTP server mode is ever adopted. Anyone picking up the horizontal-scaling roadmap item must re-verify a fixed chromadb version exists (or otherwise fully network-isolate the Chroma service — no public ingress, backend-only security group, no `trust_remote_code`) before shipping this, not just wire up `HttpClient` and move on.
+
 A minimal sketch for something like AWS, illustrative only:
 
 ```
