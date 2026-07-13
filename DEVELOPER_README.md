@@ -26,6 +26,7 @@ Design invariants:
 * **Server holds no conversation state.** The widget carries history (last 5 turns, sessionStorage) in each request.
 * **Widget endpoints are anonymous; admin endpoints are authenticated.** Single admin account, Argon2id, SameSite=Strict session cookie, CSRF token, optional TOTP.
 * **Contracts are frozen Pydantic models** (`extra="forbid"`). The SSE contract and tool schemas in `backend/app/api/contracts.py` are the source of truth.
+* **Vector-store writes are single-writer, in-process.** Every ingestion path (upload, scrape, future admin reindex) must write through the same `Collection` handle the chat endpoint queries (`app.state.document_collection`), never a second `chromadb.PersistentClient` opened against the same `CHROMA_PATH` from another process/subprocess. A second handle desyncs the long-lived server handle's view of on-disk HNSW segments — every query against it then throws `chromadb.errors.InternalError: ... Nothing found on disk` until the process restarts. Confirmed live against chromadb 1.5.9 embedded `PersistentClient`; that version has no lighter-weight reload/reconnect API, only a full `reset()`.
 
 ## 2. Quick Start (Local)
 
@@ -116,7 +117,41 @@ No core changes required; the registry injects enabled tool schemas into the pro
 * `GET /healthz` (liveness) and `GET /readyz` (provider + vector store checks); no sensitive data in either.
 * Structured JSON logs: latency, guardrail stage outcomes, error codes, query counts. No message bodies.
 * Backup = copy the SQLite file and the Chroma persistence directory (volume-mounted).
-* Scaling: single instance is the design point; replicas behind a load balancer are possible since the server is stateless, with the vector store mounted read-only on replicas and writes routed to the ingest instance.
+
+### Concurrency, one instance
+
+FastAPI/uvicorn runs a single async event loop; concurrent chat requests are interleaved as long as each request's work is non-blocking. The provider call is (`OllamaProvider` uses `httpx.AsyncClient`), but callers should confirm `collection.query()` in the retrieval path (task 2.4) is offloaded via `asyncio.to_thread` before relying on this for concurrent load — chromadb's Python client is synchronous, and calling it directly on the event loop serializes retrieval across every in-flight request. Two other pieces are explicitly scoped to one instance rather than made distributed, by design, not oversight:
+
+* **Rate limiting** (`app/ratelimit.py`) is an in-process, in-memory token-bucket dict keyed by IP/session. Fine for one instance; behind multiple replicas each one enforces its own limits independently, so the effective cap for a client is `limit x replica_count`, not `limit`.
+* **SQLite (WAL)** supports many concurrent readers and one writer *on one host*. It is not safe for multiple hosts writing over a shared network filesystem (NFS/EFS) — don't reach for that as a scaling shortcut.
+
+Within those bounds, a single instance's practical ceiling for concurrent users is set by Ollama's own inference concurrency (typically low — see `OLLAMA_NUM_PARALLEL`) more than by the FastAPI layer, since a local model serves one or a few generations in parallel per GPU/CPU budget regardless of how many requests are queued.
+
+### Scaling beyond one instance
+
+Single instance is still the design point for a v1 self-hosted install. Horizontal scaling is on the roadmap (§7 in MASTER_PLAN.md) but isn't built or documented as a supported path yet, and one assumption from early planning needs correcting now that task 2.4 surfaced how the embedded Chroma client behaves: **a replica cannot simply mount the Chroma persistence directory read-only.** Chroma's embedded `PersistentClient` caches its view of on-disk HNSW segments in the process that opened it (see the single-writer invariant above) — a read replica's handle goes stale exactly the same way the single-writer bug does, and there's no lighter-weight refresh call in chromadb 1.5.9, only a full `reset()`. A stale replica wouldn't just serve outdated results, it would eventually throw the same `Nothing found on disk` error on affected queries.
+
+The direction that avoids this: run Chroma in **client/server mode** (`chromadb.HttpClient` talking to one `chroma run` server process/container) instead of embedded `PersistentClient`, so every app replica is a stateless network client and the Chroma server process is the single owner of on-disk state — the same pattern SQLite already can't support across hosts, worth keeping in mind if a future write volume outgrows one SQLite writer too.
+
+A minimal sketch for something like AWS, illustrative only:
+
+```
+Route 53 -> ALB -> ECS Fargate service "cairn-backend" (N tasks, stateless,
+                    health check /readyz, autoscale on CPU/request count)
+                       |
+                       +--> ECS service "chroma" (1 task, HttpClient target,
+                       |     EFS-backed volume for persistence)
+                       |
+                       +--> RDS/EFS-hosted SQLite alternative only if write
+                       |     volume outgrows one host (Postgres, at that point)
+                       |
+                       +--> Ollama on a GPU-backed EC2/ECS task, or swap to
+                             a hosted OpenAI-compatible provider (already an
+                             adapter target on the roadmap) if local-model
+                             throughput becomes the bottleneck
+```
+
+None of this is committed scope — it's direction for an operator who outgrows one box, recorded so the read-only-mount assumption doesn't resurface uncorrected.
 
 ## 10. Roadmap and Non-Goals
 
