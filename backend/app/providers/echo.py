@@ -10,12 +10,15 @@ class EchoProvider(Provider):
 
     replies with the input message, word by word. No network calls, no
     randomness — the point is a stable, offline-testable SSE round trip.
+    Ignores `context` (retrieved-document grounding) for the same reason.
     """
 
     def __init__(self, delay_seconds: float = 0.0) -> None:
         self._delay_seconds = delay_seconds
 
-    async def stream(self, *, message: str, history: list[ChatTurn]) -> AsyncIterator[str]:
+    async def stream(
+        self, *, message: str, history: list[ChatTurn], context: str | None = None
+    ) -> AsyncIterator[str]:
         words = message.split()
         for i, word in enumerate(words):
             if self._delay_seconds:

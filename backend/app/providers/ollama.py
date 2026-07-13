@@ -19,8 +19,13 @@ class OllamaProvider(Provider):
         self._model = model
         self._client = client or httpx.AsyncClient()
 
-    async def stream(self, *, message: str, history: list[ChatTurn]) -> AsyncIterator[str]:
-        messages = [{"role": turn.role, "content": turn.content} for turn in history]
+    async def stream(
+        self, *, message: str, history: list[ChatTurn], context: str | None = None
+    ) -> AsyncIterator[str]:
+        messages: list[dict[str, str]] = []
+        if context is not None:
+            messages.append({"role": "system", "content": context})
+        messages.extend({"role": turn.role, "content": turn.content} for turn in history)
         messages.append({"role": "user", "content": message})
 
         async with self._client.stream(

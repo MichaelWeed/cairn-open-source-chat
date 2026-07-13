@@ -8,15 +8,40 @@ from fastapi.testclient import TestClient
 
 from app.api.contracts import ChatTurn
 from app.config import Settings
+from app.db import bootstrap
+from app.ingest.pipeline import ingest_upload
 from app.main import create_app
 from app.providers.base import Provider
 from app.providers.echo import EchoProvider
 
 
+@pytest.fixture(autouse=True)
+def fake_embeddings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "fake")
+
+
 class FailingProvider(Provider):
-    async def stream(self, *, message: str, history: list[ChatTurn]) -> AsyncIterator[str]:
+    async def stream(
+        self, *, message: str, history: list[ChatTurn], context: str | None = None
+    ) -> AsyncIterator[str]:
         raise ConnectionError("simulated provider outage")
         yield  # pragma: no cover - unreachable, satisfies the generator type
+
+
+class CapturingProvider(Provider):
+    """Records the last call's arguments instead of talking to a model —
+    lets a test assert *what the provider actually received*, which is the
+    only way to prove retrieval (task 2.4) reaches the provider rather than
+    just running and being discarded."""
+
+    def __init__(self) -> None:
+        self.last_context: str | None = None
+
+    async def stream(
+        self, *, message: str, history: list[ChatTurn], context: str | None = None
+    ) -> AsyncIterator[str]:
+        self.last_context = context
+        yield "ok"
 
 
 def parse_sse(body: str) -> list[tuple[str, str]]:
@@ -141,3 +166,53 @@ def test_session_rate_limit_exhausted_yields_error_event(tmp_path: Path) -> None
     assert first.status_code == 200
     events = parse_sse(second.text)
     assert events[0][0] == "error"
+
+
+def test_retrieval_grounds_the_reply_and_emits_citations(tmp_path: Path) -> None:
+    settings = Settings(database_path=tmp_path / "test.db", chroma_path=tmp_path / "chroma")
+    provider = CapturingProvider()
+    app = create_app(settings, provider=provider)
+
+    with TestClient(app) as client:
+        # app.state.db belongs to the lifespan's thread; sqlite3 connections
+        # aren't shareable across threads, so ingest through our own
+        # connection to the same file rather than reusing app.state.db.
+        ingest_db = bootstrap(settings.database_path)
+        ingest_upload(
+            db=ingest_db,
+            collection=app.state.document_collection,
+            document_id="doc-1",
+            filename="returns.md",
+            content=b"Our return window is 30 days from delivery.",
+        )
+        ingest_db.close()
+
+        resp = client.post(
+            "/api/v1/chat/message", json={"session_id": "s1", "message": "return window"}
+        )
+
+    assert resp.status_code == 200
+    events = parse_sse(resp.text)
+    types = [t for t, _ in events]
+    assert "citations" in types
+
+    citations_body = json.loads(next(data for t, data in events if t == "citations"))
+    assert citations_body["sources"] == [
+        {"id": "doc-1", "title": "returns.md", "url": "document://doc-1"}
+    ]
+
+    assert provider.last_context is not None
+    assert "30 days" in provider.last_context
+    assert "<retrieved-context>" in provider.last_context
+
+
+def test_no_citations_event_when_nothing_ingested(tmp_path: Path) -> None:
+    settings = Settings(database_path=tmp_path / "test.db", chroma_path=tmp_path / "chroma")
+    app = create_app(settings, provider=EchoProvider())
+    with TestClient(app) as client:
+        resp = client.post("/api/v1/chat/message", json={"session_id": "s1", "message": "hi"})
+
+    events = parse_sse(resp.text)
+    types = [t for t, _ in events]
+    assert "citations" not in types
+    assert types[0] == "status"

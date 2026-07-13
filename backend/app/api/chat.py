@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 
+from chromadb.api.models.Collection import Collection
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
@@ -11,12 +12,14 @@ from app.api.contracts import (
     ChatEvent,
     ChatMessageRequest,
     ChunkEvent,
+    CitationsEvent,
     DoneEvent,
     ErrorEvent,
     PingEvent,
     StatusEvent,
 )
 from app.providers.base import Provider
+from app.retrieval import DEFAULT_TOP_K, build_citations, build_context_block, retrieve_chunks
 
 logger = logging.getLogger("app")
 
@@ -60,11 +63,28 @@ async def stream_with_pings(
 
 
 async def chat_event_stream(
-    provider: Provider, body: ChatMessageRequest, ping_interval: float = PING_INTERVAL_SECONDS
+    provider: Provider,
+    body: ChatMessageRequest,
+    collection: Collection,
+    top_k: int = DEFAULT_TOP_K,
+    ping_interval: float = PING_INTERVAL_SECONDS,
 ) -> AsyncIterator[ChatEvent]:
+    yield StatusEvent(state="retrieving", label="Searching the knowledge base")
+    try:
+        chunks = retrieve_chunks(collection, body.message, top_k=top_k)
+    except Exception:
+        logger.exception("retrieval failed", extra={"session_id": body.session_id})
+        chunks = []
+
+    citations = build_citations(chunks)
+    if citations:
+        yield CitationsEvent(sources=citations)
+
     yield StatusEvent(state="generating", label="Generating a reply")
     try:
-        provider_stream = provider.stream(message=body.message, history=body.history)
+        provider_stream = provider.stream(
+            message=body.message, history=body.history, context=build_context_block(chunks)
+        )
         async for event in stream_with_pings(provider_stream, ping_interval):
             yield event
     except Exception:
@@ -111,4 +131,7 @@ async def chat_message(request: Request, body: ChatMessageRequest) -> StreamingR
         return _sse_response(_single_event_stream(event))
 
     provider: Provider = request.app.state.provider
-    return _sse_response(chat_event_stream(provider, body))
+    collection: Collection = request.app.state.document_collection
+    return _sse_response(
+        chat_event_stream(provider, body, collection, top_k=settings.retrieval_top_k)
+    )

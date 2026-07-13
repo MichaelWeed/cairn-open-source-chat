@@ -18,3 +18,12 @@ async def test_echo_is_deterministic() -> None:
     first = [chunk async for chunk in provider.stream(message="same input", history=[])]
     second = [chunk async for chunk in provider.stream(message="same input", history=[])]
     assert first == second
+
+
+async def test_echo_ignores_context() -> None:
+    provider = EchoProvider()
+    context = "<retrieved-context>irrelevant</retrieved-context>"
+    chunks = [
+        chunk async for chunk in provider.stream(message="hello world", history=[], context=context)
+    ]
+    assert "".join(chunks) == "hello world"

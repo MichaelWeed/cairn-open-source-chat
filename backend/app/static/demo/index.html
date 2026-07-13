@@ -32,6 +32,8 @@
   .msg.assistant { color: var(--assistant); }
   .msg.error { color: var(--error); }
   .status { color: var(--status); font-size: 0.85em; }
+  .citations { color: var(--status); font-size: 0.85em; }
+  .citations a { color: inherit; }
   form { display: flex; gap: 0.5rem; }
   input[type=text] { flex: 1; padding: 0.5rem; }
   button { padding: 0.5rem 1rem; }
@@ -78,6 +80,8 @@
   async function sendMessage(message) {
     appendMessage("user", message);
     const assistantDiv = appendMessage("assistant", "");
+    const citationsDiv = appendMessage("citations", "");
+    citationsDiv.classList.add("citations");
     const statusDiv = appendMessage("status", "");
     statusDiv.classList.add("status");
 
@@ -120,6 +124,16 @@
           statusDiv.textContent = payload.label ?? "";
         } else if (eventType === "chunk") {
           assistantDiv.textContent += payload.delta ?? "";
+        } else if (eventType === "citations") {
+          const sources = payload.sources ?? [];
+          citationsDiv.textContent = sources.length ? "Sources: " : "";
+          sources.forEach((source, i) => {
+            if (i > 0) citationsDiv.append(", ");
+            const link = document.createElement("a");
+            link.href = source.url;
+            link.textContent = source.title;
+            citationsDiv.append(link);
+          });
         } else if (eventType === "error") {
           appendMessage("error", `${payload.code}: ${payload.message}`);
         } else if (eventType === "done") {
