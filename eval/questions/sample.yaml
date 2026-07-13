@@ -1,0 +1,38 @@
+# Question set for eval/corpus/ (the bundled sample corpus). See
+# DEVELOPER_README.md §6 — write one of these per corpus before trusting
+# production traffic; this one only proves the harness works.
+#
+# Fields:
+#   id                  unique slug
+#   question            what to ask the running system
+#   answerable          true if eval/corpus/ actually contains the answer
+#   expected_document_id (answerable questions only) corpus filename stem
+#     that should show up in the citations event
+
+- id: return-window
+  question: "How many days do I have to return an item?"
+  answerable: true
+  expected_document_id: returns
+
+- id: return-condition
+  question: "Does an item need to be unused to return it?"
+  answerable: true
+  expected_document_id: returns
+
+- id: shipping-time
+  question: "How long does standard shipping take?"
+  answerable: true
+  expected_document_id: shipping
+
+- id: warranty-length
+  question: "How long is the product warranty?"
+  answerable: true
+  expected_document_id: warranty
+
+- id: unanswerable-weather
+  question: "What is the weather like today?"
+  answerable: false
+
+- id: unanswerable-competitor
+  question: "How does your return policy compare to your biggest competitor's?"
+  answerable: false

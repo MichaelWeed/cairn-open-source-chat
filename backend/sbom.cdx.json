@@ -2852,6 +2852,49 @@
       "version": "0.25.1"
     },
     {
+      "bom-ref": "types-PyYAML==6.0.12.20260518",
+      "description": "Typing stubs for PyYAML",
+      "externalReferences": [
+        {
+          "comment": "from packaging metadata Project-URL: Chat",
+          "type": "chat",
+          "url": "https://gitter.im/python/typing"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: Issue tracker",
+          "type": "issue-tracker",
+          "url": "https://github.com/python/typeshed/issues"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: Changes",
+          "type": "release-notes",
+          "url": "https://github.com/typeshed-internal/stub_uploader/blob/main/data/changelogs/PyYAML.md"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: GitHub",
+          "type": "vcs",
+          "url": "https://github.com/python/typeshed"
+        },
+        {
+          "comment": "from packaging metadata Project-URL: Homepage",
+          "type": "website",
+          "url": "https://github.com/python/typeshed"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "acknowledgement": "declared",
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "name": "types-PyYAML",
+      "purl": "pkg:pypi/types-pyyaml@6.0.12.20260518",
+      "type": "library",
+      "version": "6.0.12.20260518"
+    },
+    {
       "bom-ref": "typing-inspection==0.4.2",
       "description": "Runtime typing introspection tools",
       "externalReferences": [
@@ -3456,6 +3499,7 @@
         "ruff==0.15.20",
         "tqdm==4.68.3",
         "typer==0.25.1",
+        "types-PyYAML==6.0.12.20260518",
         "typing_extensions==4.15.0",
         "urllib3==2.7.0"
       ],
@@ -3735,6 +3779,7 @@
     },
     {
       "dependsOn": [
+        "PyYAML==6.0.3",
         "chromadb==1.5.9",
         "fastapi==0.138.1",
         "httpx==0.28.1",
@@ -3797,6 +3842,9 @@
         "shellingham==1.5.4"
       ],
       "ref": "typer==0.25.1"
+    },
+    {
+      "ref": "types-PyYAML==6.0.12.20260518"
     },
     {
       "dependsOn": [

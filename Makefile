@@ -29,7 +29,7 @@ no-stub-check:
 		|| (echo "no-stub gate failed: remove the markers above before merging" && exit 1)
 
 lint-backend:
-	cd backend && uv run ruff check . && uv run mypy .
+	cd backend && uv run ruff check . ../eval && uv run mypy . ../eval/run_eval.py
 
 test-backend:
 	cd backend && uv run pytest -q
@@ -77,9 +77,12 @@ image-scan:
 verify:
 	@./scripts/verify.sh
 
-# Eval harness — Phase 2.6.
+# Eval harness (task 2.6). Self-contained — ingests eval/corpus/ into an
+# ephemeral app instance itself (see eval/run_eval.py's docstring for why).
+# Requires a reachable Ollama with OLLAMA_MODEL and EMBEDDING_MODEL pulled;
+# not part of `make validate` (DEVELOPER_README.md §6 / MASTER_PLAN.md §4).
 eval:
-	@echo "eval: harness lands in task 2.6"
+	cd backend && uv run python ../eval/run_eval.py
 
 # Release bundler — Phase 7.2.
 release:
