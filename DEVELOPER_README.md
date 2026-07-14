@@ -99,6 +99,18 @@ make eval          # requires OLLAMA_MODEL and EMBEDDING_MODEL pulled in Ollama
 
 Produces `eval/reports/<date>.md` with: groundedness (LLM-judged support of answers by retrieved chunks), citation precision/recall, correct-refusal rate on unanswerable questions, TTFT and P95 latency, adversarial pass/fail. Question sets are YAML in `eval/questions/`; write one for your corpus before trusting production traffic. v0 (task 2.6) is self-contained rather than pointed at an already-running deployment — it ingests `eval/corpus/` into its own ephemeral app instance via `ingest_upload()` directly, since there's no HTTP upload endpoint yet (task 2.7). The committed report is v0's proof the harness works end to end against a real model, not yet the statistically meaningful eval that will back numbers in the executive README — that's task 7.4.
 
+### Manual QA
+
+```
+make demo          # requires OLLAMA_MODEL and EMBEDDING_MODEL pulled in Ollama
+```
+
+Boots the real app (not the `echo`/`fake` defaults `make up` uses out of the
+box) with `eval/corpus/` ingested into it, and serves the demo page for
+interactive browser testing. See [docs/QA_CHECKLIST.md](docs/QA_CHECKLIST.md)
+for the scenarios to run and their last-verified status — the qualitative
+counterpart to `make eval`'s quantitative metrics.
+
 ## 7. Development
 
 * Python: `uv sync` in `backend/`; `ruff`, `mypy`, `pytest` gate CI. Widget: `npm ci && npm run build` in `widget/` (esbuild, size budget check < 100 KB gz).

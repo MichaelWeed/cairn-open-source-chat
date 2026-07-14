@@ -1,4 +1,4 @@
-.PHONY: validate verify eval release up down \
+.PHONY: validate verify eval demo release up down \
 	no-stub-check lint-backend test-backend build-widget \
 	lockfile-audit cooldown-check gen-sbom sbom-check digest-pin-lint image-scan
 
@@ -84,6 +84,13 @@ verify:
 # not part of `make validate` (DEVELOPER_README.md §6 / MASTER_PLAN.md §4).
 eval:
 	cd backend && uv run python ../eval/run_eval.py
+
+# Manual QA / screen-recording helper — see docs/QA_CHECKLIST.md. Not
+# part of `make validate` (scripts/dev_demo.py is for a human at the
+# browser, not CI). Requires a reachable Ollama with OLLAMA_MODEL and
+# EMBEDDING_MODEL pulled.
+demo:
+	cd backend && uv run python ../scripts/dev_demo.py
 
 # Release bundler — Phase 7.2.
 release:
