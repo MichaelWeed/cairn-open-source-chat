@@ -2,13 +2,20 @@
 
 [![validate](https://github.com/MichaelWeed/cairn-open-source-chat/actions/workflows/validate.yml/badge.svg)](https://github.com/MichaelWeed/cairn-open-source-chat/actions/workflows/validate.yml)
 
-**Self-hosted customer-support chat that cites its sources and refuses to guess.**
+**Cut a third of your support chat volume with a free, self-hosted AI chat that answers from your own docs — and refuses to guess.**
 
-Cairn is an embeddable chat widget backed by a FastAPI service that answers from *your* ingested docs — every answer carries citations, and it refuses instead of hallucinating when it isn't confident. Runs on local models (Ollama) by default, so support conversations never have to leave your infrastructure.
+Free and open source (Apache-2.0). No per-seat fees, no SaaS subscription, no conversation data leaving your infrastructure — the only cost is the server it runs on.
 
-## Why this exists
+<!-- 30-second demo video goes here (MASTER_PLAN.md task 7.5) — recorded
+     against the production widget once Phase 6 lands. -->
 
-Support teams get burned by two failure modes: bots that make things up, and bots that leak data to a third-party API. Cairn is built so neither can happen — grounded answers only, self-hosted by default, and every guardrail decision is visible and toggleable, not a black box.
+## Where "a third" comes from
+
+"Where is my order?" tickets alone consume 30–60% of ecommerce support volume¹, and a delayed or missing package is the single most common reason customers contact retail support at all². Those are exactly the conversations Cairn is built to absorb: instant answers drawn from *your* ingested docs with a citation on every claim, order-status deep links, and a clean handoff to a human when the bot genuinely can't help.
+
+## Why trust it
+
+Support bots get businesses burned in two ways: they make things up, or they leak customer data to a third-party API. Cairn is built so neither can happen — if an answer isn't grounded in your docs, it refuses instead of hallucinating; and it runs on local models (Ollama) by default, so support conversations never have to leave your infrastructure. Every guardrail decision is visible and toggleable, not a black box.
 
 | If you're a... | This gets you |
 | --- | --- |
@@ -17,15 +24,26 @@ Support teams get burned by two failure modes: bots that make things up, and bot
 
 ## Status
 
-**Pre-release, in active development.** See [MASTER_PLAN.md](MASTER_PLAN.md) for the phased build-out and current progress.
+**Pre-release, in active development.** See [MASTER_PLAN.md](MASTER_PLAN.md) for the phased build-out and current progress (order-status deep links land in Phase 3; the production embeddable widget in Phase 6).
 
 ## Docs
 
 * [DEVELOPER_README.md](DEVELOPER_README.md) — architecture, API contract, security model, quick start.
-* [MASTER_PLAN.md](MASTER_PLAN.md) — phases, task board, delivery model.
+* [MASTER_PLAN.md](MASTER_PLAN.md) — phases, task board, delivery model, and the post-1.0 recommended roadmap.
 * [docs/SECURITY.md](docs/SECURITY.md) — what's actually built and tested today vs. planned; vulnerability reporting.
 * [docs/PRIVACY.md](docs/PRIVACY.md) — what data is handled, where it lives, and data segregation (this is a single-tenant deployment, not a multi-tenant SaaS).
 
 ## Get in touch
 
-Built and maintained by [Michael Weed](https://github.com/MichaelWeed). Open to consulting engagements — `docs/CONTRIBUTING.md` (added in Phase 7) will cover scope and the non-goals this project deliberately doesn't chase.
+Built and maintained by [Michael Weed](https://github.com/MichaelWeed). Need something past the roadmap — CRM sync, auth-aware answers, multi-tenancy, or a tuned deployment for your stack? Those are consulting scope: open an issue or reach out directly. `docs/CONTRIBUTING.md` (added in Phase 7) will cover scope and the non-goals this project deliberately doesn't chase.
+
+## License
+
+[Apache-2.0](LICENSE).
+
+---
+
+¹ [CorePiper, *What Is WISMO and How to Reduce 'Where Is My Order' Tickets*](https://corepiper.com/blog/what-is-wismo/) — WISMO tickets typically account for 30–60% of ecommerce support volume.
+² [MeasuringU, *customer service study*](https://measuringu.com/customer-service/) — a delayed package or delivery problem was the top coded reason participants contacted retail support.
+
+These are industry benchmarks, not Cairn-measured results. The eval harness (`make eval`) measures what Cairn actually does on your corpus, and a full committed eval report backs every product-measured number before 1.0 (MASTER_PLAN.md task 7.4).
