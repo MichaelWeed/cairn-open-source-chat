@@ -82,6 +82,14 @@
       "name": "cairn-widget",
       "version": "0.0.0",
       "bom-ref": "cairn-widget@0.0.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0",
+            "acknowledgement": "declared"
+          }
+        }
+      ],
       "purl": "pkg:npm/cairn-widget@0.0.0",
       "properties": [
         {

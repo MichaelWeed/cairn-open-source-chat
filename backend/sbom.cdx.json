@@ -3908,6 +3908,14 @@
     "component": {
       "bom-ref": "root-component",
       "description": "Cairn support-chat backend",
+      "licenses": [
+        {
+          "license": {
+            "acknowledgement": "declared",
+            "id": "Apache-2.0"
+          }
+        }
+      ],
       "name": "cairn-backend",
       "type": "application",
       "version": "0.0.0"
