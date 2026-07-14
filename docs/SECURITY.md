@@ -72,8 +72,10 @@ this stage.
 
 ## Operator recommendations (today)
 
-* Terminate TLS in front of the backend; don't expose port 8000/8080 directly to the internet.
-* Keep `ORIGIN_ALLOWLIST` scoped to the pages that actually embed the widget.
+* Terminate TLS in front of the backend; don't expose the published port (`CAIRN_PORT`, default
+  8080) directly to the internet.
+* Keep `ORIGIN_ALLOWLIST` scoped to the pages that actually embed the widget. Left empty, it
+  allows only the app's own origin (`http://localhost:$CAIRN_PORT`).
 * Run `make verify` at install time and on the weekly cadence documented in DEVELOPER_README.md §4
   — nothing else will alert you to CVEs disclosed after you installed.
 * If you configure a hosted (non-Ollama) provider, understand that chat message content leaves your

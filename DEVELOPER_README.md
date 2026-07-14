@@ -34,11 +34,15 @@ Prerequisites: Docker or Podman, with Compose (`docker compose` or `podman compo
 
 ```
 git clone <repo> && cd cairn
-cp .env.example .env            # set OLLAMA_BASE_URL, ADMIN_BOOTSTRAP_PASSWORD
+cp .env.example .env            # defaults work as-is; see the file for every knob
 make up                         # digest-pinned images; uses whichever engine is installed
 # open http://localhost:8080/admin  -> ingest the bundled sample corpus
 # open http://localhost:8080/demo   -> widget test page
 ```
+
+**Port:** the stack publishes on `CAIRN_PORT` (default 8080). If that port is taken on your machine, `make up` preflights it and fails with the fix before anything builds — set `CAIRN_PORT` in `.env` and re-run; the demo/admin URLs and the CORS origin allowlist follow it automatically. The port is deliberately fixed rather than auto-selected: the embed snippet, `ORIGIN_ALLOWLIST`, and any reverse proxy in front all reference one specific port, so a server that silently came up somewhere else would break them.
+
+**Config plumbing:** compose only interpolates `.env` into `compose.yaml` — it never passes `.env` to the container by itself. Every knob in `.env.example` is therefore forwarded explicitly in the `environment:` block of `compose.yaml`, with defaults mirroring `backend/app/config.py`. Add new settings in all three places.
 
 `compose.yaml` stays within the vendor-neutral Compose Specification (no Docker-specific extensions), so it runs unmodified under either engine. `make up`/`make down` detect the available `COMPOSE_CMD`; set it explicitly (`COMPOSE_CMD=podman compose make up`) if both are installed and you want a specific one.
 

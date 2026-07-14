@@ -13,6 +13,7 @@ COMPOSE_CMD ?= $(shell command -v docker >/dev/null 2>&1 && echo "docker compose
 validate: no-stub-check lint-backend test-backend build-widget lockfile-audit cooldown-check sbom-check digest-pin-lint image-scan
 
 up:
+	@COMPOSE_CMD="$(COMPOSE_CMD)" python3 scripts/check_port.py
 	$(COMPOSE_CMD) up --build
 
 down:

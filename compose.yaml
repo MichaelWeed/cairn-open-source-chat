@@ -16,15 +16,32 @@ services:
     build:
       context: ./backend
     ports:
-      - "8080:8000"
+      # Host port is CAIRN_PORT (set it in .env if 8080 is taken on your
+      # machine — `make up` preflights it and says so). The port stays
+      # fixed and operator-chosen, never auto-selected: the embed snippet,
+      # CORS allowlist, and any reverse proxy in front all reference it.
+      - "${CAIRN_PORT:-8080}:8000"
     environment:
-      OLLAMA_BASE_URL: http://ollama:11434
+      # Compose only interpolates .env into THIS file — it does not pass
+      # .env to the container by itself. Every operator knob in
+      # .env.example is therefore forwarded explicitly here; defaults
+      # mirror backend/app/config.py.
+      CAIRN_PORT: ${CAIRN_PORT:-8080}
+      # Empty means "allow only the app's own origin" (derived from
+      # CAIRN_PORT in config.py); set it when embedding on other sites.
+      ORIGIN_ALLOWLIST: ${ORIGIN_ALLOWLIST:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:8b-instruct}
-      ORIGIN_ALLOWLIST: http://localhost:8080
       PROVIDER: ${PROVIDER:-echo}
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-fake}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text}
       ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-}
+      RETRIEVAL_MAX_DISTANCE: ${RETRIEVAL_MAX_DISTANCE:-1.2}
+      CHAT_MESSAGE_MAX_CHARS: ${CHAT_MESSAGE_MAX_CHARS:-500}
+      RATE_LIMIT_IP_CAPACITY: ${RATE_LIMIT_IP_CAPACITY:-20}
+      RATE_LIMIT_IP_REFILL_PER_MINUTE: ${RATE_LIMIT_IP_REFILL_PER_MINUTE:-20}
+      RATE_LIMIT_SESSION_CAPACITY: ${RATE_LIMIT_SESSION_CAPACITY:-10}
+      RATE_LIMIT_SESSION_REFILL_PER_MINUTE: ${RATE_LIMIT_SESSION_REFILL_PER_MINUTE:-10}
     volumes:
       - cairn_data:/data
     depends_on:
