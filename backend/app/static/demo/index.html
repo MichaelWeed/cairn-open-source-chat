@@ -108,7 +108,7 @@
   }
   .citations { margin: 0.5rem 0.15rem 0; display: flex; flex-wrap: wrap; gap: 0.4rem; }
   .citations:empty { margin: 0; }
-  .citations a {
+  .citations a, .citations span {
     font-size: 0.76rem;
     color: var(--fg);
     background: var(--bg);
@@ -116,6 +116,7 @@
     border-radius: 999px;
     padding: 0.2rem 0.65rem;
     text-decoration: none;
+    display: inline-block;
   }
   .citations a:hover, .citations a:focus-visible { border-color: var(--accent); color: var(--accent); }
   .row.error .bubble {
@@ -176,7 +177,7 @@
   </form>
 </div>
 
-<footer>Exercises the real <code>POST /api/v1/chat/message</code> SSE round trip (task 1.7/1.8/2.4). This is not the production widget &mdash; that's Phase 6.</footer>
+<footer>This preview exercises the real chat API directly. The embeddable production widget ships separately.</footer>
 
 <script>
 (function () {
@@ -187,6 +188,16 @@
   const log = document.getElementById("log");
   const form = document.getElementById("form");
   const input = document.getElementById("input");
+
+  // Keeps the newest content in view two ways at once: the log panel's own
+  // scrollbar (for when a single card taller than 55vh is scrolling
+  // internally) and the outer page (for when the whole card — header,
+  // history, and the input — is taller than the viewport, which the log's
+  // own scrollTop can't fix since that's a different scroll container).
+  function scrollToLatest() {
+    log.scrollTop = log.scrollHeight;
+    form.scrollIntoView({ block: "end", behavior: "instant" });
+  }
 
   function appendRow(role, label) {
     const row = document.createElement("div");
@@ -201,7 +212,7 @@
     bubble.className = "bubble";
     row.appendChild(bubble);
     log.appendChild(row);
-    log.scrollTop = log.scrollHeight;
+    scrollToLatest();
     return { row, bubble };
   }
 
@@ -279,16 +290,23 @@
           statusDiv.textContent = payload.label ?? "";
         } else if (eventType === "chunk") {
           assistantDiv.textContent += payload.delta ?? "";
-          log.scrollTop = log.scrollHeight;
+          scrollToLatest();
         } else if (eventType === "citations") {
           const sources = payload.sources ?? [];
           citationsDiv.textContent = "";
           sources.forEach((source) => {
-            const link = document.createElement("a");
-            link.href = source.url;
-            link.textContent = source.title;
-            citationsDiv.append(link);
+            // Uploaded documents have no hosted URL yet (see
+            // retrieval.py's build_citations) — only render a clickable
+            // link once there's somewhere real to send the user;
+            // otherwise show the same chip as an inert badge instead of
+            // a link that silently fails to navigate.
+            const isNavigable = /^https?:\/\//.test(source.url ?? "");
+            const chip = document.createElement(isNavigable ? "a" : "span");
+            if (isNavigable) chip.href = source.url;
+            chip.textContent = source.title;
+            citationsDiv.append(chip);
           });
+          scrollToLatest();
         } else if (eventType === "error") {
           statusDiv.textContent = "";
           appendError(`${payload.code}: ${payload.message}`);
