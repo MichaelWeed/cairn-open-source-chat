@@ -45,7 +45,7 @@ os.environ.setdefault("PROVIDER", "ollama")
 import httpx  # noqa: E402
 import uvicorn  # noqa: E402
 
-from app.config import get_settings  # noqa: E402
+from app.config import Settings  # noqa: E402
 from app.ingest.pipeline import ingest_upload  # noqa: E402
 from app.main import create_app  # noqa: E402
 
@@ -64,7 +64,18 @@ def _check_port_free(port: int) -> None:
 
 
 async def main(corpus_dir: Path) -> None:
-    settings = get_settings()
+    # Settings' own default (env_file=".env") resolves relative to the
+    # CWD, which is backend/ for this script (per `make demo`'s `cd
+    # backend &&`) -- so plain Settings()/get_settings() would silently
+    # miss the repo-root .env every other make target reads, and fall
+    # back to defaults instead of what's actually configured. Anchor it
+    # explicitly here rather than changing config.py's default, since
+    # that default is correct for its other callers (tests want no .env
+    # at all; compose injects real env vars and never reads the file).
+    # _env_file is a documented pydantic-settings BaseSettings kwarg that
+    # mypy's stubs don't model (it's injected dynamically, not part of
+    # the generated __init__ signature it sees).
+    settings = Settings(_env_file=REPO_ROOT / ".env")  # type: ignore[call-arg]
     _check_port_free(settings.cairn_port)
     app = create_app(settings)
 
