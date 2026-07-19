@@ -29,6 +29,7 @@ import os
 import socket
 import sys
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BACKEND_DIR = REPO_ROOT / "backend"
@@ -48,6 +49,24 @@ import uvicorn  # noqa: E402
 from app.config import Settings  # noqa: E402
 from app.ingest.pipeline import ingest_upload  # noqa: E402
 from app.main import create_app  # noqa: E402
+
+
+def _resolve_ollama_base_url(base_url: str) -> str:
+    """.env's OLLAMA_BASE_URL is usually left at the compose-network
+    default (http://ollama:11434) since that's what `make up` needs --
+    "ollama" is the compose service name, only resolvable from inside
+    that network. This script always runs on the host (make demo never
+    runs inside the container), where that hostname can't resolve at
+    all, so rewrite it to localhost with the same port rather than
+    making the user maintain two different values for one .env key.
+    """
+    parsed = urlparse(base_url)
+    if parsed.hostname != "ollama":
+        return base_url
+    rewritten = urlunparse(parsed._replace(netloc=f"localhost:{parsed.port or 11434}"))
+    print(f"note: OLLAMA_BASE_URL={base_url!r} is compose's internal address; using "
+          f"{rewritten!r} instead since this runs on the host, not in a container.")
+    return rewritten
 
 
 def _check_port_free(port: int) -> None:
@@ -76,6 +95,7 @@ async def main(corpus_dir: Path) -> None:
     # mypy's stubs don't model (it's injected dynamically, not part of
     # the generated __init__ signature it sees).
     settings = Settings(_env_file=REPO_ROOT / ".env")  # type: ignore[call-arg]
+    settings.ollama_base_url = _resolve_ollama_base_url(settings.ollama_base_url)
     _check_port_free(settings.cairn_port)
     app = create_app(settings)
 
