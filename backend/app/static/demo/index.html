@@ -234,7 +234,7 @@
     const statusDiv = document.createElement("div");
     statusDiv.className = "status";
     row.appendChild(statusDiv);
-    return { assistantDiv: bubble, citationsDiv, statusDiv };
+    return { row, assistantDiv: bubble, citationsDiv, statusDiv };
   }
 
   function parseSseBlock(block) {
@@ -249,7 +249,7 @@
 
   async function sendMessage(message) {
     appendUserMessage(message);
-    const { assistantDiv, citationsDiv, statusDiv } = appendAssistantTurn();
+    const { row, assistantDiv, citationsDiv, statusDiv } = appendAssistantTurn();
 
     let response;
     try {
@@ -259,12 +259,21 @@
         body: JSON.stringify({ session_id: sessionId, message, history: [] }),
       });
     } catch (err) {
-      appendError(`Network error: ${err}`);
+      // The empty assistant bubble's pulsing "typing" dot (see the
+      // :empty::after rule) would otherwise animate forever -- nothing
+      // ever fills or removes it once fetch itself throws. Raw error
+      // detail goes to the console, not the chat transcript: a customer
+      // shouldn't see "TypeError: Failed to fetch".
+      console.error("Cairn demo: request failed before a response arrived", err);
+      row.remove();
+      appendError("Couldn't reach the server. Check your connection and try again.");
       return;
     }
 
     if (!response.ok || !response.body) {
-      appendError(`Request failed: HTTP ${response.status}`);
+      console.error(`Cairn demo: request failed with HTTP ${response.status}`);
+      row.remove();
+      appendError("Something went wrong on our end. Please try again.");
       return;
     }
 
@@ -272,49 +281,68 @@
     const decoder = new TextDecoder();
     let buffer = "";
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
 
-      let boundary;
-      while ((boundary = buffer.indexOf("\n\n")) !== -1) {
-        const block = buffer.slice(0, boundary);
-        buffer = buffer.slice(boundary + 2);
-        if (!block.trim()) continue;
+        let boundary;
+        while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+          const block = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          if (!block.trim()) continue;
 
-        const { eventType, data } = parseSseBlock(block);
-        const payload = data ? JSON.parse(data) : {};
+          const { eventType, data } = parseSseBlock(block);
+          const payload = data ? JSON.parse(data) : {};
 
-        if (eventType === "status") {
-          statusDiv.textContent = payload.label ?? "";
-        } else if (eventType === "chunk") {
-          assistantDiv.textContent += payload.delta ?? "";
-          scrollToLatest();
-        } else if (eventType === "citations") {
-          const sources = payload.sources ?? [];
-          citationsDiv.textContent = "";
-          sources.forEach((source) => {
-            // Uploaded documents have no hosted URL yet (see
-            // retrieval.py's build_citations) — only render a clickable
-            // link once there's somewhere real to send the user;
-            // otherwise show the same chip as an inert badge instead of
-            // a link that silently fails to navigate.
-            const isNavigable = /^https?:\/\//.test(source.url ?? "");
-            const chip = document.createElement(isNavigable ? "a" : "span");
-            if (isNavigable) chip.href = source.url;
-            chip.textContent = source.title;
-            citationsDiv.append(chip);
-          });
-          scrollToLatest();
-        } else if (eventType === "error") {
-          statusDiv.textContent = "";
-          appendError(`${payload.code}: ${payload.message}`);
-        } else if (eventType === "done") {
-          statusDiv.textContent = "";
+          if (eventType === "status") {
+            statusDiv.textContent = payload.label ?? "";
+          } else if (eventType === "chunk") {
+            assistantDiv.textContent += payload.delta ?? "";
+            scrollToLatest();
+          } else if (eventType === "citations") {
+            const sources = payload.sources ?? [];
+            citationsDiv.textContent = "";
+            sources.forEach((source) => {
+              // Uploaded documents have no hosted URL yet (see
+              // retrieval.py's build_citations) — only render a clickable
+              // link once there's somewhere real to send the user;
+              // otherwise show the same chip as an inert badge instead of
+              // a link that silently fails to navigate.
+              const isNavigable = /^https?:\/\//.test(source.url ?? "");
+              const chip = document.createElement(isNavigable ? "a" : "span");
+              if (isNavigable) chip.href = source.url;
+              chip.textContent = source.title;
+              citationsDiv.append(chip);
+            });
+            scrollToLatest();
+          } else if (eventType === "error") {
+            statusDiv.textContent = "";
+            appendError(`${payload.code}: ${payload.message}`);
+          } else if (eventType === "done") {
+            statusDiv.textContent = "";
+          }
+          // "ping" carries no payload worth rendering.
         }
-        // "ping" carries no payload worth rendering.
       }
+    } catch (err) {
+      // A dropped connection mid-stream (server restart, network blip)
+      // otherwise leaves the UI stuck forever: the status text frozen on
+      // whatever it last said ("Generating a reply") and, if no chunk had
+      // arrived yet, the bubble's pulsing "typing" dot animating with
+      // nothing coming and no error shown at all — confirmed live by
+      // killing the server mid-response. Clean up instead.
+      console.error("Cairn demo: stream interrupted", err);
+      statusDiv.textContent = "";
+      if (!assistantDiv.textContent.trim()) {
+        // No answer text ever arrived -- citations without the answer
+        // they support aren't useful on their own, and leaving the
+        // empty bubble in place means only its pulsing dot, with no
+        // explanation of why it never resolved.
+        row.remove();
+      }
+      appendError("The connection was interrupted. Please try again.");
     }
   }
 
