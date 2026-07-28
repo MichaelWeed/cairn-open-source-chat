@@ -11,10 +11,16 @@ class OllamaEmbeddingFunction(ChromaEmbeddingFunction[Embeddable]):
     Ollama's batch /api/embed endpoint. Synchronous — Chroma's embedding
     function interface is sync-only, unlike the chat path's Provider."""
 
+    # See OllamaProvider's identical default for why httpx's unconfigured
+    # 5s is too tight for a local model — a batch of chunks from a large
+    # ingested document is the likely case here (task 2.3 will make large
+    # batches routine), not a single short query.
+    _DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=180.0, write=10.0, pool=5.0)
+
     def __init__(self, base_url: str, model: str, client: httpx.Client | None = None) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
-        self._client = client or httpx.Client()
+        self._client = client or httpx.Client(timeout=self._DEFAULT_TIMEOUT)
 
     def __call__(self, input: Embeddable) -> Embeddings:
         for item in input:

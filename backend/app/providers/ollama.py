@@ -14,10 +14,21 @@ class OllamaProvider(Provider):
     Provider.stream's docstring.
     """
 
+    # httpx's unconfigured default is a flat 5s across connect/read/write —
+    # nowhere near enough for a local model's first token, let alone a full
+    # reply. A real 8B model on ordinary hardware routinely takes 10-20+
+    # seconds; a "thinking"/reasoning-style model longer still, since it
+    # generates hidden reasoning tokens before anything user-visible.
+    # Confirmed live: this was a 100%-reproducible false "provider
+    # unavailable" on every single request, not an edge case. Keep the
+    # connect timeout tight (fail fast if Ollama itself isn't reachable)
+    # but give read/write room for genuine local-model latency.
+    _DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=180.0, write=10.0, pool=5.0)
+
     def __init__(self, base_url: str, model: str, client: httpx.AsyncClient | None = None) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
-        self._client = client or httpx.AsyncClient()
+        self._client = client or httpx.AsyncClient(timeout=self._DEFAULT_TIMEOUT)
 
     async def stream(
         self, *, message: str, history: list[ChatTurn], context: str | None = None
