@@ -27,7 +27,25 @@ instant, deterministic replies instead of real generation.
 Re-running `make demo` is safe — `ingest_upload()`'s content-hash reindex
 reports `unchanged` for anything already ingested rather than duplicating it.
 
-## Scenarios
+## API / functional (curl against the live server, not TestClient)
+
+`backend/tests/` covers this in-process; these rows exist because the real
+ASGI server + real HTTP transport can behave differently than `TestClient`
+(timeouts especially — see finding below). Re-run after any change to
+`chat.py`, `contracts.py`, `ratelimit.py`, or a provider/embedding adapter.
+
+| # | Scenario | Expected result | Status |
+| - | --- | --- | --- |
+| A1 | `/healthz`, `/readyz`, `/demo` redirect, `/demo/` static, unknown route | 200/200/307→200/200/404 respectively | Verified 2026-07-28 |
+| A2 | Real chat request against a real local model, end to end | Grounded, cited answer streams correctly | Verified 2026-07-28 — see timeout finding below; broken until fixed same session |
+| A3 | Contract edge cases: message >500 chars, empty message, extra field, bad `history` role, `history` >5 turns, malformed JSON, missing `session_id` | 422 with a Pydantic validation body in every case | Verified 2026-07-28 |
+| A4 | Disallowed `Origin` header / allowed origin / CORS preflight `OPTIONS` | 403 / 200 / 200 with correct `access-control-*` headers | Verified 2026-07-28 |
+| A5 | IP rate limit (capacity 20, refill 20/min) — 25 rapid requests, distinct sessions | Requests 1–20 succeed, 21–25 get a `rate_limited` error event (HTTP 200 — the error rides the SSE stream, not the status code) | Verified 2026-07-28, exact boundary |
+| A6 | Session rate limit (capacity 10, refill 10/min) — 13 rapid requests, fixed `session_id` | Requests 1–10 succeed, 11–13 get the session-specific `rate_limited` message | Verified 2026-07-28, exact boundary |
+
+**Finding, fixed same session: `OllamaProvider`/`OllamaEmbeddingFunction` used httpx's unconfigured 5s default timeout.** Every single real chat request against a real local model failed with `httpx.ReadTimeout` → a false `provider_unavailable` error — 100% reproducible, not an edge case (a warm 8B model took ~2.2s past the point retrieval finished, cold noticeably longer; still nowhere near enough margin, and `test_provider_ollama.py` mocks the transport so no automated test could catch it). Fixed with an explicit generous read timeout. If `make demo` or `make eval` ever produces `provider_unavailable` again, check this first before assuming the model or Ollama itself is broken.
+
+## Browser scenarios
 
 Each row is a scenario, its expected result, and status as of the last time
 it was actually driven through a browser (not just read from source). Update
@@ -36,16 +54,23 @@ tracking.
 
 | # | Scenario | Expected result | Status |
 | - | --- | --- | --- |
-| 1 | Ask an in-corpus question (e.g. "How many days do I have to return an item?") | Grounded answer, citation chips for the matching document(s) appear below the reply | Verified 2026-07-14 |
-| 2 | Ask an out-of-corpus question (e.g. "Can you recommend a good restaurant nearby?") | Refusal template renders as a normal assistant bubble (not styled as an error); no citation chips; server log shows no `/api/chat` (or provider) call for that turn — confirms the refusal gate fires before generation, not after | Verified 2026-07-14 |
-| 3 | Click a citation chip | If the source has a real `http(s)` URL, it navigates; otherwise it's a plain badge, not a dead link | Verified 2026-07-14 — currently always a badge, since uploaded documents have no real URL until task 2.3/5.3 |
-| 4 | Multi-turn conversation on a viewport shorter than the accumulated content (mobile especially — try 375×812) | After every reply, the input box and the full latest reply are both in view without the user manually scrolling | Verified 2026-07-14 — was broken (page-level scroll didn't follow new content, only the inner log panel did), fixed same session |
-| 5 | Toggle light vs. dark color scheme | Legible contrast, consistent styling, no unstyled/invisible elements in either | Verified 2026-07-14 |
-| 6 | Tab to the input, then to the send button | Visible focus ring on both | Verified 2026-07-14 |
-| 7 | Press Enter with text in the input | Submits the form, same as clicking send | **Unverified.** Got inconsistent results through browser-automation tooling (standard HTML default, nothing in the page's JS blocks it — plausibly a tooling artifact, not a real bug). Confirm with an actual keyboard in a real browser. |
-| 8 | Full pass in a real browser (Chrome/Safari/Firefox), not an automated/sandboxed one | Same as above | **Unverified.** Everything above was checked through an automated preview browser tool, never a real one. |
-| 9 | Long single-word input (e.g. a long URL pasted into the message) | Wraps inside the bubble, doesn't overflow the card | Verified 2026-07-14 |
-| 10 | `RETRIEVAL_MAX_DISTANCE` refusal threshold against the *documented default* models (`llama3.1:8b-instruct` / `nomic-embed-text`) | Refusal/answer boundary behaves sanely | **Unverified end to end.** Every live test so far (this session and the `eval/reports/` history) used whichever Ollama models happened to be available locally, not the documented defaults. Run `make eval` after pulling the documented defaults before trusting `RETRIEVAL_MAX_DISTANCE=1.2` in production. |
+| 1 | Ask an in-corpus question | Grounded answer, citation chips for the matching document(s) | Verified 2026-07-28 |
+| 2 | Ask an out-of-corpus question | Refusal renders as a normal assistant bubble (not error-styled); no citations; provider never called | Verified 2026-07-28 |
+| 3 | Click a citation chip | Real `http(s)` URL → navigates; anything else → inert badge, not a dead link | Verified 2026-07-28, both cases (badge is what real data produces today; a real link was injected for the test since no live data path produces one yet) |
+| 4 | Multi-turn conversation on a viewport shorter than the content | Latest reply + input box both in view, no manual scrolling | Verified 2026-07-28 |
+| 5 | Resize the viewport mid-conversation (phone rotation is the realistic trigger) | Scroll position re-settles to the latest message | **Fixed same session** (was broken — stale scrollTop left the log showing the earliest exchange). Verified via a synthetic `dispatchEvent(new Event('resize'))`, since this automation tool doesn't fire a real `resize` event on viewport change (confirmed via a counter) — a real device rotation does. |
+| 6 | Light vs. dark color scheme, quantified contrast | WCAG AA (≥4.5:1 normal text) | Verified 2026-07-28 via computed-style luminance calculation, not eyeballing. Dark mode: 6.4–15.5:1 across all text/bg pairs, comfortable margin. Light mode: passes everywhere but secondary text (`.tagline`, `footer`) sits at 4.59:1 — over the floor but with almost no safety margin. Consider nudging `--fg-muted` slightly darker in light mode. |
+| 7 | Tab to input, then send button | Visible focus ring on both | Verified 2026-07-28 |
+| 8 | HTML/script injection in a message (`<img src=x onerror=...>`) | Rendered as literal escaped text, script never executes | Verified 2026-07-28 empirically (not just by reading the `textContent` usage) — injected a callback the payload would set on success; it never fired, and the DOM shows the tag HTML-escaped |
+| 9 | Emoji, RTL (Arabic/Hebrew), CJK, styled Unicode in a message | Renders correctly, no layout breakage | Verified 2026-07-28 |
+| 10 | 3 rapid/overlapping sends before the first reply finishes | Each reply resolves against its own question, no cross-contamination | Verified 2026-07-28 — no disable-during-send exists, so this can genuinely happen; confirmed safe |
+| 11 | Message over the 500-char cap submitted through the UI (no client-side length limit exists) | Clean error, not a raw HTTP/validation dump | Verified 2026-07-28. **Recommendation, not fixed:** no character counter or client-side cap exists — a user gets zero feedback until after hitting send. Standard chat-UI practice is a visible counter approaching the limit. |
+| 12 | Network failure before any response arrives (`fetch()` throws, or non-2xx status) | Clean, plain-language error; no stuck state | **Fixed same session** — was a raw `TypeError: Failed to fetch` shown directly to the user, plus a permanently-orphaned empty bubble with its "typing" dot animating forever. Verified via killing the server and via a 500-status simulation. |
+| 13 | Network failure mid-stream, after some data already arrived (server dies while generating) | Same clean error; no stuck state | **Fixed same session** — was completely silent: status text frozen on "Generating a reply" forever, pulsing dot forever, *no error shown at all, not even in the console*. Confirmed via killing the server mid-response and, more reliably, via a deterministic `fetch` override that lets N reads through before erroring. |
+| 14 | Long single-word input (e.g. a long URL) | Wraps inside the bubble, doesn't overflow the card | Verified 2026-07-28 |
+| 15 | Press Enter with text in the input | Submits the form, same as clicking send | **Resolved as a tooling limitation, not a page bug.** Rigorously retested: confirmed `document.activeElement.id === "input"` and the correct text present immediately before pressing Return, and the form still didn't submit. But: no `keydown` handler exists anywhere in the page (only a `submit` listener that runs after the browser's native trigger), and submit-on-Enter for a single-text-input form is baseline HTML behavior requiring zero JS. This matches a known class of CDP/automation limitation — synthetic key dispatch not satisfying the `isTrusted`-gated internal check browsers use for this specific default action, even though the same synthetic keystroke correctly lands characters in the field. High confidence this works for real users on real keyboards; a real-keyboard sanity check is still worth 30 seconds before shipping. |
+| 16 | Full pass in a real browser (Chrome/Safari/Firefox), not an automated one | Same as above | **Still unverified.** Everything in this file has been checked through an automated preview browser tool, never a real one. |
+| 17 | `RETRIEVAL_MAX_DISTANCE` refusal threshold against the *documented default* models (`llama3.1:8b-instruct` / `nomic-embed-text`) | Refusal/answer boundary behaves sanely | **Still unverified end to end.** Every live test to date (including this session) used whichever Ollama models happened to be available locally, not the documented defaults. Run `make eval` after pulling the documented defaults before trusting `RETRIEVAL_MAX_DISTANCE=1.2` in production. |
 
 ## Known, deliberately out of scope for this checklist
 
