@@ -199,6 +199,14 @@
     form.scrollIntoView({ block: "end", behavior: "instant" });
   }
 
+  // scrollToLatest() only runs when new content arrives -- a resize (a
+  // phone rotating mid-conversation is the realistic case, not a desktop
+  // window drag) changes what "scrolled to the bottom" means for the same
+  // fixed scrollTop pixel value without re-settling it. Confirmed live:
+  // resizing after auto-scroll had already settled left the log showing
+  // the earliest exchange, nowhere near the latest one.
+  window.addEventListener("resize", scrollToLatest);
+
   function appendRow(role, label) {
     const row = document.createElement("div");
     row.className = `row ${role}`;
