@@ -6,6 +6,10 @@ Technical documentation for deploying, operating, and extending Cairn (formerly 
 
 ## 1. Architecture at a Glance
 
+Summary only. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) is the fuller map — component-by-component
+built-vs-designed status, request flow, and the cost of each deliberate constraint;
+[docs/adr/](docs/adr/) records why each decision was made.
+
 ```
 [Widget (shadow DOM, vanilla TS)]
         | POST /api/v1/chat/message  (JSON in, SSE out)

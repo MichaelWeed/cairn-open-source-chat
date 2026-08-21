@@ -1,0 +1,164 @@
+# Cairn — stable project identity and system associations.
+#
+# This file is the durable answer to "what is this, who owns it, and what
+# external systems is it wired to." It changes rarely. Anything that
+# changes per task belongs in the issue tracker, not here.
+#
+# Narrative context: docs/PROJECT-BRIEF.md
+# Technical shape:   docs/ARCHITECTURE.md
+
+identity:
+  name: Cairn
+  slug: cairn
+  former_names:
+    - AetherChat        # original working name, dropped 2026-07-13
+    - Open-Source Chat  # placeholder title before naming
+  tagline: >-
+    Self-hosted support chat that answers from your own documents,
+    cites every claim, and refuses when it isn't grounded.
+  owner: Michael Weed
+  license: Apache-2.0
+
+status:
+  admission: active
+  since: 2026-08-21
+  cadence: intermittent
+  # "Intermittent" is a first-class property, not a caveat: work happens in
+  # bursts with multi-week gaps. Every artifact in this repo is written to
+  # be resumable cold, by someone with no memory of the last session.
+  review_on: >-
+    Re-run the admission review if six months pass with no commits, or if
+    the public repository still has no pushed history by then.
+
+classification:
+  kind: open-source-plus-commercial
+  # The software is genuinely free and Apache-2.0 licensed with no paid
+  # tier, no per-seat fee, and no hosted upsell. It is also the author's
+  # public work sample, and out-of-scope requests are routed to paid
+  # consulting. Both are true; neither compromises the other.
+  paid_offering: none
+  commercial_motive: consulting-engagement-funnel
+  commercial_motive_visibility: private
+  # Deliberate: the product is meant to persuade on its own merits. The
+  # funnel rationale lives in the author's private planning notes, not in
+  # published documentation.
+
+exposure:
+  current: local-only
+  # No deployment exists. Nothing is running anywhere but the author's
+  # machine. The public GitHub repository exists but is empty.
+  intended: self-hosted-by-third-parties
+  # The delivery model is source and container images that other operators
+  # run inside their own infrastructure. There is no service the author
+  # hosts, and therefore no production environment the author operates.
+  author_hosted_services: none
+  network_listener: none
+
+data:
+  # What a running deployment touches. See docs/PRIVACY.md for the full table.
+  chat_messages:
+    persisted: false
+    note: Passed through rate limiter, retrieval, and provider, then discarded.
+  conversation_history:
+    persisted: client-side-only
+    note: Last 5 turns in the browser's sessionStorage. Server is stateless.
+  knowledge_corpus:
+    persisted: true
+    note: Operator-supplied documents. Chunk text and embeddings in Chroma; metadata in SQLite.
+  credentials_handled:
+    - name: ADMIN_BOOTSTRAP_PASSWORD
+      status: not-implemented
+      note: Reserved env var. No admin surface exists yet, so nothing consumes it.
+  secrets_in_repository: none
+  third_party_data_egress:
+    default: none
+    condition: >-
+      Only if an operator configures a hosted provider instead of the local
+      Ollama default. That is an explicit operator choice, off by default.
+
+integrations:
+  outbound:
+    - name: Ollama
+      required: true
+      note: Local model inference and embeddings. Configured via OLLAMA_BASE_URL.
+  inbound: none
+
+systems:
+  source:
+    provider: github
+    repository: MichaelWeed/cairn-open-source-chat
+    url: https://github.com/MichaelWeed/cairn-open-source-chat
+    visibility: public
+    state: created-but-empty
+    note: >-
+      Repository exists and is public; no commits have ever been pushed.
+      All history is local as of 2026-08-21.
+  ci:
+    provider: github-actions
+    workflow: .github/workflows/validate.yml
+    state: never-executed
+    note: Runs the same `make validate` as the local pre-push hook.
+  issue_tracking:
+    provider: github-issues
+    project_board: github-projects
+    state: not-yet-created
+    note: >-
+      Chosen 2026-08-21 over Jira. Work here produces pull requests, so the
+      tracker belongs beside them; it needs no additional account, and it is
+      reviewable by anyone off the author's home network. GitHub Issues
+      exports cleanly via API if a Jira-shaped tracker is ever wanted again.
+  jira:
+    state: none
+    note: A Jira instance previously existed and was deactivated. Not being reinstated.
+
+documentation_authority:
+  # Where each kind of documentation is authoritative. A fact should live in
+  # exactly one of these and be referenced from the others.
+  public_technical:
+    location: this repository
+    files:
+      - README.md                 # executive pitch; outcome first
+      - DEVELOPER_README.md       # deploy, operate, extend; API contract
+      - docs/ARCHITECTURE.md      # system shape and why it is that shape
+      - docs/adr/                 # architectural decisions already made
+      - docs/SECURITY.md          # built-and-tested vs not-yet-built
+      - docs/PRIVACY.md           # what data exists and where
+      - docs/DEPENDENCIES.md      # per-dependency justification
+      - docs/QA_CHECKLIST.md      # manual verification and its honest status
+  project_state:
+    location: this repository
+    files:
+      - project.yaml              # this file
+      - docs/PROJECT-BRIEF.md     # why it exists, for whom, current state
+      - docs/PUBLIC-AVAILABILITY.md  # current milestone, work items, open decisions
+  work_tracking:
+    location: GitHub Issues and Projects
+    state: not-yet-created
+    note: >-
+      Durable per-task state, once the tracker exists. Until then
+      docs/PUBLIC-AVAILABILITY.md holds the milestone and its work items, so
+      the plan does not live only in a chat transcript. Retire that file when
+      the issues are open rather than maintaining both.
+  private_planning:
+    location: author's private notes, outside this repository
+    contains:
+      - commercial and consulting-funnel strategy
+      - trademark screening status and fallback names
+      - phase sequencing and long-range plan
+    note: >-
+      MASTER_PLAN.md currently holds this material inside the repository and
+      is scheduled to move out before the first public push.
+
+scope:
+  in_scope:
+    - Grounded, cited answers over an operator-supplied document corpus
+    - Refusal when retrieval confidence is low
+    - Local-model-first inference, self-hosted, single-tenant
+    - An embeddable widget for a third-party page
+    - Order-status deep links and clean human escalation
+  out_of_scope:
+    # Closed by policy, not re-argued per request.
+    - CRM synchronization
+    - Auth-aware or per-user personalized answers
+    - Multi-tenancy within a single deployment
+    - Voice

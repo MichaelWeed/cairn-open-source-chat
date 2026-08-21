@@ -29,6 +29,7 @@ Support bots get businesses burned in two ways: they make things up, or they lea
 ## Docs
 
 * [DEVELOPER_README.md](DEVELOPER_README.md) — architecture, API contract, security model, quick start.
+* [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — system shape, what's built vs. designed, and the constraints behind it; [docs/adr/](docs/adr/) records the decisions already made.
 * [MASTER_PLAN.md](MASTER_PLAN.md) — phases, task board, delivery model, and the post-1.0 recommended roadmap.
 * [docs/SECURITY.md](docs/SECURITY.md) — what's actually built and tested today vs. planned; vulnerability reporting.
 * [docs/PRIVACY.md](docs/PRIVACY.md) — what data is handled, where it lives, and data segregation (this is a single-tenant deployment, not a multi-tenant SaaS).
