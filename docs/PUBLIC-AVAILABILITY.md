@@ -13,8 +13,8 @@ but no author-operated deployment exists.
 ## Completed work
 
 1. **Private planning stays outside published history.** The public `main` history
-   and tracked tree contain no `MASTER_PLAN.md` or inbound reference; recoverable
-   private preservation remains outside the repository.
+   and tracked tree contain no private-plan document or inbound reference;
+   recoverable private preservation remains outside the repository.
 2. **Public documentation links resolve.** The tracked Markdown graph has zero
    missing relative targets or anchors. `docs/CONTRIBUTING.md` is the contribution
    policy, while [ARCHITECTURE.md](ARCHITECTURE.md) and [adr/](adr/) remain the
