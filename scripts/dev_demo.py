@@ -238,10 +238,17 @@ async def main(corpus_dir: Path) -> None:
         await uvicorn.Server(config).serve()
 
 
+def run(corpus_dir: Path) -> None:
+    try:
+        asyncio.run(main(corpus_dir))
+    except KeyboardInterrupt:
+        pass
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Boot Cairn with a real, ingested corpus for manual QA."
     )
     parser.add_argument("--corpus", type=Path, default=DEFAULT_CORPUS_DIR)
     args = parser.parse_args()
-    asyncio.run(main(args.corpus))
+    run(args.corpus)

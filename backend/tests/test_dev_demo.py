@@ -21,6 +21,18 @@ def dev_demo(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     return module
 
 
+def test_cli_runner_exits_cleanly_on_keyboard_interrupt(
+    dev_demo: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def interrupted(coroutine) -> None:
+        coroutine.close()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(dev_demo.asyncio, "run", interrupted)
+
+    dev_demo.run(Path("ignored"))
+
+
 def test_corpus_directory_must_exist(
     dev_demo: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
