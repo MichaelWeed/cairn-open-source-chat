@@ -1,9 +1,8 @@
 # Security
 
-Cairn is pre-1.0 and under active development (see [MASTER_PLAN.md](../MASTER_PLAN.md) §8 for
-current phase status). This document describes what's actually built and tested today, not the
-target end-state — see [DEVELOPER_README.md](../DEVELOPER_README.md) §5 for the full design and
-MASTER_PLAN.md Phases 3-5 for what's planned but not yet implemented. A security doc that oversells
+Cairn is pre-1.0 and under active development. This document describes what's actually built and
+tested today, not the target end-state — see [DEVELOPER_README.md](../DEVELOPER_README.md) §5 for
+the full design and the sections below for work that is not yet implemented. A security doc that oversells
 is worse than no security doc; treat the "Not yet built" section below as load-bearing, not
 boilerplate.
 
@@ -54,7 +53,7 @@ this stage.
 * **No authentication anywhere.** There is currently no admin surface at all (Phase 5), so there's
   nothing to log into and nothing an attacker could authenticate against yet. Once Phase 5 ships,
   the admin account (Argon2id, SameSite=Strict session cookie, CSRF token, optional TOTP) protects
-  configuration surfaces only — end-user auth is an explicit non-goal (MASTER_PLAN.md §7); Cairn
+  configuration surfaces only — end-user auth is an explicit non-goal; Cairn
   never gates answers by end-user identity.
 * **No always-on guardrail middleware beyond the prompt-level defense above.** Tier 1 (input caps,
   injection heuristics, topic/PII input filters — task 4.1) and Tier 2 (Llama Guard 3 toggle — task

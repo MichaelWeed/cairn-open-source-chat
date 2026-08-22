@@ -1,6 +1,6 @@
 # Cairn Developer Guide
 
-Technical documentation for developing Cairn (formerly AetherChat; see [MASTER_PLAN.md](MASTER_PLAN.md) §2 for the naming record). Executive overview: [README.md](README.md). The planned full design document, [docs/SOLUTION_DESIGN.md](docs/SOLUTION_DESIGN.md), is a later publication task; [MASTER_PLAN.md](MASTER_PLAN.md) currently records the roadmap.
+Technical documentation for developing Cairn (formerly AetherChat; see [project.yaml](project.yaml) for the durable identity record). Executive overview: [README.md](README.md). The planned full design document, [docs/SOLUTION_DESIGN.md](docs/SOLUTION_DESIGN.md), is a later publication task; [docs/PUBLIC-AVAILABILITY.md](docs/PUBLIC-AVAILABILITY.md) records the active publication milestone.
 
 ---
 
@@ -160,7 +160,7 @@ Within those bounds, a single instance's practical ceiling for concurrent users 
 
 ### Scaling beyond one instance
 
-Single instance is still the design point for a v1 self-hosted install. Horizontal scaling is on the roadmap (§7 in MASTER_PLAN.md) but isn't built or documented as a supported path yet, and one assumption from early planning needs correcting now that task 2.4 surfaced how the embedded Chroma client behaves: **a replica cannot simply mount the Chroma persistence directory read-only.** Chroma's embedded `PersistentClient` caches its view of on-disk HNSW segments in the process that opened it (see the single-writer invariant above) — a read replica's handle goes stale exactly the same way the single-writer bug does, and there's no lighter-weight refresh call in chromadb 1.5.9, only a full `reset()`. A stale replica wouldn't just serve outdated results, it would eventually throw the same `Nothing found on disk` error on affected queries.
+Single instance is still the design point for a v1 self-hosted install. Horizontal scaling is future work, not a supported path yet, and one assumption from early planning needs correcting now that task 2.4 surfaced how the embedded Chroma client behaves: **a replica cannot simply mount the Chroma persistence directory read-only.** Chroma's embedded `PersistentClient` caches its view of on-disk HNSW segments in the process that opened it (see the single-writer invariant above) — a read replica's handle goes stale exactly the same way the single-writer bug does, and there's no lighter-weight refresh call in chromadb 1.5.9, only a full `reset()`. A stale replica wouldn't just serve outdated results, it would eventually throw the same `Nothing found on disk` error on affected queries.
 
 The direction that avoids this: run Chroma in **client/server mode** (`chromadb.HttpClient` talking to one `chroma run` server process/container) instead of embedded `PersistentClient`, so every app replica is a stateless network client and the Chroma server process is the single owner of on-disk state — the same pattern SQLite already can't support across hosts, worth keeping in mind if a future write volume outgrows one SQLite writer too.
 
@@ -188,4 +188,4 @@ None of this is committed scope — it's direction for an operator who outgrows 
 
 ## 10. Roadmap and Non-Goals
 
-See [MASTER_PLAN.md](MASTER_PLAN.md) §7. Out-of-scope feature requests (CRM sync, auth-aware answers, multi-tenant, voice) are closed by policy. The linked [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) policy page is a later Phase 7 publication task and is not present yet.
+Out-of-scope feature requests (CRM sync, auth-aware answers, multi-tenant, voice) are not supported by this project. The linked [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) policy page is a later publication task and is not present yet.

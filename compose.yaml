@@ -1,6 +1,6 @@
 # Compose Specification only — no Docker-specific extensions — so this
 # runs unmodified under `docker compose` or `podman compose`/`podman-compose`.
-# See MASTER_PLAN.md §3 and DEVELOPER_README.md §2.
+# See DEVELOPER_README.md §2.
 #
 # `name` is pinned rather than left to the checkout-directory default:
 # `make image-scan` looks up the built image as `cairn-backend:latest`,

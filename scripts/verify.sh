@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Operator gate — see MASTER_PLAN.md §4. First cut (task 1.3): only the SBOM
+# Operator gate. First cut: only the SBOM
 # vulnerability scan is real so far, since it's the one step that doesn't
 # depend on a release manifest or a running compose stack. Steps 1, 3, and 4
 # land in Phase 7 once `make release` and the compose stack exist.

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Fail if any compose.yaml `image:` or Dockerfile `FROM` isn't digest-pinned.
 
-Deferred from task 1.3 (no compose file existed yet) to task 1.8. See
-MASTER_PLAN.md §4 item 5.
+Deferred until the compose file existed.
 """
 
 import re

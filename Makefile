@@ -2,14 +2,14 @@
 	no-stub-check lint-backend test-backend build-widget \
 	lockfile-audit cooldown-check gen-sbom sbom-check digest-pin-lint image-scan
 
-# Docker and Podman are both first-class (MASTER_PLAN.md §3) — compose.yaml
+# Docker and Podman are both first-class — compose.yaml
 # stays within the vendor-neutral Compose Specification, and this picks
 # whichever engine is installed rather than hardcoding one. Override with
 # COMPOSE_CMD=<cmd> if both are installed and you want a specific one.
 COMPOSE_CMD ?= $(shell command -v docker >/dev/null 2>&1 && echo "docker compose" || echo "podman compose")
 
 # Same command locally (pre-push hook) and in CI (.github/workflows/validate.yml)
-# — see MASTER_PLAN.md §3.
+# — the same command is the project's local and CI gate.
 validate: no-stub-check lint-backend test-backend build-widget lockfile-audit cooldown-check sbom-check digest-pin-lint image-scan
 
 # Container plumbing smoke test. Checked-in defaults are echo/fake and do
@@ -21,7 +21,7 @@ up:
 down:
 	$(COMPOSE_CMD) down
 
-# Scoped to source directories, not docs/*.md — the plan and README
+# Scoped to source directories, not docs/*.md — the documentation and README
 # discuss this policy in prose, which isn't a stub marker.
 no-stub-check:
 	@! grep -rEn \
@@ -69,21 +69,21 @@ digest-pin-lint:
 # --only-fixed: gate on vulnerabilities with an available fix (so the gate
 # can actually be made green by upgrading) — not on not-yet-fixed/wont-fix
 # OS-baseline CVEs no code change here can address. scripts/verify.sh is
-# the unfiltered operator-side scan against a live vuln DB (MASTER_PLAN.md
-# §4). .grype.yaml documents the few exceptions where "fixed" means only
+# the unfiltered operator-side scan against a live vuln DB. .grype.yaml
+# documents the few exceptions where "fixed" means only
 # in a Python pre-release.
 image-scan:
 	$(COMPOSE_CMD) build backend
 	grype cairn-backend:latest --fail-on medium --only-fixed
 
-# Operator gate — see MASTER_PLAN.md §4 and scripts/verify.sh.
+# Operator gate — see scripts/verify.sh.
 verify:
 	@./scripts/verify.sh
 
 # Eval harness (task 2.6). Self-contained — ingests eval/corpus/ into an
 # ephemeral app instance itself (see eval/run_eval.py's docstring for why).
 # Requires a reachable Ollama with OLLAMA_MODEL and EMBEDDING_MODEL pulled;
-# not part of `make validate` (DEVELOPER_README.md §6 / MASTER_PLAN.md §4).
+# not part of `make validate` (DEVELOPER_README.md §6).
 eval:
 	cd backend && uv run python ../eval/run_eval.py
 

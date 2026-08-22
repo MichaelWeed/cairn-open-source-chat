@@ -148,8 +148,8 @@ documentation_authority:
       - trademark screening status and fallback names
       - phase sequencing and long-range plan
     note: >-
-      MASTER_PLAN.md currently holds this material inside the repository and
-      is scheduled to move out before the first public push.
+      Private planning is intentionally outside this repository and excluded
+      from the public publication branch.
 
 scope:
   in_scope:

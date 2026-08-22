@@ -1,7 +1,7 @@
-"""Embedded ChromaDB (PersistentClient, no server) — see MASTER_PLAN.md
-task 2.1. Ingestion (chunking, content-hash reindex) lands in task 2.2;
-this module only wires up the client, collection, and embedding function
-selection.
+"""Embedded ChromaDB (PersistentClient, no server).
+
+This module only wires up the client, collection, and embedding function
+selection; ingestion performs chunking and content-hash reindexing.
 """
 
 import chromadb

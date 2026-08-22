@@ -2,12 +2,11 @@
 
 This document describes what data Cairn actually handles today, where it lives, and who it's
 segregated from — grounded in the current codebase (Phase 1-2), not aspirational design. See
-[docs/SECURITY.md](SECURITY.md) for the security controls around that data, and
-[MASTER_PLAN.md](../MASTER_PLAN.md) §7 for the non-goals referenced below.
+[docs/SECURITY.md](SECURITY.md) for the security controls around that data.
 
 ## Not a multi-tenant product
 
-**Multi-tenancy is an explicit non-goal** (MASTER_PLAN.md §7). One Cairn deployment serves one
+**Multi-tenancy is an explicit non-goal.** One Cairn deployment serves one
 organization's knowledge base to that organization's site visitors. There's no concept of separate
 customer accounts sharing infrastructure, so "data segregation" here doesn't mean tenant-A-can't-see-
 tenant-B the way it would in a multi-tenant SaaS — it means: end-user chat activity is segregated

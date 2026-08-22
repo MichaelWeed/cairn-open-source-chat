@@ -3,7 +3,7 @@
 
 Reads backend/uv.lock (TOML) and widget/package-lock.json, looks up each
 pinned version's publish date on PyPI/npm, and fails the gate if anything
-landed more recently than COOLDOWN_DAYS. See MASTER_PLAN.md §4.
+landed more recently than COOLDOWN_DAYS.
 """
 
 import json

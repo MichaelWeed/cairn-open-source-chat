@@ -1,5 +1,5 @@
 """Upload ingestion: parse -> chunk -> embed -> store, with incremental
-reindex by content hash. See MASTER_PLAN.md task 2.2.
+reindex by content hash.
 """
 
 import hashlib

@@ -42,7 +42,7 @@ asyncio_mode = "auto"
 
 [tool.uv]
 # Pin transitive deps that would otherwise resolve to a version inside the
-# 14-day dependency cooldown window (MASTER_PLAN.md §4).
+# 14-day dependency cooldown window.
 constraint-dependencies = [
     "typing-extensions==4.15.0",
     "websockets==16.0",

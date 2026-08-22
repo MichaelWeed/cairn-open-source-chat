@@ -2,8 +2,8 @@
 (app/vectorstore.py, task 2.1) and turns them into the things the chat
 endpoint needs — a confidence-gated refusal decision (task 2.5), a
 `citations` SSE payload, and the fixed, delimited prompt block handed to
-the provider (task 2.4). See MASTER_PLAN.md tasks 2.4/2.5 and
-DEVELOPER_README.md §4 (contract) / §5 (prompt-injection defense).
+the provider. See DEVELOPER_README.md §4 (contract) / §5
+(prompt-injection defense).
 
 Defenses against a chunk's own text trying to break out of the `<chunk>`
 delimiter (task 4.4, adversarial suite) are deliberately out of scope here.

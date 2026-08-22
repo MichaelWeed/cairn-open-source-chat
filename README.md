@@ -6,8 +6,8 @@
 
 Free and open source (Apache-2.0). No per-seat fees, no SaaS subscription, no conversation data leaving your infrastructure — the only cost is the server it runs on.
 
-<!-- 30-second demo video goes here (MASTER_PLAN.md task 7.5) — recorded
-     against the production widget once Phase 6 lands. -->
+<!-- 30-second demo video goes here — recorded against the production widget
+     once that widget exists. -->
 
 ## Where "a third" comes from
 
@@ -24,7 +24,7 @@ Support bots get businesses burned in two ways: they make things up, or they lea
 
 ## Status
 
-**Pre-release, in active development.** See [MASTER_PLAN.md](MASTER_PLAN.md) for the phased build-out and current progress (order-status deep links land in Phase 3; the production embeddable widget in Phase 6).
+**Pre-release, in active development.** See [docs/PUBLIC-AVAILABILITY.md](docs/PUBLIC-AVAILABILITY.md) for the current publication milestone. Order-status deep links and the production embeddable widget are planned work.
 
 ## Developer preview quick start
 
@@ -44,7 +44,7 @@ Open `http://localhost:8080/demo` and ask a question about shipping, returns, or
 
 * [DEVELOPER_README.md](DEVELOPER_README.md) — architecture, API contract, security model, quick start.
 * [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — system shape, what's built vs. designed, and the constraints behind it; [docs/adr/](docs/adr/) records the decisions already made.
-* [MASTER_PLAN.md](MASTER_PLAN.md) — phases, task board, delivery model, and the post-1.0 recommended roadmap.
+* [docs/PUBLIC-AVAILABILITY.md](docs/PUBLIC-AVAILABILITY.md) — current publication milestone and remaining launch proof.
 * [docs/SECURITY.md](docs/SECURITY.md) — what's actually built and tested today vs. planned; vulnerability reporting.
 * [docs/PRIVACY.md](docs/PRIVACY.md) — what data is handled, where it lives, and data segregation (this is a single-tenant deployment, not a multi-tenant SaaS).
 
@@ -61,4 +61,4 @@ Built and maintained by [Michael Weed](https://github.com/MichaelWeed). Need som
 ¹ [CorePiper, *What Is WISMO and How to Reduce 'Where Is My Order' Tickets*](https://corepiper.com/blog/what-is-wismo/) — WISMO tickets typically account for 30–60% of ecommerce support volume.
 ² [MeasuringU, *customer service study*](https://measuringu.com/customer-service/) — a delayed package or delivery problem was the top coded reason participants contacted retail support.
 
-These are industry benchmarks, not Cairn-measured results. The eval harness (`make eval`) measures what Cairn actually does on your corpus, and a full committed eval report backs every product-measured number before 1.0 (MASTER_PLAN.md task 7.4).
+These are industry benchmarks, not Cairn-measured results. The eval harness (`make eval`) measures what Cairn actually does on your corpus, and a full committed eval report must back every product-measured number before 1.0.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Eval harness v0 (task 2.6). See DEVELOPER_README.md §6 and MASTER_PLAN.md
-task 2.6 for the target shape: groundedness (LLM-judged), citation
+"""Eval harness v0. See DEVELOPER_README.md §6 for the target shape:
+groundedness (LLM-judged), citation
 precision/recall, correct-refusal rate, TTFT/P95 latency. Adversarial
 pass/fail isn't reported — that suite is task 4.4, not built yet.
 

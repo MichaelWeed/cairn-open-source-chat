@@ -45,11 +45,10 @@ No estimates, dates, or story points — deliberately.
 In dependency order. Item 1 must land before item 5, because pushing publishes
 history.
 
-1. **Separate private planning material from published documentation.**
-   Relocate `MASTER_PLAN.md` outside the repository and rewrite its inbound
-   references — roughly forty across `README.md`, `DEVELOPER_README.md`, four
-   `docs/` files, `CLAUDE.md`, and comments in `backend/app/retrieval.py`,
-   `compose.yaml`, `Makefile`, and `osv-scanner.toml`. Blocked on decision D1.
+1. **Keep private planning outside published history.**
+   Private planning is preserved outside this repository; the public branch has
+   no private-plan file or inbound references. Keep future planning in the
+   private notes and out of publication refspecs.
 
 2. **Resolve every dangling documentation reference.**
    `docs/CONTRIBUTING.md` and `docs/SOLUTION_DESIGN.md` are linked from published
@@ -82,17 +81,15 @@ history.
 
 | # | Decision | Why it is blocking | Status |
 | --- | --- | --- | --- |
-| D1 | Strip `MASTER_PLAN.md` from all 35 commits before the first push, or move it out going forward and accept that it stays readable in history | Free today because nothing has been pushed; effectively impossible afterwards. Gates work item 1, which gates the push | **Open — needs the author** |
-| D2 | Where private planning material lives once it leaves the repository | Work item 1 needs a destination. An Obsidian vault was mentioned; no path is recorded | Open |
 | D3 | Write `docs/SOLUTION_DESIGN.md`, or remove the links to it | Work item 2 cannot complete either way without this | Open |
-| D4 | Whether all of `MASTER_PLAN.md` §5's phase checkboxes migrate into GitHub Issues, or only the items in this milestone | Affects how much of the private plan has to be restructured rather than relocated | Open |
+| D4 | Whether all remaining development work migrates into GitHub Issues, or only the work needed for this milestone | Affects the future tracker structure | Open |
 
 ## Findings from the baseline review
 
 Recorded because they are easy to rediscover expensively.
 
-* **The public repository has existed since 2026-07-11 and is empty.** All 35
-  commits are local. `git ls-remote` returns nothing.
+* **The public repository has existed since 2026-07-11 and is empty.** The
+  publication candidate is local. `git ls-remote` returns nothing.
 * **The CI badge is inert.** It points at a workflow that has never executed, so
   it renders as no status rather than as proof — the pitch's primary credibility
   signal is currently switched off.

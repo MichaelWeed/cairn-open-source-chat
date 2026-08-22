@@ -6,7 +6,7 @@ Without this, a squatted host port surfaces as the engine's raw
 port stays fixed and operator-chosen rather than auto-selected — the embed
 snippet, CORS allowlist, and any reverse proxy all reference one specific
 port, so the remedy for a conflict is choosing a port, not hunting for a
-free one. See MASTER_PLAN.md task 1.9.
+free one.
 """
 
 import os

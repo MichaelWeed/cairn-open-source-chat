@@ -1,6 +1,6 @@
 # Dependency Justifications
 
-Per `CLAUDE.md` / `MASTER_PLAN.md` §3: every new dependency gets a one-line justification here at the moment it lands in a lockfile.
+Per `CLAUDE.md`: every new dependency gets a one-line justification here at the moment it lands in a lockfile.
 
 ## Backend (`backend/uv.lock`)
 

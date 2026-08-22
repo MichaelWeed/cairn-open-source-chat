@@ -1,6 +1,6 @@
 """Frozen wire contracts for the chat API and SSE stream.
 
-Source of truth per MASTER_PLAN.md §5 task 1.4 and DEVELOPER_README.md §4.
+Source of truth per DEVELOPER_README.md §4.
 Change only via a PR that updates widget, tests, and docs together.
 """
 
