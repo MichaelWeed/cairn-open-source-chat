@@ -50,10 +50,11 @@ history.
    no private-plan file or inbound references. Keep future planning in the
    private notes and out of publication refspecs.
 
-2. **Resolve every dangling documentation reference.**
-   `docs/CONTRIBUTING.md` and `docs/SOLUTION_DESIGN.md` are linked from published
-   documents and do not exist. `CONTRIBUTING.md` also carries the out-of-scope
-   closure policy that several other documents point at. Blocked on decision D3.
+2. **Keep public documentation links resolvable.**
+   `docs/CONTRIBUTING.md` now records the supported contribution boundary and
+   security-reporting route. [ARCHITECTURE.md](ARCHITECTURE.md) and
+   [adr/](adr/) remain the design authorities; no duplicate solution-design
+   document is needed.
 
 3. **Make the public claims agree.**
    The GitHub repository description says "up to 40%"; `README.md` says "a third"
@@ -81,7 +82,6 @@ history.
 
 | # | Decision | Why it is blocking | Status |
 | --- | --- | --- | --- |
-| D3 | Write `docs/SOLUTION_DESIGN.md`, or remove the links to it | Work item 2 cannot complete either way without this | Open |
 | D4 | Whether all remaining development work migrates into GitHub Issues, or only the work needed for this milestone | Affects the future tracker structure | Open |
 
 ## Findings from the baseline review

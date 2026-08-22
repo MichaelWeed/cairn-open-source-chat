@@ -243,8 +243,9 @@ release bundler that would ship it does not exist yet.
   default models. It is a starting point presented as a default.
 * Structured logging enforces "no message bodies" by convention and review, with
   no mechanical filter.
-* `docs/CONTRIBUTING.md` and `docs/SOLUTION_DESIGN.md` are linked from published
-  documents but do not exist.
+* Public documentation must resolve to existing, durable authorities. The
+  contribution policy lives in `docs/CONTRIBUTING.md`; architecture and ADRs are
+  the design authorities rather than a second design document.
 
 **Assumptions worth marking as assumptions**
 

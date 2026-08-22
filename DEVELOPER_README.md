@@ -1,6 +1,6 @@
 # Cairn Developer Guide
 
-Technical documentation for developing Cairn (formerly AetherChat; see [project.yaml](project.yaml) for the durable identity record). Executive overview: [README.md](README.md). The planned full design document, [docs/SOLUTION_DESIGN.md](docs/SOLUTION_DESIGN.md), is a later publication task; [docs/PUBLIC-AVAILABILITY.md](docs/PUBLIC-AVAILABILITY.md) records the active publication milestone.
+Technical documentation for developing Cairn (formerly AetherChat; see [project.yaml](project.yaml) for the durable identity record). Executive overview: [README.md](README.md). [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/adr/](docs/adr/) are the durable design authorities; [docs/PUBLIC-AVAILABILITY.md](docs/PUBLIC-AVAILABILITY.md) records the active publication milestone.
 
 ---
 
@@ -188,4 +188,4 @@ None of this is committed scope — it's direction for an operator who outgrows 
 
 ## 10. Roadmap and Non-Goals
 
-Out-of-scope feature requests (CRM sync, auth-aware answers, multi-tenant, voice) are not supported by this project. The linked [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) policy page is a later publication task and is not present yet.
+Out-of-scope feature requests (CRM sync, auth-aware answers, multi-tenant, voice) are not supported by this project. See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for the contribution boundary.

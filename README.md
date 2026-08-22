@@ -50,7 +50,7 @@ Open `http://localhost:8080/demo` and ask a question about shipping, returns, or
 
 ## Get in touch
 
-Built and maintained by [Michael Weed](https://github.com/MichaelWeed). Need something past the roadmap — CRM sync, auth-aware answers, multi-tenancy, or a tuned deployment for your stack? Those are consulting scope: open an issue or reach out directly. `docs/CONTRIBUTING.md` (added in Phase 7) will cover scope and the non-goals this project deliberately doesn't chase.
+Built and maintained by [Michael Weed](https://github.com/MichaelWeed). Need something past the roadmap — CRM sync, auth-aware answers, multi-tenancy, or a tuned deployment for your stack? Those are consulting scope: open an issue or reach out directly. [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) defines the supported contribution boundary and non-goals.
 
 ## License
 
