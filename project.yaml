@@ -91,25 +91,26 @@ systems:
     url: https://github.com/MichaelWeed/cairn-open-source-chat
     visibility: public
     state: published
-    public_main:
+    initial_publication:
       ref: refs/heads/main
-      sha: ab1668696acc60ca7a696f6f738bb9425d1eb3ea
+      head_sha: ab1668696acc60ca7a696f6f738bb9425d1eb3ea
       published_on: "2026-08-22"
     note: >-
-      Public source is published on main as of 2026-08-22. This is source
-      availability only; the author operates no hosted Cairn service.
+      Public source is published. initial_publication records the immutable first
+      main push on 2026-08-22; it is not a current remote-ref pointer. This is
+      source availability only; the author operates no hosted Cairn service.
   ci:
     provider: github-actions
     workflow: .github/workflows/validate.yml
     state: active-green
-    latest_successful_run:
+    first_successful_run:
       id: "32605367945"
       head_sha: ab1668696acc60ca7a696f6f738bb9425d1eb3ea
       completed_on: "2026-08-22"
       url: https://github.com/MichaelWeed/cairn-open-source-chat/actions/runs/32605367945
     note: >-
-      Runs the same `make validate` as the local pre-push hook. The recorded
-      run completed successfully on the published main commit.
+      Runs the same `make validate` as the local pre-push hook. first_successful_run
+      records immutable first-publication evidence, not the latest workflow run.
   issue_tracking:
     provider: github-issues
     project_board: github-projects

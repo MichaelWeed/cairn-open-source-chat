@@ -32,3 +32,41 @@ def test_baseline_rejects_a_public_repository_marked_empty(tmp_path: Path) -> No
     errors = baseline.publication_baseline_errors(project_file)
 
     assert "systems.source.state must be 'published'" in errors
+
+
+def test_baseline_requires_immutable_initial_publication_evidence(tmp_path: Path) -> None:
+    baseline = _baseline_module()
+    project = yaml.safe_load((Path(__file__).parents[2] / "project.yaml").read_text())
+    project["systems"]["source"].pop("initial_publication")
+    project_file = tmp_path / "project.yaml"
+    project_file.write_text(yaml.safe_dump(project), encoding="utf-8")
+
+    errors = baseline.publication_baseline_errors(project_file)
+
+    assert "systems.source.initial_publication must be a mapping" in errors
+
+
+def test_baseline_requires_the_first_successful_run_evidence(tmp_path: Path) -> None:
+    baseline = _baseline_module()
+    project = yaml.safe_load((Path(__file__).parents[2] / "project.yaml").read_text())
+    project["systems"]["ci"]["first_successful_run"]["id"] = "unexpected"
+    project_file = tmp_path / "project.yaml"
+    project_file.write_text(yaml.safe_dump(project), encoding="utf-8")
+
+    errors = baseline.publication_baseline_errors(project_file)
+
+    assert "systems.ci.first_successful_run.id must be '32605367945'" in errors
+
+
+def test_baseline_rejects_moving_current_evidence_field_names(tmp_path: Path) -> None:
+    baseline = _baseline_module()
+    project = yaml.safe_load((Path(__file__).parents[2] / "project.yaml").read_text())
+    project["systems"]["source"]["public_main"] = {"sha": "not-a-current-pointer"}
+    project["systems"]["ci"]["latest_successful_run"] = {"id": "not-a-current-run"}
+    project_file = tmp_path / "project.yaml"
+    project_file.write_text(yaml.safe_dump(project), encoding="utf-8")
+
+    errors = baseline.publication_baseline_errors(project_file)
+
+    assert "systems.source must use initial_publication, not public_main" in errors
+    assert "systems.ci must use first_successful_run, not latest_successful_run" in errors

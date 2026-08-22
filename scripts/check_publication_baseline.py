@@ -1,4 +1,4 @@
-"""Validate the structured durable record of Cairn's public-source baseline."""
+"""Validate Cairn's durable public-source classifications and first-publication evidence."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ import yaml
 
 
 REPOSITORY_ROOT = Path(__file__).parents[1]
-PUBLIC_MAIN_SHA = "ab1668696acc60ca7a696f6f738bb9425d1eb3ea"
-SUCCESSFUL_WORKFLOW_RUN = "32605367945"
+INITIAL_PUBLICATION_SHA = "ab1668696acc60ca7a696f6f738bb9425d1eb3ea"
+FIRST_SUCCESSFUL_WORKFLOW_RUN = "32605367945"
 
 
 def publication_baseline_errors(project_file: Path) -> list[str]:
@@ -35,34 +35,40 @@ def publication_baseline_errors(project_file: Path) -> list[str]:
     for field, expected in expected_source.items():
         if source.get(field) != expected:
             errors.append(f"systems.source.{field} must be {expected!r}")
+    if "public_main" in source:
+        errors.append("systems.source must use initial_publication, not public_main")
 
-    public_main = source.get("public_main")
-    if not isinstance(public_main, dict):
-        errors.append("systems.source.public_main must be a mapping")
+    initial_publication = source.get("initial_publication")
+    if not isinstance(initial_publication, dict):
+        errors.append("systems.source.initial_publication must be a mapping")
     else:
-        expected_main: dict[str, Any] = {
+        expected_initial_publication: dict[str, Any] = {
             "ref": "refs/heads/main",
-            "sha": PUBLIC_MAIN_SHA,
+            "head_sha": INITIAL_PUBLICATION_SHA,
             "published_on": "2026-08-22",
         }
-        for field, expected in expected_main.items():
-            if public_main.get(field) != expected:
-                errors.append(f"systems.source.public_main.{field} must be {expected!r}")
+        for field, expected in expected_initial_publication.items():
+            if initial_publication.get(field) != expected:
+                errors.append(
+                    f"systems.source.initial_publication.{field} must be {expected!r}"
+                )
 
     if ci.get("state") != "active-green":
         errors.append("systems.ci.state must be 'active-green'")
-    successful_run = ci.get("latest_successful_run")
-    if not isinstance(successful_run, dict):
-        errors.append("systems.ci.latest_successful_run must be a mapping")
+    if "latest_successful_run" in ci:
+        errors.append("systems.ci must use first_successful_run, not latest_successful_run")
+    first_successful_run = ci.get("first_successful_run")
+    if not isinstance(first_successful_run, dict):
+        errors.append("systems.ci.first_successful_run must be a mapping")
     else:
-        expected_run: dict[str, Any] = {
-            "id": SUCCESSFUL_WORKFLOW_RUN,
-            "head_sha": PUBLIC_MAIN_SHA,
+        expected_first_successful_run: dict[str, Any] = {
+            "id": FIRST_SUCCESSFUL_WORKFLOW_RUN,
+            "head_sha": INITIAL_PUBLICATION_SHA,
             "completed_on": "2026-08-22",
         }
-        for field, expected in expected_run.items():
-            if successful_run.get(field) != expected:
-                errors.append(f"systems.ci.latest_successful_run.{field} must be {expected!r}")
+        for field, expected in expected_first_successful_run.items():
+            if first_successful_run.get(field) != expected:
+                errors.append(f"systems.ci.first_successful_run.{field} must be {expected!r}")
 
     return errors
 

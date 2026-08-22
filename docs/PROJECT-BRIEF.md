@@ -89,7 +89,7 @@ and therefore any authentication; the production embeddable widget
 **The defining fact about the current state is now public evidence, not private
 availability.** The 2026-08-21 admission review recorded the then-headless source
 repository and absent hosted-run evidence. On 2026-08-22, sanitized `main` was
-published at `ab1668696acc60ca7a696f6f738bb9425d1eb3ea`, and GitHub Actions
+initially published at `ab1668696acc60ca7a696f6f738bb9425d1eb3ea`, and GitHub Actions
 validate run 32605367945 completed successfully. The README badge now has a real
 status; this remains public source availability, not a hosted service.
 

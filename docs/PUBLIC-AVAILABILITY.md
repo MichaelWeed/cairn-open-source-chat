@@ -25,7 +25,7 @@ but no author-operated deployment exists.
 4. **Cold-clone path was rehearsed before publication.** An isolated locked clone
    completed `make validate` and the real `make demo` cited-answer path with the
    documented, already-installed Ollama model pair. No model was downloaded.
-5. **Only `main` was first-pushed and CI is green.** The published ref is
+5. **Only `main` was first-pushed and CI is green.** The initial published ref was
    `ab1668696acc60ca7a696f6f738bb9425d1eb3ea`; GitHub Actions validate run
    [32605367945](https://github.com/MichaelWeed/cairn-open-source-chat/actions/runs/32605367945)
    completed successfully. The workflow runs the same `make validate` gate as
