@@ -118,3 +118,35 @@ jobs:
     assert any(
         "each downloaded release artifact must be checksum-verified" in error for error in errors
     )
+
+
+def test_policy_requires_the_committed_sbom_generator_toolchain(tmp_path: Path) -> None:
+    policy = _policy_module()
+    repository_root = _write_workflow(
+        tmp_path,
+        f"""name: validate
+jobs:
+  validate:
+    steps:
+      - uses: actions/checkout@1111111111111111111111111111111111111111
+      - uses: astral-sh/setup-uv@2222222222222222222222222222222222222222
+        with:
+          version: {policy.UV_VERSION}
+      - uses: actions/setup-node@3333333333333333333333333333333333333333
+        with:
+          node-version: 22.22.0
+      - run: |
+          OSV_SCANNER_VERSION={policy.OSV_SCANNER_VERSION}
+          OSV_SCANNER_SHA256={policy.OSV_SCANNER_SHA256}
+          GRYPE_VERSION={policy.GRYPE_VERSION}
+          GRYPE_SHA256={policy.GRYPE_SHA256}
+          printf 'verified' | sha256sum --check --strict
+          printf 'verified' | sha256sum --check --strict
+          uv tool install cyclonedx-bom=={policy.CYCLONEDX_BOM_VERSION}
+""",
+    )
+
+    errors = policy.validate_workflows(repository_root)
+
+    assert any("setup-node must request" in error for error in errors)
+    assert any("cyclonedx-python-lib version" in error for error in errors)

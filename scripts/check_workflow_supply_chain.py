@@ -25,7 +25,9 @@ OSV_SCANNER_SHA256 = "15314940c10d26af9c6649f150b8a47c1262e8fc7e17b1d1029b0e479e
 GRYPE_VERSION = "0.115.0"
 GRYPE_SHA256 = "3fad92940650e514c0aa2dad83526942a055e210cec09a8a59d9c024adc2b90e"
 UV_VERSION = "0.11.30"
+NODE_VERSION = "25.6.1"
 CYCLONEDX_BOM_VERSION = "7.3.0"
+CYCLONEDX_PYTHON_LIB_VERSION = "11.7.0"
 
 
 def _workflow_steps(value: Any) -> list[dict[str, Any]]:
@@ -50,6 +52,7 @@ def _errors_for_workflow(path: Path) -> list[str]:
     errors: list[str] = []
     run_commands: list[str] = []
     setup_uv_version: str | None = None
+    setup_node_version: str | None = None
 
     for step in steps:
         uses = step.get("uses")
@@ -63,6 +66,12 @@ def _errors_for_workflow(path: Path) -> list[str]:
                     value = with_values.get("version")
                     if isinstance(value, (str, int, float)):
                         setup_uv_version = str(value)
+            if action == "actions/setup-node":
+                with_values = step.get("with")
+                if isinstance(with_values, dict):
+                    value = with_values.get("node-version")
+                    if isinstance(value, (str, int, float)):
+                        setup_node_version = str(value)
 
         run = step.get("run")
         if not isinstance(run, str):
@@ -82,6 +91,9 @@ def _errors_for_workflow(path: Path) -> list[str]:
         "grype version": f"GRYPE_VERSION={GRYPE_VERSION}",
         "grype checksum": f"GRYPE_SHA256={GRYPE_SHA256}",
         "cyclonedx-bom version": f"cyclonedx-bom=={CYCLONEDX_BOM_VERSION}",
+        "cyclonedx-python-lib version": (
+            f"cyclonedx-python-lib=={CYCLONEDX_PYTHON_LIB_VERSION}"
+        ),
     }
     for description, fragment in required_fragments.items():
         if fragment not in provision_text:
@@ -90,6 +102,10 @@ def _errors_for_workflow(path: Path) -> list[str]:
         errors.append(f"{path}: each downloaded release artifact must be checksum-verified")
     if setup_uv_version != UV_VERSION:
         errors.append(f"{path}: setup-uv must request uv {UV_VERSION}, found {setup_uv_version!r}")
+    if setup_node_version != NODE_VERSION:
+        errors.append(
+            f"{path}: setup-node must request Node {NODE_VERSION}, found {setup_node_version!r}"
+        )
     if re.search(r"\b(?:osv-scanner|grype)\b[^\n]*(?:/main\b|/latest\b)", provision_text):
         errors.append(f"{path}: CI tool download must not use mutable main or latest URLs")
     if re.search(r"uv\s+tool\s+install\s+cyclonedx-bom(?:\s|$)(?!==)", provision_text):
