@@ -19,9 +19,9 @@ ones do not.
 
 Cairn is self-hosted, single-tenant, and runs local models via Ollama by default.
 The operator owns every component. There is no author-operated service, no hosted
-tier, and no telemetry. A hosted OpenAI-compatible provider is a supported adapter
-target, but it is off by default and turning it on is documented as an explicit
-choice with data consequences.
+tier, and no telemetry. A hosted OpenAI-compatible provider is a planned adapter
+target, not a current implementation. If added, enabling it must be an explicit
+choice documented with its data consequences.
 
 Single-tenancy is part of the same decision: one deployment serves one
 organization. An operator needing to serve two runs two deployments.

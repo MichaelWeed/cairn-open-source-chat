@@ -37,9 +37,9 @@ marks which.
 Three properties of this diagram carry most of the design weight:
 
 * **There is no boundary the operator does not own.** The only outbound network
-  call is to Ollama, which normally runs in the same compose stack. Chat text does
-  not leave the operator's infrastructure unless they deliberately configure a
-  hosted provider.
+  call in the current build is to Ollama, which normally runs in the same compose
+  stack. No hosted provider is implemented; a future hosted adapter would create
+  a new data boundary that must be documented explicitly.
 * **Nothing upstream of the widget is trusted.** The visitor's browser is hostile
   input, and so is the operator's own ingested corpus once it reaches the model —
   retrieved chunks are wrapped as untrusted data, because a poisoned document is a

@@ -78,5 +78,5 @@ this stage.
   allows only the app's own origin (`http://localhost:$CAIRN_PORT`).
 * Run `make verify` at install time and on the weekly cadence documented in DEVELOPER_README.md §4
   — nothing else will alert you to CVEs disclosed after you installed.
-* If you configure a hosted (non-Ollama) provider, understand that chat message content leaves your
-  infrastructure to that provider — see [docs/PRIVACY.md](PRIVACY.md).
+* No hosted provider exists today. If one is implemented later, understand that chat message
+  content would leave your infrastructure to that provider — see [docs/PRIVACY.md](PRIVACY.md).

@@ -79,7 +79,7 @@ def main() -> int:
     print(f"port check failed: port {port} is already in use on this host.")
     print(f"  See what's using it:   lsof -nP -iTCP:{port} -sTCP:LISTEN")
     print("  Or pick another port:  set CAIRN_PORT in .env and re-run `make up` —")
-    print("  the demo/admin URLs and CORS origin allowlist follow it automatically.")
+    print("  the demo URL and CORS origin allowlist follow it automatically.")
     return 1
 
 

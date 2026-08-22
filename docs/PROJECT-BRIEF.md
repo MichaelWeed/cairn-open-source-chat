@@ -75,8 +75,8 @@ incremental reindex; retrieval that produces citations and refuses below a
 confidence threshold; an evaluation harness with one committed report from a real
 model; and a demo page that exercises the whole round trip.
 
-Measured, not asserted: **114 tests pass** in 5.5 seconds. Application code is
-roughly 1,050 lines against 1,428 lines of tests.
+Measured, not asserted: the current full `make validate` run completed with
+**125 tests passing** and one known Starlette TestClient deprecation warning.
 
 Not built: HTTP upload endpoint and scrape ingestion; the entire tool and
 escalation layer; the always-on guardrail middleware and the adversarial test
@@ -109,9 +109,12 @@ visitor would hit.
 The success test is a rehearsal, performed rather than assumed:
 
 **On a machine that has never built this project, a clean clone of the public
-repository followed by `cp .env.example .env` and `make up` reaches a completed
-chat round trip — with no undocumented step, no question asked of the author, and
-no edit to a tracked file.**
+repository with `uv`, Ollama, and the two documented models can run `make demo`
+and reach a cited chat round trip from the bundled corpus — with no undocumented
+step, no question asked of the author, and no edit to a tracked file.**
+
+`make up` is intentionally a separate echo/fake container-plumbing smoke test. It
+does not ingest a corpus, prove grounded answers, or expose an `/admin` route.
 
 Supporting conditions that make that test meaningful:
 
@@ -169,8 +172,10 @@ does not yet exist.
 
 * **Chat message text:** never persisted server-side. Passed through the rate
   limiter, retrieval, and provider, then discarded.
-* **Conversation history:** client-side only, in `sessionStorage`, resent by the
-  client on each request. The server is stateless with respect to conversation.
+* **Conversation history:** the API accepts up to five caller-supplied turns, but
+  the current demo sends an empty history array and persists no conversation
+  history. The planned production widget will own client-side persistence; the
+  server remains stateless.
 * **Knowledge corpus:** operator-supplied. Chunk text and embeddings in Chroma;
   per-document metadata in SQLite. This is the only durable data.
 * **Credentials:** none handled today. `ADMIN_BOOTSTRAP_PASSWORD` is a reserved
@@ -178,8 +183,8 @@ does not yet exist.
 * **Secrets in the repository:** none. `.env` is gitignored; `.env.example`
   ships empty values.
 * **External integrations:** exactly one — Ollama, at an operator-configured base
-  URL. No other outbound calls at runtime. A hosted provider adapter would send
-  chat text off-premises, which is why it is off by default and documented.
+  URL. No other outbound calls exist at runtime. A hosted provider adapter is
+  planned but not implemented; adding one would send chat text off-premises.
 * **Sensitive operations:** none in the current build. No authentication, no
   payments, no destructive endpoints, and no attacker-reachable ingestion surface,
   because ingestion is not yet routed over HTTP.
@@ -189,8 +194,9 @@ does not yet exist.
 Summarized in [ARCHITECTURE.md](ARCHITECTURE.md); the API contract and operational
 detail are in [DEVELOPER_README.md](../DEVELOPER_README.md). In one line: a FastAPI
 service streaming SSE, retrieving from an embedded Chroma store, calling a local
-Ollama model, with SQLite for metadata, fronted by a browser widget that carries
-its own conversation history.
+Ollama model, with SQLite for metadata, fronted today by a demo page that sends no
+conversation history. The production widget and its client-side history are
+planned work.
 
 Every dependency carries a written justification in
 [DEPENDENCIES.md](DEPENDENCIES.md), including the reasoning for version pins.

@@ -1,12 +1,12 @@
 # Cairn Developer Guide
 
-Technical documentation for deploying, operating, and extending Cairn (formerly AetherChat; see [MASTER_PLAN.md](MASTER_PLAN.md) §2 for the naming record). Executive overview: [README.md](README.md). Full design: [docs/SOLUTION_DESIGN.md](docs/SOLUTION_DESIGN.md) and [MASTER_PLAN.md](MASTER_PLAN.md).
+Technical documentation for developing Cairn (formerly AetherChat; see [MASTER_PLAN.md](MASTER_PLAN.md) §2 for the naming record). Executive overview: [README.md](README.md). The planned full design document, [docs/SOLUTION_DESIGN.md](docs/SOLUTION_DESIGN.md), is a later publication task; [MASTER_PLAN.md](MASTER_PLAN.md) currently records the roadmap.
 
 ---
 
 ## 1. Architecture at a Glance
 
-Summary only. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) is the fuller map — component-by-component
+The diagram below is the target architecture, not a statement that every box is built. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) is the fuller map — component-by-component
 built-vs-designed status, request flow, and the cost of each deliberate constraint;
 [docs/adr/](docs/adr/) records why each decision was made.
 
@@ -17,7 +17,7 @@ built-vs-designed status, request flow, and the cost of each deliberate constrai
 [FastAPI backend]
    Guardrail pipeline (ordered middleware, toggleable)
    -> Router: RAG answer | tool call | refusal
-   -> Provider adapter (Ollama default | OpenAI-compatible hosted)
+   -> Provider adapter (Ollama built | hosted adapter planned)
         |
    [ChromaDB embedded]  vectors
    [SQLite, WAL]        docs metadata, provider registry, config, metric counters
@@ -25,32 +25,39 @@ built-vs-designed status, request flow, and the cost of each deliberate constrai
    [Tool registry]  lookup_order_status | escalate_to_human
 ```
 
-Design invariants:
+The built developer-preview slice is the FastAPI chat endpoint, embedded Chroma and SQLite state, in-process Markdown/PDF ingestion, Ollama and echo providers, retrieval/refusal/citations, and the `/demo` page. The admin surface, hosted provider, tools, production widget, and guardrail pipeline are planned.
 
-* **Server holds no conversation state.** The widget carries history (last 5 turns, sessionStorage) in each request.
-* **Widget endpoints are anonymous; admin endpoints are authenticated.** Single admin account, Argon2id, SameSite=Strict session cookie, CSRF token, optional TOTP.
+Design invariants and current limits:
+
+* **Server holds no conversation state.** The API accepts up to five caller-supplied history turns, but the current demo page sends an empty history array. Client-side history persistence belongs to the planned production widget.
+* **No admin endpoints exist yet.** The planned admin authentication design is a single account with Argon2id, a SameSite=Strict session cookie, CSRF protection, and optional TOTP.
 * **Contracts are frozen Pydantic models** (`extra="forbid"`). The SSE contract and tool schemas in `backend/app/api/contracts.py` are the source of truth.
 * **Vector-store writes are single-writer, in-process.** Every ingestion path (upload, scrape, future admin reindex) must write through the same `Collection` handle the chat endpoint queries (`app.state.document_collection`), never a second `chromadb.PersistentClient` opened against the same `CHROMA_PATH` from another process/subprocess. A second handle desyncs the long-lived server handle's view of on-disk HNSW segments — every query against it then throws `chromadb.errors.InternalError: ... Nothing found on disk` until the process restarts. Confirmed live against chromadb 1.5.9 embedded `PersistentClient`; that version has no lighter-weight reload/reconnect API, only a full `reset()`.
 
-## 2. Quick Start (Local)
+## 2. Developer Preview Quick Start
 
-Prerequisites: Docker or Podman, with Compose (`docker compose` or `podman compose`/`podman-compose`); for the local model path, Ollama with an 8B-class instruct model pulled.
+Prerequisites: `uv`, Ollama running on the host, and the configured chat and embedding models already present. `make demo` checks the bundled corpus, Ollama connection, and both models before the server starts. It prints exact corrective commands and never downloads models.
 
+```sh
+ollama pull llama3.1:8b-instruct
+ollama pull nomic-embed-text
+make demo
+# open http://localhost:8080/demo
 ```
-git clone <repo> && cd cairn
-cp .env.example .env            # defaults work as-is; see the file for every knob
-make up                         # digest-pinned images; uses whichever engine is installed
-# open http://localhost:8080/admin  -> ingest the bundled sample corpus
-# open http://localhost:8080/demo   -> widget test page
-```
 
-**Port:** the stack publishes on `CAIRN_PORT` (default 8080). If that port is taken on your machine, `make up` preflights it and fails with the fix before anything builds — set `CAIRN_PORT` in `.env` and re-run; the demo/admin URLs and the CORS origin allowlist follow it automatically. The port is deliberately fixed rather than auto-selected: the embed snippet, `ORIGIN_ALLOWLIST`, and any reverse proxy in front all reference one specific port, so a server that silently came up somewhere else would break them.
+The command uses the existing in-process `ingest_upload()` helper with `app.state.document_collection` and `app.state.db` to ingest `eval/corpus/`, then serves the demo page with real Ollama embeddings and generation. Ask about shipping, returns, or warranties to exercise cited answers. Copy `.env.example` to `.env` only to override `CAIRN_PORT`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, or `EMBEDDING_MODEL`.
+
+**Port:** the preview listens on `CAIRN_PORT` (default 8080). If that port is taken, `make demo` fails with the conflicting port and tells you to set `CAIRN_PORT` in `.env` before retrying. The port is deliberately fixed rather than auto-selected because the demo URL and origin allowlist must agree.
+
+### Container plumbing smoke test
+
+`make up` requires Docker or Podman with Compose. The checked-in configuration uses the echo provider and fake embeddings, does not ingest the bundled corpus, and exposes the demo page but no `/admin` route. Use it to check container, health, static-page, and API plumbing. It does not prove a grounded or cited answer. Set `PROVIDER=ollama`, `EMBEDDING_PROVIDER=ollama`, and an Ollama URL reachable from the container only when intentionally testing that alternate configuration; ingestion is still not provided by `make up`.
 
 **Config plumbing:** compose only interpolates `.env` into `compose.yaml` — it never passes `.env` to the container by itself. Every knob in `.env.example` is therefore forwarded explicitly in the `environment:` block of `compose.yaml`, with defaults mirroring `backend/app/config.py`. Add new settings in all three places.
 
 `compose.yaml` stays within the vendor-neutral Compose Specification (no Docker-specific extensions), so it runs unmodified under either engine. `make up`/`make down` detect the available `COMPOSE_CMD`; set it explicitly (`COMPOSE_CMD=podman compose make up`) if both are installed and you want a specific one.
 
-Embed on any page:
+The production embed shown below is planned for Phase 6 and does not exist in the current widget package:
 
 ```html
 <script src="https://your-host/widget.js"
@@ -58,7 +65,9 @@ Embed on any page:
         data-title="Support"></script>
 ```
 
-## 3. Configuration Surfaces
+## 3. Planned Configuration Surfaces
+
+These operator surfaces are roadmap design, not current routes or UI.
 
 | Surface | Where | Notes |
 | --- | --- | --- |
@@ -111,7 +120,9 @@ make demo          # requires OLLAMA_MODEL and EMBEDDING_MODEL pulled in Ollama
 
 Boots the real app (not the `echo`/`fake` defaults `make up` uses out of the
 box) with `eval/corpus/` ingested into it, and serves the demo page for
-interactive browser testing. See [docs/QA_CHECKLIST.md](docs/QA_CHECKLIST.md)
+interactive browser testing. Before binding the port it checks for a non-empty
+Markdown corpus, a reachable Ollama service, and both configured models. It never
+pulls models. See [docs/QA_CHECKLIST.md](docs/QA_CHECKLIST.md)
 for the scenarios to run and their last-verified status — the qualitative
 counterpart to `make eval`'s quantitative metrics.
 
@@ -177,4 +188,4 @@ None of this is committed scope — it's direction for an operator who outgrows 
 
 ## 10. Roadmap and Non-Goals
 
-See [MASTER_PLAN.md](MASTER_PLAN.md) §7. Out-of-scope feature requests (CRM sync, auth-aware answers, multi-tenant, voice) are closed with a pointer to the consulting page by policy; see [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md).
+See [MASTER_PLAN.md](MASTER_PLAN.md) §7. Out-of-scope feature requests (CRM sync, auth-aware answers, multi-tenant, voice) are closed by policy. The linked [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) policy page is a later Phase 7 publication task and is not present yet.

@@ -22,9 +22,10 @@ accuracy, and proof.
 
 ## The success test
 
-On a machine that has never built this project: clone, `cp .env.example .env`,
-`make up`, and complete a chat round trip — with no undocumented step, no question
-asked of the author, and no edit to a tracked file.
+On a machine that has never built this project: clone, install and start Ollama,
+pull the two documented models, run `make demo`, and complete a cited chat round
+trip from the bundled corpus — with no undocumented step, no question asked of
+the author, and no edit to a tracked file.
 
 Supporting conditions: the GitHub Actions run on `main` has actually executed and
 is green; no published document links to a file that does not exist; no published
@@ -63,10 +64,10 @@ history.
 4. **Rehearse the cold-clone install on a machine that has never built Cairn.**
    From a local clone first, recording every undocumented step, missing
    prerequisite, and surprise. This is the success test, so it runs before
-   publication rather than after. Known candidates to hit: the Ollama model pull
-   is a documented prerequisite but not preflighted, and `make up` defaults to the
-   `echo` provider, so a first-run chat round trip proves plumbing rather than
-   real answers.
+   publication rather than after. The supported preview path is `make demo`, whose
+   preflight checks the corpus, Ollama service, and both configured models without
+   downloading them. `make up` remains an echo/fake plumbing smoke test and is not
+   evidence of grounded answers.
 
 5. **First push, and a green Actions run on `main`.**
    The only thing that turns the README badge from blank into evidence, and the

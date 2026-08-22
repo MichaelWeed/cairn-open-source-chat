@@ -60,8 +60,10 @@ data:
     persisted: false
     note: Passed through rate limiter, retrieval, and provider, then discarded.
   conversation_history:
-    persisted: client-side-only
-    note: Last 5 turns in the browser's sessionStorage. Server is stateless.
+    persisted: false
+    note: >-
+      API accepts bounded history; the demo sends no prior turns and the server
+      persists none. Production widget and client-side history are planned.
   knowledge_corpus:
     persisted: true
     note: Operator-supplied documents. Chunk text and embeddings in Chroma; metadata in SQLite.
@@ -73,8 +75,8 @@ data:
   third_party_data_egress:
     default: none
     condition: >-
-      Only if an operator configures a hosted provider instead of the local
-      Ollama default. That is an explicit operator choice, off by default.
+      Ollama is the only implemented real provider. Hosted-provider egress is
+      planned and is not currently available.
 
 integrations:
   outbound:

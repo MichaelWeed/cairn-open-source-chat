@@ -2,7 +2,7 @@
 
 [![validate](https://github.com/MichaelWeed/cairn-open-source-chat/actions/workflows/validate.yml/badge.svg)](https://github.com/MichaelWeed/cairn-open-source-chat/actions/workflows/validate.yml)
 
-**Cut a third of your support chat volume with a free, self-hosted AI chat that answers from your own docs — and refuses to guess.**
+**Cairn is building toward a free, self-hosted AI support chat that answers from your own docs and refuses to guess.**
 
 Free and open source (Apache-2.0). No per-seat fees, no SaaS subscription, no conversation data leaving your infrastructure — the only cost is the server it runs on.
 
@@ -15,16 +15,30 @@ Free and open source (Apache-2.0). No per-seat fees, no SaaS subscription, no co
 
 ## Why trust it
 
-Support bots get businesses burned in two ways: they make things up, or they leak customer data to a third-party API. Cairn is built so neither can happen — if an answer isn't grounded in your docs, it refuses instead of hallucinating; and it runs on local models (Ollama) by default, so support conversations never have to leave your infrastructure. Every guardrail decision is visible and toggleable, not a black box.
+Support bots get businesses burned in two ways: they make things up, or they leak customer data to a third-party API. The current developer preview retrieves from a local corpus, refuses below its configured confidence threshold, cites retrieved sources, and uses local Ollama models. The broader guardrail and operator-control surfaces are planned work, not built behavior.
 
 | If you're a... | This gets you |
 | --- | --- |
-| **CTO** evaluating build vs. buy | A production-shaped reference implementation: frozen API contracts, layered prompt-injection defenses, SBOM + vulnerability scanning on every release, a real CI gate — not a demo repo. |
-| **Customer Service director** | A support widget that never invents an answer, always shows its source, and hands off to a human cleanly when it should. |
+| **CTO** evaluating build vs. buy | A developer-preview reference implementation with frozen API contracts, a local validation gate, generated SBOMs, and explicit built-vs-planned security documentation. |
+| **Customer Service director** | A preview of grounded answers and source citations today; the production widget and human handoff are planned. |
 
 ## Status
 
 **Pre-release, in active development.** See [MASTER_PLAN.md](MASTER_PLAN.md) for the phased build-out and current progress (order-status deep links land in Phase 3; the production embeddable widget in Phase 6).
+
+## Developer preview quick start
+
+Prerequisites: [uv](https://docs.astral.sh/uv/), Ollama running locally, and the two configured models already present. The helper checks the corpus, Ollama service, and both models before starting the server. It never downloads models.
+
+```sh
+ollama pull llama3.1:8b-instruct
+ollama pull nomic-embed-text
+make demo
+```
+
+Open `http://localhost:8080/demo` and ask a question about shipping, returns, or warranties. `make demo` ingests the bundled sample Markdown through the in-process ingestion helper, uses real Ollama embeddings and generation, and streams cited answers from the demo page. Copy `.env.example` to `.env` first only when you need to change the port, Ollama URL, or model names.
+
+`make up` is a separate container plumbing smoke test. Its checked-in defaults use the deterministic echo provider and fake embeddings, do not ingest the sample corpus, and do not provide an `/admin` route. It is not the grounded-answer quick start.
 
 ## Docs
 

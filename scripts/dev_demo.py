@@ -17,8 +17,7 @@ Run: `make demo` from the repo root, or directly:
 Requires a reachable Ollama (OLLAMA_BASE_URL) with OLLAMA_MODEL and
 EMBEDDING_MODEL pulled -- defaults to the project's documented models
 (llama3.1:8b-instruct / nomic-embed-text) unless overridden in .env.
-Set PROVIDER=echo in .env first for instant, deterministic replies
-when you only need to check UI/wiring, not real generation quality.
+The helper checks these prerequisites and never pulls models itself.
 """
 
 from __future__ import annotations
@@ -36,12 +35,6 @@ BACKEND_DIR = REPO_ROOT / "backend"
 DEFAULT_CORPUS_DIR = REPO_ROOT / "eval" / "corpus"
 
 sys.path.insert(0, str(BACKEND_DIR))
-
-# setdefault, not override: an explicit .env value still wins. Real
-# embeddings are the point of this script -- without them, retrieval
-# distance is meaningless and every citation/refusal check is unreliable.
-os.environ.setdefault("EMBEDDING_PROVIDER", "ollama")
-os.environ.setdefault("PROVIDER", "ollama")
 
 import httpx  # noqa: E402
 import uvicorn  # noqa: E402
@@ -82,7 +75,104 @@ def _check_port_free(port: int) -> None:
             raise SystemExit(1) from None
 
 
+def _configure_real_providers() -> None:
+    os.environ["PROVIDER"] = "ollama"
+    os.environ["EMBEDDING_PROVIDER"] = "ollama"
+
+
+def _corpus_files(corpus_dir: Path) -> list[Path]:
+    if not corpus_dir.is_dir():
+        print(
+            f"error: corpus directory {corpus_dir} does not exist. "
+            "Restore eval/corpus or pass --corpus PATH to a directory of .md files."
+        )
+        raise SystemExit(1)
+
+    paths = sorted(path for path in corpus_dir.glob("*.md") if path.read_bytes().strip())
+    if not paths:
+        print(
+            f"error: corpus directory {corpus_dir} contains no non-empty .md files. "
+            "Add at least one Markdown document or pass --corpus PATH."
+        )
+        raise SystemExit(1)
+    return paths
+
+
+def _model_is_available(model: str, available: set[str]) -> bool:
+    if model in available:
+        return True
+    return ":" not in model and f"{model}:latest" in available
+
+
+async def _check_ollama_models(
+    settings: Settings, *, client: httpx.AsyncClient | None = None
+) -> None:
+    async def fetch_models(active_client: httpx.AsyncClient) -> set[str]:
+        response = await active_client.get(f"{settings.ollama_base_url.rstrip('/')}/api/tags")
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Ollama tags response must be an object")
+        models = payload.get("models")
+        if not isinstance(models, list):
+            raise ValueError("Ollama tags response must contain a models list")
+
+        available: set[str] = set()
+        for item in models:
+            if not isinstance(item, dict):
+                raise ValueError("Ollama model entries must be objects")
+            names = (item.get("name"), item.get("model"))
+            if any(name is not None and not isinstance(name, str) for name in names):
+                raise ValueError("Ollama model names must be strings")
+            valid_names = {name for name in names if isinstance(name, str) and name}
+            if not valid_names:
+                raise ValueError("Ollama model entries must contain a name")
+            available.update(valid_names)
+        return available
+
+    try:
+        if client is None:
+            async with httpx.AsyncClient(timeout=5.0) as owned_client:
+                available = await fetch_models(owned_client)
+        else:
+            available = await fetch_models(client)
+    except httpx.RequestError:
+        print(
+            f"error: couldn't reach Ollama at {settings.ollama_base_url} before startup. "
+            "Start it with `ollama serve`, or correct OLLAMA_BASE_URL in .env."
+        )
+        raise SystemExit(1) from None
+    except (httpx.HTTPStatusError, ValueError):
+        print(
+            f"error: Ollama at {settings.ollama_base_url} did not return a usable model list. "
+            "Check the service and OLLAMA_BASE_URL, then retry `make demo`."
+        )
+        raise SystemExit(1) from None
+
+    required = [
+        ("chat", settings.ollama_model),
+        ("embedding", settings.embedding_model),
+    ]
+    missing = [
+        (role, model)
+        for role, model in required
+        if not _model_is_available(model, available)
+    ]
+    if not missing:
+        return
+
+    print("error: Ollama is reachable, but required models are unavailable:")
+    for role, model in missing:
+        print(f"  - {role}: {model}")
+    print("Pull each missing model explicitly, then retry:")
+    for model in dict.fromkeys(model for _, model in missing):
+        print(f"  ollama pull {model}")
+    print("Cairn does not download models automatically.")
+    raise SystemExit(1)
+
+
 async def main(corpus_dir: Path) -> None:
+    corpus_files = _corpus_files(corpus_dir)
     # Settings' own default (env_file=".env") resolves relative to the
     # CWD, which is backend/ for this script (per `make demo`'s `cd
     # backend &&`) -- so plain Settings()/get_settings() would silently
@@ -96,12 +186,18 @@ async def main(corpus_dir: Path) -> None:
     # the generated __init__ signature it sees).
     settings = Settings(_env_file=REPO_ROOT / ".env")  # type: ignore[call-arg]
     settings.ollama_base_url = _resolve_ollama_base_url(settings.ollama_base_url)
+    await _check_ollama_models(settings)
     _check_port_free(settings.cairn_port)
+
+    # `make demo` is the real-model preview path regardless of the
+    # echo/fake smoke-test defaults in .env. Without real embeddings,
+    # retrieval distance and citations are not meaningful.
+    _configure_real_providers()
     app = create_app(settings)
 
     async with app.router.lifespan_context(app):
         try:
-            for path in sorted(corpus_dir.glob("*.md")):
+            for path in corpus_files:
                 result = ingest_upload(
                     db=app.state.db,
                     collection=app.state.document_collection,

@@ -17,10 +17,12 @@ infrastructure, storing them on disk is a strange place to land.
 
 ## Decision
 
-The server keeps nothing between requests. The client carries the last five turns of
-history in `sessionStorage` and resends them with each request. The `session_id` is
-a client-generated opaque identifier used only as a rate-limit bucket key; it is
-linked to no account, because none exists.
+The server keeps nothing between requests. The API accepts the last five turns from
+the caller. The production client is intended to keep that history in
+`sessionStorage` and resend it, but that client is not built yet; the current demo
+sends an empty history array. The `session_id` is a client-generated opaque
+identifier used only as a rate-limit bucket key; it is linked to no account,
+because none exists.
 
 Chat message text passes through the rate limiter, retrieval, and the provider, and
 is then discarded.

@@ -24,7 +24,7 @@ will be one gating chat answers, even once Phase 5's admin auth ships.
 | Data | Where it lives | Retention |
 | --- | --- | --- |
 | Chat message text (the question a visitor types) | Nowhere, server-side. Passed through the rate limiter (keyed by IP/session, not content), the retrieval query, and the provider call, then discarded. | None — never written to disk. |
-| Conversation history (last 5 turns) | Client-side only (`sessionStorage`, tab-scoped) — the widget/demo resends it with every request. The server is stateless with respect to conversation ([DEVELOPER_README.md §1](../DEVELOPER_README.md)). | Cleared when the browser tab closes. |
+| Conversation history | Not persisted by the current demo, which sends an empty `history` array on every request. The API accepts up to five caller-supplied turns, and the server remains stateless ([DEVELOPER_README.md §1](../DEVELOPER_README.md)). Client-side history persistence is planned for the production widget. | None in the current demo. |
 | `session_id` | Client-generated opaque identifier (`crypto.randomUUID()` in the demo page), used only as a rate-limit bucket key. Not linked to any account or identity — none exists to link it to. | Lives as long as the client keeps it (`sessionStorage`). |
 | Ingested documents (the operator's knowledge base) | Chunk text + embeddings in Chroma (`CHROMA_PATH`); per-document metadata (`id`, `source`, `content_hash`, `chunk_count`, `ingested_at` — no raw content) in SQLite's `documents` table. | Until re-ingested or (once task 5.3 ships) deleted via the admin content surface. |
 | Structured logs | stdout, JSON. By convention (not a mechanical filter — see docs/SECURITY.md), never includes message bodies or document content: latency, guardrail stage outcomes, error codes, query counts only. | Whatever your log aggregation/host retains. |
@@ -40,10 +40,9 @@ message is never added to the retrievable corpus.
 * **Ollama (default, local).** Chat message text and retrieved context go to the Ollama process
   named in `OLLAMA_BASE_URL`. If that's running in your own compose stack / infrastructure, nothing
   leaves your environment.
-* **Any future hosted, OpenAI-compatible provider** (adapter interface exists per task 1.6; only
-  `EchoProvider` and `OllamaProvider` are actually implemented so far) would send chat message text
-  and retrieved context to that third party. That's the operator's explicit configuration choice —
-  document your provider choice's own data-handling terms if you turn this on.
+* **Any future hosted, OpenAI-compatible provider** would send chat message text and retrieved
+  context to that third party. Only `EchoProvider` and `OllamaProvider` are implemented today;
+  there is no hosted provider to configure in the current build.
 
 ## Backups
 

@@ -9,7 +9,7 @@ the chat SSE contract, or the retrieval/refusal pipeline.
 ## Setup
 
 ```
-cp .env.example .env   # if you haven't already
+ollama serve                           # in another terminal, if not already running
 ollama pull llama3.1:8b-instruct        # or set OLLAMA_MODEL in .env to a model you have
 ollama pull nomic-embed-text            # or set EMBEDDING_MODEL in .env to one you have
 make demo
@@ -19,10 +19,14 @@ make demo
 real embeddings, not the `echo`/`fake` defaults `make up` uses out of the box
 — ingests `eval/corpus/` (the bundled returns/shipping/warranty sample) into
 it, and serves it at `http://localhost:$CAIRN_PORT/demo` (8080 by default).
-It prints ingestion results and the URL on startup. Point `--corpus` at a
-different directory of `.md` files to QA against other content. Set
-`PROVIDER=echo` in `.env` first if you only need to check UI/wiring and want
-instant, deterministic replies instead of real generation.
+It checks for a non-empty Markdown corpus, a reachable Ollama service, and both
+configured models before starting the server. It prints actionable fixes but
+never pulls models automatically. Point `--corpus` at a different directory of
+non-empty `.md` files to QA against other content.
+
+`make up` is only the echo/fake container plumbing smoke test under the checked-in
+configuration. It does not ingest this corpus, produce a grounded cited answer,
+or expose an `/admin` route.
 
 Re-running `make demo` is safe — `ingest_upload()`'s content-hash reindex
 reports `unchanged` for anything already ingested rather than duplicating it.

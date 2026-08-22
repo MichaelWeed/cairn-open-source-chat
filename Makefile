@@ -12,6 +12,8 @@ COMPOSE_CMD ?= $(shell command -v docker >/dev/null 2>&1 && echo "docker compose
 # — see MASTER_PLAN.md §3.
 validate: no-stub-check lint-backend test-backend build-widget lockfile-audit cooldown-check sbom-check digest-pin-lint image-scan
 
+# Container plumbing smoke test. Checked-in defaults are echo/fake and do
+# not ingest a corpus; use `make demo` for the grounded developer preview.
 up:
 	@COMPOSE_CMD="$(COMPOSE_CMD)" python3 scripts/check_port.py
 	$(COMPOSE_CMD) up --build
@@ -88,7 +90,8 @@ eval:
 # Manual QA / screen-recording helper — see docs/QA_CHECKLIST.md. Not
 # part of `make validate` (scripts/dev_demo.py is for a human at the
 # browser, not CI). Requires a reachable Ollama with OLLAMA_MODEL and
-# EMBEDDING_MODEL pulled.
+# EMBEDDING_MODEL pulled. The helper preflights the corpus, Ollama, and
+# both configured models before starting; it never pulls models.
 demo:
 	cd backend && uv run python ../scripts/dev_demo.py
 
