@@ -1,6 +1,6 @@
 .PHONY: validate verify eval demo release up down \
 	no-stub-check lint-backend test-backend build-widget \
-	lockfile-audit cooldown-check gen-sbom sbom-check digest-pin-lint image-scan
+	workflow-policy-check lockfile-audit cooldown-check gen-sbom sbom-check digest-pin-lint image-scan
 
 # Docker and Podman are both first-class — compose.yaml
 # stays within the vendor-neutral Compose Specification, and this picks
@@ -10,7 +10,7 @@ COMPOSE_CMD ?= $(shell command -v docker >/dev/null 2>&1 && echo "docker compose
 
 # Same command locally (pre-push hook) and in CI (.github/workflows/validate.yml)
 # — the same command is the project's local and CI gate.
-validate: no-stub-check lint-backend test-backend build-widget lockfile-audit cooldown-check sbom-check digest-pin-lint image-scan
+validate: no-stub-check workflow-policy-check lint-backend test-backend build-widget lockfile-audit cooldown-check sbom-check digest-pin-lint image-scan
 
 # Container plumbing smoke test. Checked-in defaults are echo/fake and do
 # not ingest a corpus; use `make demo` for the grounded developer preview.
@@ -30,6 +30,9 @@ no-stub-check:
 		--exclude='package-lock.json' --exclude='uv.lock' --exclude='*.cdx.json' \
 		'\b(TODO|FIXME|XXX|NotImplementedError)\b' backend widget eval scripts 2>/dev/null \
 		|| (echo "no-stub gate failed: remove the markers above before merging" && exit 1)
+
+workflow-policy-check:
+	cd backend && uv run python ../scripts/check_workflow_supply_chain.py
 
 lint-backend:
 	cd backend && uv run ruff check . ../eval && uv run mypy . ../eval/run_eval.py
