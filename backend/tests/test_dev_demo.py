@@ -1,7 +1,9 @@
 import importlib.util
 import os
+from collections.abc import Coroutine
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import httpx
 import pytest
@@ -24,7 +26,7 @@ def dev_demo(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
 def test_cli_runner_exits_cleanly_on_keyboard_interrupt(
     dev_demo: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def interrupted(coroutine) -> None:
+    def interrupted(coroutine: Coroutine[Any, Any, None]) -> None:
         coroutine.close()
         raise KeyboardInterrupt
 
