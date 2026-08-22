@@ -667,8 +667,8 @@
     {
       "type": "library",
       "name": "js-yaml",
-      "version": "4.3.0",
-      "bom-ref": "cairn-widget@0.0.0|js-yaml@4.3.0",
+      "version": "4.3.1",
+      "bom-ref": "cairn-widget@0.0.0|js-yaml@4.3.1",
       "author": "Vladimir Zapparov",
       "description": "YAML 1.2 parser and serializer",
       "licenses": [
@@ -679,15 +679,15 @@
           }
         }
       ],
-      "purl": "pkg:npm/js-yaml@4.3.0",
+      "purl": "pkg:npm/js-yaml@4.3.1",
       "externalReferences": [
         {
-          "url": "https://registry.npmjs.org/js-yaml/-/js-yaml-4.3.0.tgz",
+          "url": "https://registry.npmjs.org/js-yaml/-/js-yaml-4.3.1.tgz",
           "type": "distribution",
           "hashes": [
             {
               "alg": "SHA-512",
-              "content": "d6d77bf3c6809e7679aaced5d90211975a308ed6296cab7be3d637c5abaa420c0820617fc575b3d70313101c793b72cade55cb56ea973dd3f18f6068147696f5"
+              "content": "098e9cac6ab7d77317f06930bc1eedce0a7df6f8d0c58d7efb9cb5d3f04a37f1947c7a9668e19030d66406fa92cec64a5a4fe28f01e55b3ce42ee96c18786359"
             }
           ],
           "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
@@ -1506,7 +1506,7 @@
       ]
     },
     {
-      "ref": "cairn-widget@0.0.0|js-yaml@4.3.0",
+      "ref": "cairn-widget@0.0.0|js-yaml@4.3.1",
       "dependsOn": [
         "cairn-widget@0.0.0|argparse@2.0.1"
       ]
@@ -1578,7 +1578,7 @@
         "cairn-widget@0.0.0|@oozcitak/dom@2.0.2",
         "cairn-widget@0.0.0|@oozcitak/infra@2.0.2",
         "cairn-widget@0.0.0|@oozcitak/util@10.0.0",
-        "cairn-widget@0.0.0|js-yaml@4.3.0"
+        "cairn-widget@0.0.0|js-yaml@4.3.1"
       ]
     }
   ]

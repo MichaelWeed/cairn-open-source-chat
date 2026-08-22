@@ -1,0 +1,28 @@
+version: "1.0"
+project: cairn
+
+gates:
+  lockfile_audit:
+    command: "make lockfile-audit"
+    timeout_seconds: 300
+    required: true
+  cooldown:
+    command: "make cooldown-check"
+    timeout_seconds: 300
+    required: true
+  sbom:
+    command: "make sbom-check"
+    timeout_seconds: 300
+    required: true
+  digest_pins:
+    command: "make digest-pin-lint"
+    timeout_seconds: 60
+    required: true
+  image:
+    command: "make image-scan"
+    timeout_seconds: 1800
+    required: true
+  full:
+    command: "make validate"
+    timeout_seconds: 1800
+    required: true

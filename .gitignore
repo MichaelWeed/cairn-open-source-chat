@@ -13,3 +13,6 @@ dist/
 chroma/
 .DS_Store
 .claude/
+anchor/
+.agent/runs/
+NOTES.md

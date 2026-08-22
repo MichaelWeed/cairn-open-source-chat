@@ -15,7 +15,8 @@ Per `CLAUDE.md` / `MASTER_PLAN.md` §3: every new dependency gets a one-line jus
 * **httpx** — runtime dependency as of task 1.6: `OllamaProvider` uses it to stream `/api/chat`. Also (still) used by FastAPI's `TestClient` in tests.
 * **pytest-asyncio** (dev) — runs the provider adapters' `async def test_*` functions (task 1.6); `asyncio_mode = "auto"` in `pyproject.toml` so tests don't need per-function markers.
 * **chromadb** — embedded vector store (task 2.1), `PersistentClient` mode (no server process). Pulls a large transitive tree (numpy, onnxruntime, opentelemetry, grpcio, etc. — chromadb's own dependencies, not ours to trim); ~10 transitive deps needed cooldown pins, recorded via `[tool.uv] constraint-dependencies`. Bumped `requires-python` to `>=3.12` because `numpy` (a chromadb dependency) dropped 3.11 support — harmless since local dev and the Docker image already run 3.13. `osv-scanner.toml` documents one exception: a Critical pre-auth code-injection CVE (GHSA-f4j7-r4q5-qw2c) in chromadb's HTTP server API, which this project never runs (embedded mode only, no fixed chromadb version exists yet).
-* **pypdf** — PDF text extraction for upload ingestion (task 2.2).
+* **aiohttp** (transitive, via chromadb → kubernetes) — locked at 3.14.3 to clear three request-parsing advisories; released 2026-07-23 and outside the 14-day cooldown.
+* **pypdf** — PDF text extraction for upload ingestion (task 2.2); pinned to 6.15.0 to clear two malformed-PDF advisories while remaining outside the 14-day cooldown (released 2026-08-06).
 * **pyyaml** — was already resolving in as a transitive dependency (via chromadb's own tree) at 6.0.3; promoted to a direct, declared dependency because `eval/run_eval.py` (task 2.6) imports it directly to load `eval/questions/*.yaml` — relying on an undeclared transitive import would be fragile if chromadb ever drops it.
 * **types-pyyaml** (dev) — type stubs so `mypy --strict` can check `eval/run_eval.py`'s `yaml.safe_load` usage.
 
@@ -25,15 +26,20 @@ Per `CLAUDE.md` / `MASTER_PLAN.md` §3: every new dependency gets a one-line jus
 * **typescript** — type-checking for widget source.
 * **@cyclonedx/cyclonedx-npm** — generates the widget SBOM for `make validate`'s SBOM-diff gate. Pinned to 5.0.0 (6.0.0 was inside the cooldown window). Installed with `libxmljs2`/`ajv` (its optional XML/JSON-validation backends) omitted via `widget/.npmrc` (`omit=optional`) — we only need JSON SBOM output, and that dependency subtree pulled in several packages that were themselves inside the cooldown window.
 * **lru-cache** (transitive, via cyclonedx-npm → hosted-git-info) — pinned to 11.5.1 via `overrides` in `widget/package.json`; the resolver's default pick was inside the cooldown window.
+* **brace-expansion** (transitive, optional tooling path) — pinned to 2.1.4 via `overrides` to clear two uncontrolled-resource-consumption advisories; released 2026-07-30 and outside the cooldown.
+* **fast-uri** (transitive, via cyclonedx-npm → optional ajv) — pinned to 3.1.5 via `overrides` to clear two URI-parser advisories; released 2026-07-31 and outside the cooldown.
+* **ip-address** (transitive, optional tooling path) — pinned to 10.3.1 via `overrides` to clear three address-parser advisories; released 2026-07-25 and outside the cooldown.
+* **js-yaml** (transitive, via cyclonedx-npm → xmlbuilder2) — pinned to 4.3.1 via `overrides` to clear a prototype-pollution advisory; released 2026-07-31 and outside the cooldown.
+* **tar** (transitive, optional tooling path) — pinned to 7.5.21 via `overrides` to clear a path-traversal advisory; released 2026-07-21 and outside the cooldown.
 
 ## Container image (`backend/Dockerfile`, task 1.8)
 
 Not a lockfile, but pinned the same way for the same reason — recorded here after `grype` found real, fixable CVEs in the base image during task 1.8:
 
-* **Base image**: `python:3.13-slim`, not 3.11 (the project only requires `>=3.11`). The 3.11-slim base had several CVEs in the system CPython interpreter itself with fixes available only on the 3.13+ branch.
+* **Base image**: `python:3.13.15-slim`, not 3.11 (the project only requires `>=3.11`); pinned to the fixed 3.13.15 multi-platform digest after Grype found system-CPython CVEs in 3.13.14 (released 2026-08-05).
 * **`apt-get upgrade`** at build time, layered on top of the pinned base digest — picks up Debian's current security patches (fixed several `perl-base`/`libc`-family CVEs that were stale in the pinned base layer).
-* **`pip`, `wheel`, `setuptools==82.0.1`** upgraded before installing `uv` — the base image's bundled versions had known CVEs, including a `jaraco-context`/`wheel` copy vendored *inside* `setuptools` that a plain `pip install --upgrade wheel` doesn't touch.
-* **`uv==0.11.25`** — pinned well past 0.9.13 (the local dev toolchain's version, independent of this) specifically to clear GHSA-4gg8-gxpx-9rph (Medium).
+* **`pip`, `wheel`, `setuptools==83.0.0`** upgraded before installing `uv` — the base image's bundled versions had known CVEs; setuptools 83.0.0 also clears GHSA-h35f-9h28-mq5c (released 2026-07-04).
+* **`uv==0.11.30`** — pinned past 0.9.13 (the local dev toolchain's version, independent of this) to retain the GHSA-4gg8-gxpx-9rph fix and bundle fixed `quinn-proto` 0.11.15 (released 2026-07-20).
 * **`.grype.yaml`** documents four remaining exceptions: CVEs fixed only in Python 3.15 alpha/beta/unreleased builds — not appropriate to chase by running pre-release Python in production. Re-check on 3.15 GA.
 
 ## Tooling (not in a lockfile — installed via Homebrew locally, via CI steps in `.github/workflows/validate.yml`)

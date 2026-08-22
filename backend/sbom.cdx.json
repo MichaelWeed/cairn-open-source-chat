@@ -164,7 +164,7 @@
       "version": "2.6.2"
     },
     {
-      "bom-ref": "aiohttp==3.14.1",
+      "bom-ref": "aiohttp==3.14.3",
       "description": "Async http client/server framework (asyncio)",
       "externalReferences": [
         {
@@ -210,9 +210,9 @@
         }
       ],
       "name": "aiohttp",
-      "purl": "pkg:pypi/aiohttp@3.14.1",
+      "purl": "pkg:pypi/aiohttp@3.14.3",
       "type": "library",
-      "version": "3.14.1"
+      "version": "3.14.3"
     },
     {
       "bom-ref": "aiosignal==1.4.0",
@@ -2175,7 +2175,7 @@
       "version": "2.46.4"
     },
     {
-      "bom-ref": "pypdf==6.14.2",
+      "bom-ref": "pypdf==6.15.0",
       "description": "A pure-python PDF library capable of splitting, merging, cropping, and transforming PDF files",
       "externalReferences": [
         {
@@ -2208,9 +2208,9 @@
         }
       ],
       "name": "pypdf",
-      "purl": "pkg:pypi/pypdf@6.14.2",
+      "purl": "pkg:pypi/pypdf@6.15.0",
       "type": "library",
-      "version": "6.14.2"
+      "version": "6.15.0"
     },
     {
       "bom-ref": "pyproject_hooks==1.2.0",
@@ -3312,7 +3312,7 @@
         "typing_extensions==4.15.0",
         "yarl==1.24.2"
       ],
-      "ref": "aiohttp==3.14.1"
+      "ref": "aiohttp==3.14.3"
     },
     {
       "dependsOn": [
@@ -3424,7 +3424,7 @@
     },
     {
       "dependsOn": [
-        "aiohttp==3.14.1",
+        "aiohttp==3.14.3",
         "numpy==2.5.0",
         "pytest-asyncio==1.4.0",
         "pytest==9.1.1",
@@ -3541,7 +3541,7 @@
     {
       "dependsOn": [
         "PyYAML==6.0.3",
-        "aiohttp==3.14.1",
+        "aiohttp==3.14.3",
         "certifi==2026.6.17",
         "durationpy==0.10",
         "python-dateutil==2.9.0.post0",
@@ -3711,7 +3711,7 @@
       "dependsOn": [
         "typing_extensions==4.15.0"
       ],
-      "ref": "pypdf==6.14.2"
+      "ref": "pypdf==6.15.0"
     },
     {
       "ref": "pyproject_hooks==1.2.0"
@@ -3785,7 +3785,7 @@
         "httpx==0.28.1",
         "pydantic-settings==2.14.2",
         "pydantic==2.13.4",
-        "pypdf==6.14.2",
+        "pypdf==6.15.0",
         "uvicorn==0.49.0"
       ],
       "ref": "root-component"
@@ -3874,7 +3874,7 @@
     },
     {
       "dependsOn": [
-        "aiohttp==3.14.1",
+        "aiohttp==3.14.3",
         "mypy==1.18.2"
       ],
       "ref": "uvloop==0.22.1"
