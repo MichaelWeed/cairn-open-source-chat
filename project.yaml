@@ -27,8 +27,7 @@ status:
   # bursts with multi-week gaps. Every artifact in this repo is written to
   # be resumable cold, by someone with no memory of the last session.
   review_on: >-
-    Re-run the admission review if six months pass with no commits, or if
-    the public repository still has no pushed history by then.
+    Re-run the admission review if six months pass with no commits.
 
 classification:
   kind: open-source-plus-commercial
@@ -44,9 +43,9 @@ classification:
   # published documentation.
 
 exposure:
-  current: local-only
-  # No deployment exists. Nothing is running anywhere but the author's
-  # machine. The public GitHub repository exists but is empty.
+  current: public-source-only
+  # The source is public. No deployment exists, and the author operates no
+  # running service; any live deployment belongs to a third-party operator.
   intended: self-hosted-by-third-parties
   # The delivery model is source and container images that other operators
   # run inside their own infrastructure. There is no service the author
@@ -91,15 +90,26 @@ systems:
     repository: MichaelWeed/cairn-open-source-chat
     url: https://github.com/MichaelWeed/cairn-open-source-chat
     visibility: public
-    state: created-but-empty
+    state: published
+    public_main:
+      ref: refs/heads/main
+      sha: ab1668696acc60ca7a696f6f738bb9425d1eb3ea
+      published_on: "2026-08-22"
     note: >-
-      Repository exists and is public; no commits have ever been pushed.
-      All history is local as of 2026-08-21.
+      Public source is published on main as of 2026-08-22. This is source
+      availability only; the author operates no hosted Cairn service.
   ci:
     provider: github-actions
     workflow: .github/workflows/validate.yml
-    state: never-executed
-    note: Runs the same `make validate` as the local pre-push hook.
+    state: active-green
+    latest_successful_run:
+      id: "32605367945"
+      head_sha: ab1668696acc60ca7a696f6f738bb9425d1eb3ea
+      completed_on: "2026-08-22"
+      url: https://github.com/MichaelWeed/cairn-open-source-chat/actions/runs/32605367945
+    note: >-
+      Runs the same `make validate` as the local pre-push hook. The recorded
+      run completed successfully on the published main commit.
   issue_tracking:
     provider: github-issues
     project_board: github-projects

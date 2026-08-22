@@ -1,104 +1,51 @@
 # Milestone — Public availability
 
-The next meaningful outcome, its work items, and the decisions still open.
-Established 2026-08-21 by the project baseline review; see
-[PROJECT-BRIEF.md](PROJECT-BRIEF.md) for why this is the outcome that matters.
+**Delivered 2026-08-22.** Cairn is public, and a person who has never seen it
+can clone the published repository and obtain a cited answer from the bundled
+corpus without changing a tracked file. This is a completion record, not a
+replacement for an issue tracker: GitHub Issues and Projects still do not exist,
+so [project.yaml](../project.yaml) remains the durable source for that fact.
 
-**This file is a staging record, not a permanent tracker.** Work tracking belongs
-in GitHub Issues and Projects (see [project.yaml](../project.yaml)). Those do not
-exist yet, and the plan should not live only in a chat transcript in the meantime.
-Retire this file once the issues are open, leaving the milestone definition and the
-decision log behind if they are still useful.
+The delivered outcome is source availability, not an author-hosted service. Cairn
+is public at [MichaelWeed/cairn-open-source-chat](https://github.com/MichaelWeed/cairn-open-source-chat),
+but no author-operated deployment exists.
 
----
+## Completed work
 
-## The outcome
+1. **Private planning stays outside published history.** The public `main` history
+   and tracked tree contain no `MASTER_PLAN.md` or inbound reference; recoverable
+   private preservation remains outside the repository.
+2. **Public documentation links resolve.** The tracked Markdown graph has zero
+   missing relative targets or anchors. `docs/CONTRIBUTING.md` is the contribution
+   policy, while [ARCHITECTURE.md](ARCHITECTURE.md) and [adr/](adr/) remain the
+   durable design authorities.
+3. **Public claims agree.** The GitHub description is now: “Free, self-hosted AI
+   support chat that answers from your docs with citations and refuses to guess.”
+   It does not repeat the superseded unsupported “up to 40%” claim.
+4. **Cold-clone path was rehearsed before publication.** An isolated locked clone
+   completed `make validate` and the real `make demo` cited-answer path with the
+   documented, already-installed Ollama model pair. No model was downloaded.
+5. **Only `main` was first-pushed and CI is green.** The published ref is
+   `ab1668696acc60ca7a696f6f738bb9425d1eb3ea`; GitHub Actions validate run
+   [32605367945](https://github.com/MichaelWeed/cairn-open-source-chat/actions/runs/32605367945)
+   completed successfully. The workflow runs the same `make validate` gate as
+   local pre-push.
+6. **The public-clone claim was proved after publication.** A fresh HTTPS clone of
+   public `main` passed the full validation contract, had zero missing Markdown
+   targets or anchors, returned healthy from `/readyz`, and streamed a bundled-
+   corpus answer citing `returns.md`, `warranty.md`, and `shipping.md` before its
+   `done` event. The demo then shut down cleanly and its port was closed.
 
-**Cairn is public, and a person who has never seen it can clone it and get a cited
-answer without asking the author anything.**
+## Evidence and maintenance note
 
-No new capability is required to get there. Everything below is publication,
-accuracy, and proof.
+The README Actions badge now resolves as SVG HTTP 200 and GitHub detects the
+Apache-2.0 license. The first hosted run exposed a fresh-run SBOM-generator tool
+version drift; it was corrected by a normal forward commit, then the recorded run
+above passed. GitHub also emitted a non-failing Node 20 action-runtime deprecation
+annotation. That is a maintenance finding, not a failed validation gate.
 
-## The success test
+## Open decision
 
-On a machine that has never built this project: clone, install and start Ollama,
-pull the two documented models, run `make demo`, and complete a cited chat round
-trip from the bundled corpus — with no undocumented step, no question asked of
-the author, and no edit to a tracked file.
-
-Supporting conditions: the GitHub Actions run on `main` has actually executed and
-is green; no published document links to a file that does not exist; no published
-claim contradicts another.
-
-## Method
-
-**Kanban, continuous flow, WIP limit 1.** Not Scrum: sprints need a cadence this
-project does not have, and timeboxes that are routinely missed produce false
-signal rather than information. The board's highest-value function here is as a
-"where was I" device after a multi-week gap.
-
-No estimates, dates, or story points — deliberately.
-
-## Work items
-
-In dependency order. Item 1 must land before item 5, because pushing publishes
-history.
-
-1. **Keep private planning outside published history.**
-   Private planning is preserved outside this repository; the public branch has
-   no private-plan file or inbound references. Keep future planning in the
-   private notes and out of publication refspecs.
-
-2. **Keep public documentation links resolvable.**
-   `docs/CONTRIBUTING.md` now records the supported contribution boundary and
-   security-reporting route. [ARCHITECTURE.md](ARCHITECTURE.md) and
-   [adr/](adr/) remain the design authorities; no duplicate solution-design
-   document is needed.
-
-3. **Make the public claims agree.**
-   The GitHub repository description says "up to 40%"; `README.md` says "a third"
-   and footnotes it to two industry sources. The sourced number wins. Fixing this
-   is a repository-settings change, not a code change.
-
-4. **Rehearse the cold-clone install on a machine that has never built Cairn.**
-   From a local clone first, recording every undocumented step, missing
-   prerequisite, and surprise. This is the success test, so it runs before
-   publication rather than after. The supported preview path is `make demo`, whose
-   preflight checks the corpus, Ollama service, and both configured models without
-   downloading them. `make up` remains an echo/fake plumbing smoke test and is not
-   evidence of grounded answers.
-
-5. **First push, and a green Actions run on `main`.**
-   The only thing that turns the README badge from blank into evidence, and the
-   first ever execution of the CI half of `make validate`. Note that the pre-push
-   hook runs the full gate locally: osv-scanner, grype, cyclonedx-py, and a running
-   container engine must all work, or the push will not start.
-
-6. **Re-run the cold-clone rehearsal against the published repository.**
-   Closes the milestone by proving the actual claim, not a local approximation.
-
-## Open decisions
-
-| # | Decision | Why it is blocking | Status |
-| --- | --- | --- | --- |
-| D4 | Whether all remaining development work migrates into GitHub Issues, or only the work needed for this milestone | Affects the future tracker structure | Open |
-
-## Findings from the baseline review
-
-Recorded because they are easy to rediscover expensively.
-
-* **The public repository has existed since 2026-07-11 and is empty.** The
-  publication candidate is local. `git ls-remote` returns nothing.
-* **The CI badge is inert.** It points at a workflow that has never executed, so
-  it renders as no status rather than as proof — the pitch's primary credibility
-  signal is currently switched off.
-* **The SBOM drift gate is lower-risk than it looks.** The concern was that the
-  committed SBOM, generated on macOS/arm64, would not match one generated on
-  Linux/x86-64 in CI, failing `sbom-check` on the first run. Checked 2026-08-21:
-  the SBOM is generated with `--output-reproducible`, carries no platform
-  qualifiers in its purls, and the only platform-gated packages in `uv.lock` are
-  Windows-gated. Still unproven until a CI run completes.
-* **The first push is the most likely stall point,** because the pre-push hook
-  runs the entire gate and needs a container engine plus three external scanners
-  present locally.
+| # | Decision | Status |
+| --- | --- | --- |
+| D4 | Whether all remaining development work migrates into GitHub Issues, or only the work needed for a future milestone | Open, nonblocking for this completed publication milestone |

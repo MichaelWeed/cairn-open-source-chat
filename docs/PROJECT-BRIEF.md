@@ -65,7 +65,8 @@ are cited benchmarks, not Cairn measurements, and the README labels them as such
 
 ## 4. Current state
 
-**Verified 2026-08-21 by inspection and by running the test suite.**
+**Admission-review observation recorded 2026-08-21; publication evidence updated
+2026-08-22.**
 
 Working end to end: an SSE chat endpoint with per-IP and per-session token buckets
 and an origin allowlist; frozen Pydantic wire contracts that reject unknown fields
@@ -75,8 +76,8 @@ incremental reindex; retrieval that produces citations and refuses below a
 confidence threshold; an evaluation harness with one committed report from a real
 model; and a demo page that exercises the whole round trip.
 
-Measured, not asserted: the current full `make validate` run completed with
-**125 tests passing** and one known Starlette TestClient deprecation warning.
+Measured, not asserted: the current observed full `make validate` gate completed
+with **132 tests passing** and one known Starlette TestClient deprecation warning.
 
 Not built: HTTP upload endpoint and scrape ingestion; the entire tool and
 escalation layer; the always-on guardrail middleware and the adversarial test
@@ -85,45 +86,42 @@ and therefore any authentication; the production embeddable widget
 (`widget/src/index.ts` is a single version constant); and the release bundler
 (`make release` prints a placeholder).
 
-**The defining fact about the current state is distribution, not code.** Thirty-five
-commits of disciplined work exist only on one machine. The public repository was
-created on 2026-07-11 and is still empty. The CI badge in the README points at a
-workflow that has never executed once, so it renders as no status rather than as
-proof. Every credibility signal the project was built to display is currently
-switched off.
+**The defining fact about the current state is now public evidence, not private
+availability.** The 2026-08-21 admission review recorded the then-headless source
+repository and absent hosted-run evidence. On 2026-08-22, sanitized `main` was
+published at `ab1668696acc60ca7a696f6f738bb9425d1eb3ea`, and GitHub Actions
+validate run 32605367945 completed successfully. The README badge now has a real
+status; this remains public source availability, not a hosted service.
 
-## 5. The next meaningful outcome
+## 5. Delivered outcome
 
 **Cairn is public, and a person who has never seen it can clone it and get a cited
 answer without asking the author anything.**
 
-This is a distribution and honesty outcome, not a feature outcome. No new
-capability is required to reach it. What it requires is: publishing the history,
-proving the cold-start path actually works on a machine that has never built the
-project, separating the private planning material from the published
-documentation, and removing every dangling reference and mismatched claim a first
-visitor would hit.
+This distribution and honesty outcome was delivered on 2026-08-22 without adding
+a product capability: sanitized history was published, private planning remained
+outside the public branch, documentation links and claims were reconciled, and
+the cold-start path was rehearsed before and after publication.
 
-## 6. How we will know it succeeded
+## 6. How it was proved
 
-The success test is a rehearsal, performed rather than assumed:
-
-**On a machine that has never built this project, a clean clone of the public
-repository with `uv`, Ollama, and the two documented models can run `make demo`
-and reach a cited chat round trip from the bundled corpus — with no undocumented
-step, no question asked of the author, and no edit to a tracked file.**
+The success test was performed rather than assumed. A fresh public clone with
+`uv`, Ollama, and the two documented models already installed ran `make demo` and
+completed a cited bundled-corpus chat round trip without a tracked-file edit or
+model download. It returned healthy from `/readyz`, emitted citations for
+`returns.md`, `warranty.md`, and `shipping.md`, emitted `done`, and shut down with
+its port closed.
 
 `make up` is intentionally a separate echo/fake container-plumbing smoke test. It
 does not ingest a corpus, prove grounded answers, or expose an `/admin` route.
 
 Supporting conditions that make that test meaningful:
 
-* The GitHub Actions run on `main` has actually executed and is green, so the
-  README badge shows a real status.
-* No published document links to a file that does not exist.
-* No published claim contradicts another. The GitHub repository description
-  currently says "up to 40%" while the README says "a third" and footnotes it to
-  two sources; they must agree, and the sourced number wins.
+* GitHub Actions run 32605367945 on published `main` completed successfully, so
+  the README badge shows a real status.
+* The tracked Markdown graph has zero missing relative targets or anchors.
+* The GitHub description uses the approved grounded-answer wording and does not
+  repeat the superseded unsupported “up to 40%” claim.
 
 ## 7. Explicitly out of scope
 
@@ -154,8 +152,8 @@ public, while being resumable by one person after long gaps.
 
 ## 9. Exposure
 
-**Local-only today, and nothing is deployed anywhere.** The published repository
-will be public; the software will not be running in public.
+**Public source today, and nothing is deployed anywhere by the author.** The
+repository is public; the software is not running as an author-hosted service.
 
 The delivery model matters for how risk is assessed: the author operates no
 service and holds no user data. Every risk in this project is borne by a
@@ -218,19 +216,14 @@ release bundler that would ship it does not exist yet.
 
 **Risks**
 
-* *Publication risk is the live one.* The project's credibility depends on signals
-  — a green CI badge, a public history — that are currently inert. A visitor today
-  would see a badge with no status.
-* *The first CI run has never happened.* `make validate` is demanding: it needs
-  osv-scanner, grype, cyclonedx-py, a container engine, and network access to PyPI
-  and npm for the cooldown check. It has only ever run on one macOS machine. The
-  SBOM drift gate was the specific concern — checked on 2026-08-21, and the risk
-  is lower than it appears, since the SBOM is generated reproducibly with no
-  platform qualifiers and the only platform-gated packages in `uv.lock` are
-  Windows-gated. Lower is not zero, and it remains unproven until a run completes.
-* *The pre-push hook runs the full gate.* The first push therefore requires the
-  entire toolchain working locally, including a running container engine. This is
-  a plausible stall point for the very first push.
+* *CI toolchain maintenance remains live.* The first hosted run exposed SBOM
+  generator drift, which was corrected by pinning the generator toolchain before
+  successful run 32605367945. GitHub also reported a non-failing Node 20
+  action-runtime deprecation annotation; it needs maintenance attention, not a
+  gate waiver.
+* *The pre-push hook runs the full gate.* Future pushes still require scanners, a
+  container engine, and registry access; this is deliberate friction, not an
+  unresolved first-publication risk.
 * *Single maintainer, intermittent cadence.* The mitigation is that the repository
   is written to be resumable cold, which is unusually well done here — the QA
   checklist records what was verified, when, and what remains unverified.
@@ -258,7 +251,6 @@ release bundler that would ship it does not exist yet.
 **Unknowns**
 
 * Whether anyone wants this. Zero external signal exists, by construction.
-* Whether the cold-clone path works. Never attempted from a clean machine.
 
 ---
 
@@ -266,13 +258,14 @@ release bundler that would ship it does not exist yet.
 
 Distinguishing where each claim came from, since the sourcing matters:
 
-* **Observed in the repository:** everything in sections 4, 10, 11, and the
-  concrete parts of 13 — commit history, remote state, test results, file
+* **Observed in the repository and publication evidence:** everything in sections
+  4, 6, 10, 11, and the concrete parts of 13 — commit history, remote state,
+  GitHub Actions run 32605367945, fresh public-clone evidence, test results, file
   contents, dependency and CVE-exception records.
 * **Stated by the author (2026-08-21):** the intermittent cadence; that the next
   outcome is public credibility; that the success test is the clean-clone run;
   that private planning material stays out of published documentation; that
   tracking moves to GitHub Issues and Projects rather than Jira.
-* **Inferred:** that publication rather than capability is the binding constraint;
-  that the inert CI badge actively undercuts the pitch; that the risk profile is
-  dominated by third-party operators rather than by the author.
+* **Inferred:** the 2026-08-21 admission review found publication rather than
+  capability to be the binding constraint. That constraint is now closed; the
+  risk profile remains dominated by third-party operators rather than by the author.

@@ -46,10 +46,14 @@ a gate that runs in seconds.
 way to push a documentation typo without a full container build. The friction is
 accepted deliberately, but it is friction.
 
-**Unproven as of 2026-08-21.** The gate has only ever run on the author's macOS
-machine. Because nothing has been pushed, the GitHub Actions half has never executed
-once, and the claim that both halves agree is therefore untested. The specific
-concern — SBOM drift between macOS and Linux — was examined on 2026-08-21 and looks
-low-risk, since the SBOM is generated reproducibly with no platform qualifiers and
-the only platform-gated packages in `uv.lock` are Windows-gated. Low risk is not no
-risk, and it stays unproven until a run completes.
+**Historical observation, 2026-08-21.** The gate had only run on the author's
+macOS machine, so GitHub Actions agreement and cross-platform SBOM reproduction
+were unproven.
+
+**Validated 2026-08-22.** GitHub Actions validate run
+[32605367945](https://github.com/MichaelWeed/cairn-open-source-chat/actions/runs/32605367945)
+completed successfully for published `main` at
+`ab1668696acc60ca7a696f6f738bb9425d1eb3ea`. The first hosted run exposed a
+generator-version SBOM drift, which was corrected by a normal forward commit that
+pinned the CI generator toolchain; the recorded successful run then verified the
+same full `make validate` gate on GitHub-hosted Linux.
