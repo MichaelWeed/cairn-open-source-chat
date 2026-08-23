@@ -1,0 +1,12 @@
+# Grounded live-beta override. Keep compose.yaml's default `make up` path as
+# deterministic echo/fake plumbing; use `make live` for a real operator path.
+services:
+  backend:
+    environment:
+      PROVIDER: ollama
+      EMBEDDING_PROVIDER: ollama
+      CORPUS_PATH: /corpus
+    volumes:
+      # Operators may set CAIRN_CORPUS_PATH to an absolute host directory.
+      # The fallback is the committed sample corpus for local smoke rehearsal.
+      - ${CAIRN_CORPUS_PATH:-./eval/corpus}:/corpus:ro

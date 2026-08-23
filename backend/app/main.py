@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.chat import router as chat_router
 from app.config import Settings, get_settings
 from app.db import bootstrap
+from app.ingest.startup import ingest_corpus
 from app.logging_config import configure_logging
 from app.providers.base import Provider
 from app.providers.echo import EchoProvider
@@ -40,9 +41,31 @@ def create_app(settings: Settings | None = None, provider: Provider | None = Non
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        app.state.corpus_ready = False
         app.state.db = bootstrap(settings.database_path)
-        app.state.chroma_client = get_chroma_client(settings)
-        app.state.document_collection = get_document_collection(app.state.chroma_client, settings)
+        try:
+            app.state.chroma_client = get_chroma_client(settings)
+            app.state.document_collection = get_document_collection(
+                app.state.chroma_client, settings
+            )
+            if settings.corpus_path is not None:
+                summary = ingest_corpus(
+                    db=app.state.db,
+                    collection=app.state.document_collection,
+                    corpus_path=settings.corpus_path,
+                )
+                logger.info(
+                    "startup corpus ingested",
+                    extra={
+                        "corpus_path": str(settings.corpus_path),
+                        "document_count": summary.document_count,
+                        "chunk_count": summary.chunk_count,
+                    },
+                )
+            app.state.corpus_ready = True
+        except Exception:
+            app.state.db.close()
+            raise
         logger.info(
             "app started",
             extra={
@@ -94,7 +117,11 @@ def create_app(settings: Settings | None = None, provider: Provider | None = Non
         except Exception:
             vector_store_ok = False
 
-        checks = {"database": db_ok, "vector_store": vector_store_ok}
+        checks = {
+            "database": db_ok,
+            "vector_store": vector_store_ok,
+            "corpus": bool(app.state.corpus_ready),
+        }
         ready = all(checks.values())
         body = {"status": "ok" if ready else "not_ready", "checks": checks}
         return JSONResponse(body, status_code=200 if ready else 503)

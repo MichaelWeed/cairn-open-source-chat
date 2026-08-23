@@ -1,4 +1,5 @@
 .PHONY: validate verify eval demo release up down \
+	live live-down \
 	no-stub-check lint-backend test-backend build-widget \
 	workflow-policy-check publication-baseline-check lockfile-audit cooldown-check gen-sbom sbom-check digest-pin-lint image-scan
 
@@ -20,6 +21,15 @@ up:
 
 down:
 	$(COMPOSE_CMD) down
+
+# Grounded operator path. The override replaces smoke providers with real
+# Ollama services and requires a read-only mounted corpus before readiness.
+live:
+	@COMPOSE_CMD="$(COMPOSE_CMD)" python3 scripts/check_port.py
+	$(COMPOSE_CMD) -f compose.yaml -f compose.live.yaml up --build
+
+live-down:
+	$(COMPOSE_CMD) -f compose.yaml -f compose.live.yaml down
 
 # Scoped to source directories, not docs/*.md — the documentation and README
 # discuss this policy in prose, which isn't a stub marker.

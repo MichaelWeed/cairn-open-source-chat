@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     chat_message_max_chars: int = 500
     database_path: Path = DEFAULT_DB_PATH
     chroma_path: Path = DEFAULT_CHROMA_PATH
+    # None preserves the deterministic local/test startup path. The live
+    # Compose override sets this to its read-only operator corpus mount.
+    corpus_path: Path | None = None
     embedding_model: str = "nomic-embed-text"
     retrieval_top_k: int = 4
     retrieval_max_distance: float = 1.2
