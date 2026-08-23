@@ -9,8 +9,9 @@ import yaml
 
 
 REPOSITORY_ROOT = Path(__file__).parents[1]
-INITIAL_PUBLICATION_SHA = "ab1668696acc60ca7a696f6f738bb9425d1eb3ea"
+FIRST_PUBLICATION_SHA = "04a1db5d72884eb8fbf803ab46686ccc58d3a9b6"
 FIRST_SUCCESSFUL_WORKFLOW_RUN = "32605367945"
+FIRST_SUCCESSFUL_RUN_HEAD_SHA = "ab1668696acc60ca7a696f6f738bb9425d1eb3ea"
 
 
 def publication_baseline_errors(project_file: Path) -> list[str]:
@@ -44,7 +45,7 @@ def publication_baseline_errors(project_file: Path) -> list[str]:
     else:
         expected_initial_publication: dict[str, Any] = {
             "ref": "refs/heads/main",
-            "head_sha": INITIAL_PUBLICATION_SHA,
+            "head_sha": FIRST_PUBLICATION_SHA,
             "published_on": "2026-08-22",
         }
         for field, expected in expected_initial_publication.items():
@@ -63,12 +64,24 @@ def publication_baseline_errors(project_file: Path) -> list[str]:
     else:
         expected_first_successful_run: dict[str, Any] = {
             "id": FIRST_SUCCESSFUL_WORKFLOW_RUN,
-            "head_sha": INITIAL_PUBLICATION_SHA,
+            "head_sha": FIRST_SUCCESSFUL_RUN_HEAD_SHA,
             "completed_on": "2026-08-22",
         }
         for field, expected in expected_first_successful_run.items():
             if first_successful_run.get(field) != expected:
                 errors.append(f"systems.ci.first_successful_run.{field} must be {expected!r}")
+
+    issue_tracking = systems.get("issue_tracking")
+    if not isinstance(issue_tracking, dict):
+        errors.append("systems.issue_tracking must be a mapping")
+    elif issue_tracking.get("state") != "enabled-empty":
+        errors.append("systems.issue_tracking.state must be 'enabled-empty'")
+
+    project_board = systems.get("project_board")
+    if not isinstance(project_board, dict):
+        errors.append("systems.project_board must be a mapping")
+    elif project_board.get("state") != "not-yet-created":
+        errors.append("systems.project_board.state must be 'not-yet-created'")
 
     return errors
 

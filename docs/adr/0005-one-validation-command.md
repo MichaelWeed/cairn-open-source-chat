@@ -50,10 +50,11 @@ accepted deliberately, but it is friction.
 macOS machine, so GitHub Actions agreement and cross-platform SBOM reproduction
 were unproven.
 
-**Validated 2026-08-22.** GitHub Actions validate run
+**Validated 2026-08-22.** The first published main push at
+`04a1db5d72884eb8fbf803ab46686ccc58d3a9b6` exposed generator-version SBOM drift
+on its first hosted validation. A normal forward commit pinned the CI generator
+toolchain and moved published main to `ab1668696acc60ca7a696f6f738bb9425d1eb3ea`.
+GitHub Actions validate run
 [32605367945](https://github.com/MichaelWeed/cairn-open-source-chat/actions/runs/32605367945)
-completed successfully for published `main` at
-`ab1668696acc60ca7a696f6f738bb9425d1eb3ea`. The first hosted run exposed a
-generator-version SBOM drift, which was corrected by a normal forward commit that
-pinned the CI generator toolchain; the recorded successful run then verified the
-same full `make validate` gate on GitHub-hosted Linux.
+completed successfully at that forward-fixed commit, verifying the same full
+`make validate` gate on GitHub-hosted Linux.

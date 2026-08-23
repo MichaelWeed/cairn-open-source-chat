@@ -93,7 +93,7 @@ systems:
     state: published
     initial_publication:
       ref: refs/heads/main
-      head_sha: ab1668696acc60ca7a696f6f738bb9425d1eb3ea
+      head_sha: 04a1db5d72884eb8fbf803ab46686ccc58d3a9b6
       published_on: "2026-08-22"
     note: >-
       Public source is published. initial_publication records the immutable first
@@ -113,13 +113,15 @@ systems:
       records immutable first-publication evidence, not the latest workflow run.
   issue_tracking:
     provider: github-issues
-    project_board: github-projects
-    state: not-yet-created
+    state: enabled-empty
     note: >-
-      Chosen 2026-08-21 over Jira. Work here produces pull requests, so the
-      tracker belongs beside them; it needs no additional account, and it is
-      reviewable by anyone off the author's home network. GitHub Issues
-      exports cleanly via API if a Jira-shaped tracker is ever wanted again.
+      GitHub Issues is enabled, but no issue, milestone, or work object exists.
+      Chosen 2026-08-21 over Jira. It exports cleanly via API if a Jira-shaped
+      tracker is ever wanted again.
+  project_board:
+    provider: github-projects
+    state: not-yet-created
+    note: GitHub Projects is enabled, but no project board or work object exists.
   jira:
     state: none
     note: A Jira instance previously existed and was deactivated. Not being reinstated.
@@ -143,15 +145,15 @@ documentation_authority:
     files:
       - project.yaml              # this file
       - docs/PROJECT-BRIEF.md     # why it exists, for whom, current state
-      - docs/PUBLIC-AVAILABILITY.md  # current milestone, work items, open decisions
+      - docs/PUBLIC-AVAILABILITY.md  # delivered publication record and D4 decision
   work_tracking:
     location: GitHub Issues and Projects
-    state: not-yet-created
+    state: features-enabled-empty
     note: >-
-      Durable per-task state, once the tracker exists. Until then
-      docs/PUBLIC-AVAILABILITY.md holds the milestone and its work items, so
-      the plan does not live only in a chat transcript. Retire that file when
-      the issues are open rather than maintaining both.
+      The features are enabled, but no issue, milestone, or project board exists.
+      D4 remains open: choose whether future work migrates fully to GitHub work
+      objects or only milestone work does. docs/PUBLIC-AVAILABILITY.md remains a
+      delivered publication record, not an active tracker.
   private_planning:
     location: author's private notes, outside this repository
     contains:

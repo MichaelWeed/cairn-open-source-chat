@@ -76,8 +76,9 @@ incremental reindex; retrieval that produces citations and refuses below a
 confidence threshold; an evaluation harness with one committed report from a real
 model; and a demo page that exercises the whole round trip.
 
-Measured, not asserted: the current observed full `make validate` gate completed
-with **132 tests passing** and one known Starlette TestClient deprecation warning.
+Measured, not asserted: the publication baseline completed the full `make validate`
+gate successfully, with one known Starlette TestClient deprecation warning. The
+durable first-successful hosted-run evidence is recorded in `project.yaml`.
 
 Not built: HTTP upload endpoint and scrape ingestion; the entire tool and
 escalation layer; the always-on guardrail middleware and the adversarial test
@@ -88,10 +89,12 @@ and therefore any authentication; the production embeddable widget
 
 **The defining fact about the current state is now public evidence, not private
 availability.** The 2026-08-21 admission review recorded the then-headless source
-repository and absent hosted-run evidence. On 2026-08-22, sanitized `main` was
-initially published at `ab1668696acc60ca7a696f6f738bb9425d1eb3ea`, and GitHub Actions
-validate run 32605367945 completed successfully. The README badge now has a real
-status; this remains public source availability, not a hosted service.
+repository and absent hosted-run evidence. On 2026-08-22, the first sanitized
+`main` push created remote main at `04a1db5d72884eb8fbf803ab46686ccc58d3a9b6`.
+Its first hosted validation exposed fresh-CI SBOM-generator drift; a normal forward
+fix moved published main to `ab1668696acc60ca7a696f6f738bb9425d1eb3ea`, where
+GitHub Actions validate run 32605367945 completed successfully. The README badge
+now has a real status; this remains public source availability, not a hosted service.
 
 ## 5. Delivered outcome
 
