@@ -1,6 +1,11 @@
-# Cairn Developer Guide
+# Cairn Technical Guide
 
-Technical documentation for developing Cairn (formerly AetherChat; see [project.yaml](project.yaml) for the durable identity record). Executive overview: [README.md](README.md). [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/adr/](docs/adr/) are the durable design authorities; [docs/PUBLIC-AVAILABILITY.md](docs/PUBLIC-AVAILABILITY.md) records the active publication milestone.
+This is the full technical guide for setting up, configuring, evaluating,
+developing, and operating Cairn. The executive overview is [README.md](README.md).
+Cairn was formerly AetherChat; [project.yaml](project.yaml) is the durable identity
+record. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/adr/](docs/adr/) are
+the durable design authorities, while [docs/PUBLIC-AVAILABILITY.md](docs/PUBLIC-AVAILABILITY.md)
+records the delivered public-availability outcome and open tracking decision D4.
 
 ---
 
@@ -36,7 +41,11 @@ Design invariants and current limits:
 
 ## 2. Developer Preview Quick Start
 
-Prerequisites: `uv`, Ollama running on the host, and the configured chat and embedding models already present. `make demo` checks the bundled corpus, Ollama connection, and both models before the server starts. It prints exact corrective commands and never downloads models.
+Prerequisites: `uv`, Ollama running on the host, and the configured chat and
+embedding models already present. The default pair is `llama3.1:8b-instruct` and
+`nomic-embed-text`, matching `backend/app/config.py`. `make demo` checks the
+bundled corpus, Ollama connection, and both models before the server starts. It
+prints exact corrective commands and never downloads models.
 
 ```sh
 ollama pull llama3.1:8b-instruct
@@ -45,7 +54,7 @@ make demo
 # open http://localhost:8080/demo
 ```
 
-The command uses the existing in-process `ingest_upload()` helper with `app.state.document_collection` and `app.state.db` to ingest `eval/corpus/`, then serves the demo page with real Ollama embeddings and generation. Ask about shipping, returns, or warranties to exercise cited answers. Copy `.env.example` to `.env` only to override `CAIRN_PORT`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, or `EMBEDDING_MODEL`.
+The command uses the existing in-process `ingest_upload()` helper with `app.state.document_collection` and `app.state.db` to ingest `eval/corpus/`, then serves the demo page with real Ollama embeddings and generation. Ask about shipping, returns, or warranties to exercise cited answers. Copy `.env.example` to `.env` only to override `CAIRN_PORT`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, or `EMBEDDING_MODEL`. An alternate model pair must already be present in Ollama; `make demo` checks it and never pulls it. A compose-network `OLLAMA_BASE_URL=http://ollama:11434` is rewritten to localhost for the host-run demo helper, while an explicit host URL is used as provided.
 
 **Port:** the preview listens on `CAIRN_PORT` (default 8080). If that port is taken, `make demo` fails with the conflicting port and tells you to set `CAIRN_PORT` in `.env` before retrying. The port is deliberately fixed rather than auto-selected because the demo URL and origin allowlist must agree.
 

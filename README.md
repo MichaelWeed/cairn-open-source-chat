@@ -2,63 +2,60 @@
 
 [![validate](https://github.com/MichaelWeed/cairn-open-source-chat/actions/workflows/validate.yml/badge.svg)](https://github.com/MichaelWeed/cairn-open-source-chat/actions/workflows/validate.yml)
 
-**Cairn is building toward a free, self-hosted AI support chat that answers from your own docs and refuses to guess.**
+**Self-hosted AI support chat that answers from your documents with citations and refuses to guess.**
 
-Free and open source (Apache-2.0). No per-seat fees, no SaaS subscription, no conversation data leaving your infrastructure — the only cost is the server it runs on.
+Cairn is a free, Apache-2.0 developer preview for teams that want useful support
+answers without a SaaS subscription, per-seat pricing, or a third party holding
+their customer conversations. Point it at the documents your team trusts; Cairn
+retrieves relevant passages, cites its sources, and refuses when retrieval is below
+its configured confidence threshold. The supported path uses local Ollama models,
+so an operator keeps the service and its data in their own infrastructure.
 
-<!-- 30-second demo video goes here — recorded against the production widget
-     once that widget exists. -->
+**Developer preview / pre-release.** Today you can run the cited local demo. The
+production widget, human handoff, order-status deep links, admin experience,
+guardrail pipeline, hosted-provider adapter, and any author-hosted service are
+planned, not available behavior.
 
-## Where "a third" comes from
+It is for CTOs and support leaders evaluating a grounded, self-hosted alternative
+to an opaque support bot. The problem is practical: an unsupported answer can
+mislead a customer, while a hosted bot can turn a support conversation into someone
+else's data. Cairn's differentiators are grounded answers, visible citations,
+low-confidence refusal, and a local-model-first deployment path.
 
-"Where is my order?" tickets alone consume 30–60% of ecommerce support volume¹, and a delayed or missing package is the single most common reason customers contact retail support at all². Those are exactly the conversations Cairn is built to absorb: instant answers drawn from *your* ingested docs with a citation on every claim, order-status deep links, and a clean handoff to a human when the bot genuinely can't help.
+## Try the developer preview
 
-## Why trust it
-
-Support bots get businesses burned in two ways: they make things up, or they leak customer data to a third-party API. The current developer preview retrieves from a local corpus, refuses below its configured confidence threshold, cites retrieved sources, and uses local Ollama models. The broader guardrail and operator-control surfaces are planned work, not built behavior.
-
-| If you're a... | This gets you |
-| --- | --- |
-| **CTO** evaluating build vs. buy | A developer-preview reference implementation with frozen API contracts, a local validation gate, generated SBOMs, and explicit built-vs-planned security documentation. |
-| **Customer Service director** | A preview of grounded answers and source citations today; the production widget and human handoff are planned. |
-
-## Status
-
-**Pre-release, in active development.** See [docs/PUBLIC-AVAILABILITY.md](docs/PUBLIC-AVAILABILITY.md) for the current publication milestone. Order-status deep links and the production embeddable widget are planned work.
-
-## Developer preview quick start
-
-Prerequisites: [uv](https://docs.astral.sh/uv/), Ollama running locally, and the two configured models already present. The helper checks the corpus, Ollama service, and both models before starting the server. It never downloads models.
+With `uv`, Ollama, and Cairn's default models already installed, run:
 
 ```sh
-ollama pull llama3.1:8b-instruct
-ollama pull nomic-embed-text
 make demo
 ```
 
-Open `http://localhost:8080/demo` and ask a question about shipping, returns, or warranties. `make demo` ingests the bundled sample Markdown through the in-process ingestion helper, uses real Ollama embeddings and generation, and streams cited answers from the demo page. Copy `.env.example` to `.env` first only when you need to change the port, Ollama URL, or model names.
+Open `http://localhost:8080/demo` and ask about shipping, returns, or warranties.
+For prerequisite commands, the default model pair (`llama3.1:8b-instruct` and
+`nomic-embed-text`), `.env` overrides, `make demo` versus `make up`, architecture,
+API, security, evaluation, development, and operations, start with the
+[full technical guide](DEVELOPER_README.md).
 
-`make up` is a separate container plumbing smoke test. Its checked-in defaults use the deterministic echo provider and fake embeddings, do not ingest the sample corpus, and do not provide an `/admin` route. It is not the grounded-answer quick start.
+## Why this problem matters
 
-## Docs
+“Where is my order?” tickets typically account for 30–60% of ecommerce support
+volume¹, and delayed or missing packages are a leading reason customers contact
+retail support². Those are industry benchmarks, not Cairn performance claims. They
+motivate trustworthy answers from an operator's own knowledge base, not a claim
+that Cairn provides order-status integrations today.
 
-* [DEVELOPER_README.md](DEVELOPER_README.md) — architecture, API contract, security model, quick start.
-* [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — system shape, what's built vs. designed, and the constraints behind it; [docs/adr/](docs/adr/) records the decisions already made.
-* [docs/PUBLIC-AVAILABILITY.md](docs/PUBLIC-AVAILABILITY.md) — current publication milestone and remaining launch proof.
-* [docs/SECURITY.md](docs/SECURITY.md) — what's actually built and tested today vs. planned; vulnerability reporting.
-* [docs/PRIVACY.md](docs/PRIVACY.md) — what data is handled, where it lives, and data segregation (this is a single-tenant deployment, not a multi-tenant SaaS).
+## Learn more
 
-## Get in touch
+* [DEVELOPER_README.md](DEVELOPER_README.md) — full technical guide: setup, configuration, architecture, API, security, evaluation, development, and operations.
+* [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/adr/](docs/adr/) — system shape, built-versus-planned boundaries, and decisions.
+* [docs/SECURITY.md](docs/SECURITY.md) and [docs/PRIVACY.md](docs/PRIVACY.md) — security status, vulnerability reporting, and data handling.
+* [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) — supported contribution boundary and non-goals.
+* [docs/PUBLIC-AVAILABILITY.md](docs/PUBLIC-AVAILABILITY.md) — delivered public-availability record and the remaining tracking decision.
 
-Built and maintained by [Michael Weed](https://github.com/MichaelWeed). Need something past the roadmap — CRM sync, auth-aware answers, multi-tenancy, or a tuned deployment for your stack? Those are consulting scope: open an issue or reach out directly. [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) defines the supported contribution boundary and non-goals.
-
-## License
-
-[Apache-2.0](LICENSE).
+Built and maintained by [Michael Weed](https://github.com/MichaelWeed). See the
+[Apache-2.0 license](LICENSE).
 
 ---
 
 ¹ [CorePiper, *What Is WISMO and How to Reduce 'Where Is My Order' Tickets*](https://corepiper.com/blog/what-is-wismo/) — WISMO tickets typically account for 30–60% of ecommerce support volume.
 ² [MeasuringU, *customer service study*](https://measuringu.com/customer-service/) — a delayed package or delivery problem was the top coded reason participants contacted retail support.
-
-These are industry benchmarks, not Cairn-measured results. The eval harness (`make eval`) measures what Cairn actually does on your corpus, and a full committed eval report must back every product-measured number before 1.0.
