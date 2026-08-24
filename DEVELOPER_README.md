@@ -58,21 +58,37 @@ The command uses the existing in-process `ingest_upload()` helper with `app.stat
 
 **Port:** the preview listens on `CAIRN_PORT` (default 8080). If that port is taken, `make demo` fails with the conflicting port and tells you to set `CAIRN_PORT` in `.env` before retrying. The port is deliberately fixed rather than auto-selected because the demo URL and origin allowlist must agree.
 
+### Grounded container live beta
+
+For the production-like localhost path, provide an explicit corpus and the site
+origin that will embed Cairn, then run one command from the repository root:
+
+```sh
+CAIRN_CORPUS_PATH=/absolute/path/to/docs \
+ORIGIN_ALLOWLIST=http://localhost:4173 \
+make live
+```
+
+The corpus directory must contain a non-empty Markdown or PDF file. `make live`
+honors a non-empty `COMPOSE_CMD` override, otherwise prefers a working
+`podman compose` and falls back to `docker compose`. It starts the Compose Ollama
+service first, checks the configured `OLLAMA_MODEL` and `EMBEDDING_MODEL` inside
+that service, and never pulls a model. If either is missing, the command prints
+the exact Compose-scoped `ollama pull` command for the operator to run explicitly.
+
+After the grounded backend reaches `/readyz`, the command prints the selected
+engine, resolved corpus, origin allowlist, Cairn URL, exact two-line generic embed,
+and `make live-down`. The stack runs detached; `make live-down` stops it without
+deleting the named application or model volumes. A page served from any other
+origin must be added to `ORIGIN_ALLOWLIST` before its widget can call Cairn.
+
 ### Container plumbing smoke test
 
 `make up` requires Docker or Podman with Compose. The checked-in configuration uses the echo provider and fake embeddings, does not ingest the bundled corpus, and exposes the demo page but no `/admin` route. Use it to check container, health, static-page, and API plumbing. It does not prove a grounded or cited answer. Set `PROVIDER=ollama`, `EMBEDDING_PROVIDER=ollama`, and an Ollama URL reachable from the container only when intentionally testing that alternate configuration; ingestion is still not provided by `make up`.
 
 **Config plumbing:** compose only interpolates `.env` into `compose.yaml` — it never passes `.env` to the container by itself. Every knob in `.env.example` is therefore forwarded explicitly in the `environment:` block of `compose.yaml`, with defaults mirroring `backend/app/config.py`. Add new settings in all three places.
 
-`compose.yaml` stays within the vendor-neutral Compose Specification (no Docker-specific extensions), so it runs unmodified under either engine. `make up`/`make down` detect the available `COMPOSE_CMD`; set it explicitly (`COMPOSE_CMD=podman compose make up`) if both are installed and you want a specific one.
-
-The production embed shown below is planned for Phase 6 and does not exist in the current widget package:
-
-```html
-<script src="https://your-host/widget.js"
-        data-endpoint="https://your-host/api/v1"
-        data-title="Support"></script>
-```
+`compose.yaml` stays within the vendor-neutral Compose Specification (no Docker-specific extensions), so it runs unmodified under either engine. `make up`/`make down` use the available `COMPOSE_CMD`; set it explicitly (`COMPOSE_CMD="podman compose" make up`) if both are installed and you want a specific one. The grounded `make live` path uses the Podman-first validated selection described above.
 
 ## 3. Planned Configuration Surfaces
 

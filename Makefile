@@ -25,11 +25,10 @@ down:
 # Grounded operator path. The override replaces smoke providers with real
 # Ollama services and requires a read-only mounted corpus before readiness.
 live:
-	@COMPOSE_CMD="$(COMPOSE_CMD)" python3 scripts/check_port.py
-	$(COMPOSE_CMD) -f compose.yaml -f compose.live.yaml up --build
+	@$(if $(filter environment command line override,$(origin COMPOSE_CMD)),COMPOSE_CMD="$(COMPOSE_CMD)" ,)python3 scripts/live.py up
 
 live-down:
-	$(COMPOSE_CMD) -f compose.yaml -f compose.live.yaml down
+	@$(if $(filter environment command line override,$(origin COMPOSE_CMD)),COMPOSE_CMD="$(COMPOSE_CMD)" ,)python3 scripts/live.py down
 
 # Scoped to source directories, not docs/*.md — the documentation and README
 # discuss this policy in prose, which isn't a stub marker.

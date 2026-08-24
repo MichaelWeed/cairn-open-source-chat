@@ -132,3 +132,4 @@ def test_live_compose_requires_real_providers_and_a_read_only_corpus_mount() -> 
         "CAIRN_CORPUS_PATH" in volume and ":/corpus:ro" in volume
         for volume in backend["volumes"]
     )
+    assert all(":-./eval/corpus" not in volume for volume in backend["volumes"])
