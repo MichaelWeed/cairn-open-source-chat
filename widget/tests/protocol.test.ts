@@ -41,10 +41,27 @@ function testSseDecoder(): void {
     ],
   );
   assert.deepEqual(
-    decoder.push("event: done\ndata: {\"type\":\"done\",\"finish_reason\":\"complete\"}"),
+    decoder.push("event: done\ndata: {\"type\":\"done\",\"finish_reason\":\"stop\"}"),
     [],
   );
-  assert.deepEqual(decoder.finish(), [{ type: "done", finishReason: "complete" }]);
+  assert.deepEqual(decoder.finish(), [{ type: "done", finishReason: "stop" }]);
+
+  const refusalDecoder = new SseDecoder();
+  assert.deepEqual(
+    refusalDecoder.push(
+      "event: done\ndata: {\"type\":\"done\",\"finish_reason\":\"refused\"}\n\n",
+    ),
+    [{ type: "done", finishReason: "refused" }],
+  );
+
+  const inventedReasonDecoder = new SseDecoder();
+  expectThrows(
+    () =>
+      inventedReasonDecoder.push(
+        "event: done\ndata: {\"type\":\"done\",\"finish_reason\":\"complete\"}\n\n",
+      ),
+    "the invented complete finish reason is rejected",
+  );
 }
 
 function testMalformedSse(): void {

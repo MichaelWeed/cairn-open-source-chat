@@ -16,7 +16,7 @@ export type ChatStreamEvent =
   | { type: "chunk"; delta: string }
   | { type: "citations"; sources: Citation[] }
   | { type: "error"; message: string; retryable: boolean }
-  | { type: "done"; finishReason: "complete" | "refused" };
+  | { type: "done"; finishReason: "stop" | "refused" };
 
 type RawEvent = Record<string, unknown>;
 
@@ -143,7 +143,7 @@ function decodeRecord(record: string): ChatStreamEvent | null {
       };
     case "done": {
       const finishReason = requiredString(payload, "finish_reason");
-      if (finishReason !== "complete" && finishReason !== "refused") {
+      if (finishReason !== "stop" && finishReason !== "refused") {
         throw new SseDecodeError("The chat response ended unexpectedly.");
       }
       return { type: "done", finishReason };
