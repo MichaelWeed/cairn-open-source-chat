@@ -6,7 +6,9 @@
   "type": "module",
   "scripts": {
     "build": "esbuild src/index.ts --bundle --minify --outfile=dist/widget.js",
+    "check-distribution": "node scripts/distribution.mjs check",
     "check-size": "node scripts/check-size.mjs",
+    "sync-distribution": "node scripts/distribution.mjs sync",
     "test": "esbuild tests/protocol.test.ts --bundle --platform=node --format=esm --outfile=dist/protocol.test.mjs && node dist/protocol.test.mjs",
     "typecheck": "tsc --noEmit"
   },

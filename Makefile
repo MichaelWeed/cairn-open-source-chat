@@ -54,7 +54,7 @@ test-backend:
 	cd backend && uv run pytest -q
 
 build-widget:
-	cd widget && npm ci && npm test && npm run typecheck && npm run build && npm run check-size
+	cd widget && npm ci && npm test && npm run typecheck && npm run build && npm run check-size && npm run check-distribution
 
 lockfile-audit:
 	osv-scanner scan source --config osv-scanner.toml \

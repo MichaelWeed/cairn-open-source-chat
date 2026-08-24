@@ -97,6 +97,7 @@ def create_app(settings: Settings | None = None, provider: Provider | None = Non
 
     app.include_router(chat_router)
     app.mount("/demo", StaticFiles(directory=STATIC_DIR / "demo", html=True), name="demo")
+    app.mount("/widget", StaticFiles(directory=STATIC_DIR / "widget"), name="widget")
 
     @app.get("/healthz")
     async def healthz() -> JSONResponse:
