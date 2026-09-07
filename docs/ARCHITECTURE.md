@@ -145,7 +145,7 @@ is unsupported, not merely discouraged.
 
 ## 6. External dependencies
 
-**Runtime:** Ollama for inference and embeddings; embedded Chroma; SQLite; FastAPI
+**Runtime:** Ollama for inference and embeddings; embedded SQLite flat-vector index; SQLite; FastAPI
 and uvicorn; pypdf for PDF extraction. Every dependency has a written justification
 and pin rationale in [DEPENDENCIES.md](DEPENDENCIES.md).
 
@@ -153,9 +153,8 @@ and pin rationale in [DEPENDENCIES.md](DEPENDENCIES.md).
 process detail: both lockfiles carry hashes; container images are referenced by
 digest, never by floating tag; no package version younger than 14 days may enter a
 lockfile; a CycloneDX SBOM is regenerated on every gate run and must not drift from
-the committed copy. The two CVE exceptions each carry a stated reason and an
-explicit re-check condition, and the chromadb exception is scoped to the fact that
-embedded mode runs no network listener.
+the committed copy. Any active CVE exception carries a stated reason and an explicit
+re-check condition. The backend lockfile currently has no OSV exceptions.
 
 **The validation gate is one command in two places** — the local pre-push hook and
 GitHub Actions both run `make validate`, so "green locally" and "green in CI" cannot
@@ -175,7 +174,7 @@ The backend serves plain HTTP. There is no TLS termination in the stack, by desi
 operators are told to put a proxy in front and not to expose the published port
 directly.
 
-Backup is a file copy: the SQLite database and the Chroma persistence directory.
+Backup is a file copy: the SQLite database and the SQLite vector-index directory.
 That backup contains the operator's corpus and document metadata. It contains no
 chat transcripts, because none were ever written.
 

@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import pytest
-from chromadb.api.models.Collection import Collection
 
 from app.config import Settings
 from app.db import bootstrap
@@ -13,7 +12,7 @@ from app.retrieval import (
     retrieve_chunks,
     should_refuse,
 )
-from app.vectorstore import get_chroma_client, get_document_collection
+from app.vectorstore import DocumentCollection, get_document_collection, get_vector_client
 
 
 @pytest.fixture(autouse=True)
@@ -22,17 +21,19 @@ def fake_embeddings(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def collection(tmp_path: Path) -> Collection:
+def collection(tmp_path: Path) -> DocumentCollection:
     settings = Settings(chroma_path=tmp_path / "chroma")
-    client = get_chroma_client(settings)
+    client = get_vector_client(settings)
     return get_document_collection(client, settings)
 
 
-def test_retrieve_chunks_empty_collection_returns_nothing(collection: Collection) -> None:
+def test_retrieve_chunks_empty_collection_returns_nothing(collection: DocumentCollection) -> None:
     assert retrieve_chunks(collection, "anything") == []
 
 
-def test_retrieve_chunks_returns_matching_documents(tmp_path: Path, collection: Collection) -> None:
+def test_retrieve_chunks_returns_matching_documents(
+    tmp_path: Path, collection: DocumentCollection
+) -> None:
     db = bootstrap(tmp_path / "test.db")
     ingest_upload(
         db=db,
@@ -52,7 +53,7 @@ def test_retrieve_chunks_returns_matching_documents(tmp_path: Path, collection: 
     assert isinstance(chunks[0].distance, float)
 
 
-def test_retrieve_chunks_clamps_top_k_to_collection_size(collection: Collection) -> None:
+def test_retrieve_chunks_clamps_top_k_to_collection_size(collection: DocumentCollection) -> None:
     collection.add(
         ids=["doc-1::chunk::0", "doc-2::chunk::0"],
         documents=["first chunk text", "second chunk text"],

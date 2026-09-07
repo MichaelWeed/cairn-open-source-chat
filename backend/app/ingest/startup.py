@@ -1,6 +1,6 @@
 """Corpus ingestion owned by the application's lifespan.
 
-The live container path must never open a second Chroma client. Callers pass
+The live container path must never open a second vector-store client. Callers pass
 the lifespan-owned SQLite connection and document collection into this module.
 """
 
@@ -8,10 +8,9 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from chromadb.api.models.Collection import Collection
-
 from app.ingest.parsers import SUPPORTED_EXTENSIONS
 from app.ingest.pipeline import ingest_upload
+from app.vectorstore import DocumentCollection
 
 
 class CorpusStartupError(RuntimeError):
@@ -42,7 +41,7 @@ def corpus_paths(corpus_path: Path) -> list[Path]:
 
 
 def ingest_corpus(
-    *, db: sqlite3.Connection, collection: Collection, corpus_path: Path
+    *, db: sqlite3.Connection, collection: DocumentCollection, corpus_path: Path
 ) -> CorpusIngestSummary:
     """Ingest a non-empty mounted corpus through the application's own handles."""
     results = []

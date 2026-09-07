@@ -4,7 +4,6 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 
-from chromadb.api.models.Collection import Collection
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
@@ -28,6 +27,7 @@ from app.retrieval import (
     retrieve_chunks,
     should_refuse,
 )
+from app.vectorstore import DocumentCollection
 
 logger = logging.getLogger("app")
 
@@ -73,7 +73,7 @@ async def stream_with_pings(
 async def chat_event_stream(
     provider: Provider,
     body: ChatMessageRequest,
-    collection: Collection,
+    collection: DocumentCollection,
     top_k: int = DEFAULT_TOP_K,
     max_distance: float = DEFAULT_MAX_DISTANCE,
     ping_interval: float = PING_INTERVAL_SECONDS,
@@ -146,7 +146,7 @@ async def chat_message(request: Request, body: ChatMessageRequest) -> StreamingR
         return _sse_response(_single_event_stream(event))
 
     provider: Provider = request.app.state.provider
-    collection: Collection = request.app.state.document_collection
+    collection: DocumentCollection = request.app.state.document_collection
     return _sse_response(
         chat_event_stream(
             provider,

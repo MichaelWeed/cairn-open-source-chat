@@ -11,13 +11,12 @@ delimiter (task 4.4, adversarial suite) are deliberately out of scope here.
 
 from dataclasses import dataclass
 
-from chromadb.api.models.Collection import Collection
-
 from app.api.contracts import CitationSource
+from app.vectorstore import DocumentCollection
 
 DEFAULT_TOP_K = 4
 
-# Chroma's default space is L2 (squared Euclidean) — lower means closer,
+# The local index uses squared Euclidean distance, where lower means closer,
 # unbounded above, and its scale depends entirely on the embedding model in
 # use. 1.2 is a starting point for normalized-ish embeddings, not a
 # validated number: per DEVELOPER_README.md §6, tune this per corpus and
@@ -53,12 +52,11 @@ class RetrievedChunk:
 
 
 def retrieve_chunks(
-    collection: Collection, query: str, top_k: int = DEFAULT_TOP_K
+    collection: DocumentCollection, query: str, top_k: int = DEFAULT_TOP_K
 ) -> list[RetrievedChunk]:
     """Query the collection for the `top_k` chunks closest to `query`.
 
-    Clamps `n_results` to the collection size — Chroma raises if asked for
-    more results than it holds — and returns `[]` for an empty collection
+    Clamps `n_results` to the collection size and returns `[]` for an empty collection
     rather than querying it at all.
     """
     count = collection.count()
@@ -74,7 +72,7 @@ def retrieve_chunks(
         RetrievedChunk(
             document_id=str(metadata["document_id"]),
             source=str(metadata["source"]),
-            chunk_index=int(metadata["chunk_index"]),  # type: ignore[arg-type]
+            chunk_index=int(metadata["chunk_index"]),
             text=text,
             distance=float(distance),
         )

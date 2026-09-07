@@ -1,14 +1,1 @@
-# Narrow, documented exception to the lockfile-audit gate (make validate).
-# Same spirit as .grype.yaml: a real judgment call, not a place to silence
-# noise, with a re-check condition.
-[[IgnoredVulns]]
-id = "GHSA-f4j7-r4q5-qw2c"
-reason = """
-Pre-auth code injection in chromadb's HTTP server API
-(/api/v2/.../collections with trust_remote_code) — task 2.1 only uses
-chromadb.PersistentClient (embedded, in-process, no network listener of
-its own). The vulnerable endpoint doesn't exist in this deployment. No
-fixed chromadb version exists yet (checked 2026-07-11); re-check when
-one ships, and re-check immediately if chromadb's HTTP server mode is
-ever adopted here.
-"""
+# No OSV vulnerability exceptions are active for the backend lockfile.

@@ -19,7 +19,7 @@ from app.providers.base import Provider
 from app.providers.echo import EchoProvider
 from app.providers.ollama import OllamaProvider
 from app.ratelimit import RateLimiter
-from app.vectorstore import get_chroma_client, get_document_collection
+from app.vectorstore import get_document_collection, get_vector_client
 
 logger = logging.getLogger("app")
 
@@ -44,9 +44,9 @@ def create_app(settings: Settings | None = None, provider: Provider | None = Non
         app.state.corpus_ready = False
         app.state.db = bootstrap(settings.database_path)
         try:
-            app.state.chroma_client = get_chroma_client(settings)
+            app.state.vector_client = get_vector_client(settings)
             app.state.document_collection = get_document_collection(
-                app.state.chroma_client, settings
+                app.state.vector_client, settings
             )
             if settings.corpus_path is not None:
                 summary = ingest_corpus(
@@ -113,7 +113,7 @@ def create_app(settings: Settings | None = None, provider: Provider | None = Non
             db_ok = False
 
         try:
-            app.state.chroma_client.heartbeat()
+            app.state.vector_client.heartbeat()
             vector_store_ok = True
         except Exception:
             vector_store_ok = False

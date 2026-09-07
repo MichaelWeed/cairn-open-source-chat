@@ -55,15 +55,15 @@ def test_readyz_reports_unready_when_db_unavailable(app: FastAPI, client: TestCl
     assert resp.json()["checks"]["database"] is False
 
 
-class _BrokenChromaClient:
+class _BrokenVectorClient:
     def heartbeat(self) -> int:
-        raise RuntimeError("simulated chroma failure")
+        raise RuntimeError("simulated vector-store failure")
 
 
 def test_readyz_reports_unready_when_vector_store_unavailable(
     app: FastAPI, client: TestClient
 ) -> None:
-    app.state.chroma_client = _BrokenChromaClient()
+    app.state.vector_client = _BrokenVectorClient()
     resp = client.get("/readyz")
     assert resp.status_code == 503
     body = resp.json()

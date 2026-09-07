@@ -1,6 +1,6 @@
 # ADR-0003 — The vector store has exactly one in-process writer
 
-**Decided:** 2026-07-12, from an empirical failure · **Status:** Accepted
+**Decided:** 2026-07-12, from an empirical failure · **Status:** Superseded by ADR-0007
 
 ## Context
 

@@ -12,7 +12,7 @@ from app.config import Settings
 from app.db import bootstrap
 from app.ingest.startup import CorpusIngestSummary, CorpusStartupError, corpus_paths, ingest_corpus
 from app.main import create_app
-from app.vectorstore import get_chroma_client, get_document_collection
+from app.vectorstore import get_document_collection, get_vector_client
 
 
 def _pdf_bytes(text: str) -> bytes:
@@ -61,7 +61,7 @@ def test_ingest_corpus_uses_the_given_handles_for_markdown_and_pdf(
 
     settings = Settings(database_path=tmp_path / "cairn.db", chroma_path=tmp_path / "chroma")
     db = bootstrap(settings.database_path)
-    client = get_chroma_client(settings)
+    client = get_vector_client(settings)
     collection = get_document_collection(client, settings)
     try:
         summary = ingest_corpus(db=db, collection=collection, corpus_path=corpus)
