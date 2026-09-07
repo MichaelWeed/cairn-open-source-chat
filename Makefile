@@ -63,7 +63,7 @@ cooldown-check:
 	python3 scripts/check_cooldown.py
 
 gen-sbom:
-	cd backend && uv sync --locked && cyclonedx-py environment .venv --pyproject pyproject.toml --output-reproducible -o sbom.cdx.json --of JSON
+	cd backend && uv sync --locked && cyclonedx-py environment .venv/bin/python --pyproject pyproject.toml --output-reproducible -o sbom.cdx.json --of JSON
 	cd widget && npm ci && node_modules/.bin/cyclonedx-npm --output-reproducible -o sbom.cdx.json
 
 # Regenerates both SBOMs and fails if they drifted from the committed
