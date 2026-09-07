@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 COOLDOWN_DAYS = 14
+EARLY_RELEASE_APPROVALS = frozenset({("pypdf", "6.18.0")})
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REQUEST_TIMEOUT_SECONDS = 10
 
@@ -73,6 +74,10 @@ def widget_packages() -> list[tuple[str, str]]:
     return result
 
 
+def is_early_release_approved(name: str, version: str) -> bool:
+    return (name, version) in EARLY_RELEASE_APPROVALS
+
+
 def main() -> int:
     cutoff = datetime.now(UTC) - timedelta(days=COOLDOWN_DAYS)
     violations: list[str] = []
@@ -83,7 +88,7 @@ def main() -> int:
         if released is None:
             unresolved.append(f"pypi:{name}=={version}")
             continue
-        if released > cutoff:
+        if released > cutoff and not is_early_release_approved(name, version):
             violations.append(f"pypi:{name}=={version} released {released.date()} (< {COOLDOWN_DAYS}d ago)")
 
     for name, version in widget_packages():
