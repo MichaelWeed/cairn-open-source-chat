@@ -28,7 +28,7 @@ Per `CLAUDE.md`: every new dependency gets a one-line justification here at the 
 * **brace-expansion** (transitive, optional tooling path) — pinned to 2.1.4 via `overrides` to clear two uncontrolled-resource-consumption advisories; released 2026-07-30 and outside the cooldown.
 * **fast-uri** (transitive, via cyclonedx-npm → optional ajv): pinned to 3.1.6 via `overrides` to clear four URI-parser advisories (GHSA-5jgf-p345-68v8, GHSA-f65p-4m7j-42xc, GHSA-fph4-wmhf-6fwf, and GHSA-jqff-g426-hqxp); released 2026-08-23 and outside the cooldown.
 * **ip-address** (transitive, optional tooling path) — pinned to 10.3.1 via `overrides` to clear three address-parser advisories; released 2026-07-25 and outside the cooldown.
-* **js-yaml** (transitive, via cyclonedx-npm → xmlbuilder2) — pinned to 4.3.1 via `overrides` to clear a prototype-pollution advisory; released 2026-07-31 and outside the cooldown.
+* **js-yaml** (transitive, via cyclonedx-npm → xmlbuilder2) — pinned to 4.3.2 via `overrides` to clear GHSA-2883-xcg3-v3hh; released 2026-08-26 with an owner-approved KAN-101 exact-pair early-release approval that applies only until the normal 14-day cooldown expires.
 * **tar** (transitive, optional tooling path) — pinned to 7.5.21 via `overrides` to clear a path-traversal advisory; released 2026-07-21 and outside the cooldown.
 
 ## Container image (`backend/Dockerfile`, task 1.8)
