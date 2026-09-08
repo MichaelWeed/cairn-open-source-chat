@@ -43,10 +43,12 @@ def create_app(settings: Settings | None = None, provider: Provider | None = Non
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.corpus_ready = False
         app.state.db = bootstrap(settings.database_path)
+        vector_client = None
         try:
-            app.state.vector_client = get_vector_client(settings)
+            vector_client = get_vector_client(settings)
+            app.state.vector_client = vector_client
             app.state.document_collection = get_document_collection(
-                app.state.vector_client, settings
+                vector_client, settings
             )
             if settings.corpus_path is not None:
                 summary = ingest_corpus(
@@ -64,7 +66,11 @@ def create_app(settings: Settings | None = None, provider: Provider | None = Non
                 )
             app.state.corpus_ready = True
         except Exception:
-            app.state.db.close()
+            try:
+                if vector_client is not None:
+                    vector_client.close()
+            finally:
+                app.state.db.close()
             raise
         logger.info(
             "app started",
@@ -76,7 +82,10 @@ def create_app(settings: Settings | None = None, provider: Provider | None = Non
         try:
             yield
         finally:
-            app.state.db.close()
+            try:
+                vector_client.close()
+            finally:
+                app.state.db.close()
 
     app = FastAPI(title="Cairn", lifespan=lifespan)
     app.state.settings = settings

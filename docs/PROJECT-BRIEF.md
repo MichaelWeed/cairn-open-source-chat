@@ -71,7 +71,7 @@ are cited benchmarks, not Cairn measurements, and the README labels them as such
 Working end to end: an SSE chat endpoint with per-IP and per-session token buckets
 and an origin allowlist; frozen Pydantic wire contracts that reject unknown fields
 outright; deterministic echo and real Ollama providers behind one interface; an
-embedded Chroma vector store; markdown and PDF ingestion with content-hash
+embedded SQLite flat-vector index; markdown and PDF ingestion with content-hash
 incremental reindex; retrieval that produces citations and refuses below a
 confidence threshold; an evaluation harness with one committed report from a real
 model; and a demo page that exercises the whole round trip.
@@ -177,8 +177,9 @@ does not yet exist.
   the current demo sends an empty history array and persists no conversation
   history. The planned production widget will own client-side persistence; the
   server remains stateless.
-* **Knowledge corpus:** operator-supplied. Chunk text and embeddings in Chroma;
-  per-document metadata in SQLite. This is the only durable data.
+* **Knowledge corpus:** operator-supplied. Chunk text and embeddings in the local
+  SQLite flat index; per-document metadata in SQLite. Legacy Chroma files are
+  untouched, and re-ingestion is explicit. This is the only durable data.
 * **Credentials:** none handled today. `ADMIN_BOOTSTRAP_PASSWORD` is a reserved
   environment variable with no consumer, because no admin surface exists.
 * **Secrets in the repository:** none. `.env` is gitignored; `.env.example`
@@ -194,7 +195,7 @@ does not yet exist.
 
 Summarized in [ARCHITECTURE.md](ARCHITECTURE.md); the API contract and operational
 detail are in [DEVELOPER_README.md](../DEVELOPER_README.md). In one line: a FastAPI
-service streaming SSE, retrieving from an embedded Chroma store, calling a local
+service streaming SSE, retrieving from a local SQLite flat index, calling a local
 Ollama model, with SQLite for metadata, fronted today by a demo page that sends no
 conversation history. The production widget and its client-side history are
 planned work.
@@ -208,7 +209,8 @@ There is no deployment. The intended model is that an operator runs
 `docker compose` or `podman compose` on one host, on an operator-chosen fixed
 port, behind their own TLS-terminating reverse proxy. Single instance is the
 design point; horizontal scaling is not a supported path and cannot be reached by
-mounting the vector store read-only — see [adr/0003](adr/0003-single-writer-vector-store.md).
+mounting either SQLite file on replicas. The local index is O(N) per synchronous
+query and supports only the bounded corpus design point.
 
 The operating obligation that outlives the release: nothing external will warn a
 self-hosted operator about CVEs disclosed after they installed. `make verify` is

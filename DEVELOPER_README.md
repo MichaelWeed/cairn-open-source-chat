@@ -24,20 +24,26 @@ built-vs-designed status, request flow, and the cost of each deliberate constrai
    -> Router: RAG answer | tool call | refusal
    -> Provider adapter (Ollama built | hosted adapter planned)
         |
-   [ChromaDB embedded]  vectors
+   [SQLite flat index]  vectors
    [SQLite, WAL]        docs metadata, provider registry, config, metric counters
         |
    [Tool registry]  lookup_order_status | escalate_to_human
 ```
 
-The built developer-preview slice is the FastAPI chat endpoint, embedded Chroma and SQLite state, in-process Markdown/PDF ingestion, Ollama and echo providers, retrieval/refusal/citations, and the `/demo` page. The admin surface, hosted provider, tools, production widget, and guardrail pipeline are planned.
+The built developer-preview slice is the FastAPI chat endpoint, a local SQLite flat
+vector index and SQLite metadata state, in-process Markdown/PDF ingestion, Ollama
+and echo providers, retrieval/refusal/citations, and the `/demo` page. The admin
+surface, hosted provider, tools, production widget, and guardrail pipeline are planned.
 
 Design invariants and current limits:
 
 * **Server holds no conversation state.** The API accepts up to five caller-supplied history turns, but the current demo page sends an empty history array. Client-side history persistence belongs to the planned production widget.
 * **No admin endpoints exist yet.** The planned admin authentication design is a single account with Argon2id, a SameSite=Strict session cookie, CSRF protection, and optional TOTP.
 * **Contracts are frozen Pydantic models** (`extra="forbid"`). The SSE contract and tool schemas in `backend/app/api/contracts.py` are the source of truth.
-* **Vector-store writes are single-writer, in-process.** Every ingestion path (upload, scrape, future admin reindex) must write through the same `Collection` handle the chat endpoint queries (`app.state.document_collection`), never a second `chromadb.PersistentClient` opened against the same `CHROMA_PATH` from another process/subprocess. A second handle desyncs the long-lived server handle's view of on-disk HNSW segments — every query against it then throws `chromadb.errors.InternalError: ... Nothing found on disk` until the process restarts. Confirmed live against chromadb 1.5.9 embedded `PersistentClient`; that version has no lighter-weight reload/reconnect API, only a full `reset()`.
+* **The vector index is local and versioned.** Every ingestion path (upload, scrape,
+  future admin reindex) writes through `app.state.document_collection`, which owns a
+  SQLite flat index at `CHROMA_PATH/cairn-vectors-v1.sqlite3`. Legacy Chroma files
+  are not read, changed, or migrated. Re-ingestion is explicit.
 
 ## 2. Developer Preview Quick Start
 
@@ -172,11 +178,17 @@ No core changes required; the registry injects enabled tool schemas into the pro
 
 * `GET /healthz` (liveness) and `GET /readyz` (provider + vector store checks); no sensitive data in either.
 * Structured JSON logs: latency, guardrail stage outcomes, error codes, query counts. No message bodies.
-* Backup = copy the SQLite file and the Chroma persistence directory (volume-mounted).
+* Backup = copy the SQLite metadata database and
+  `CHROMA_PATH/cairn-vectors-v1.sqlite3` (volume-mounted).
 
 ### Concurrency, one instance
 
-FastAPI/uvicorn runs a single async event loop; concurrent chat requests are interleaved as long as each request's work is non-blocking. The provider call is (`OllamaProvider` uses `httpx.AsyncClient`), but callers should confirm `collection.query()` in the retrieval path (task 2.4) is offloaded via `asyncio.to_thread` before relying on this for concurrent load — chromadb's Python client is synchronous, and calling it directly on the event loop serializes retrieval across every in-flight request. Two other pieces are explicitly scoped to one instance rather than made distributed, by design, not oversight:
+FastAPI/uvicorn runs a single async event loop, but retrieval is deliberately
+synchronous: embedding and the local flat-vector query run on that loop, and the
+query scans the bounded corpus in O(N) time. Do not assume concurrent retrieval
+throughput. The client lock protects the SQLite connection inside this one process;
+it does not make multiple application instances a supported configuration. Two
+other pieces are also scoped to one instance rather than made distributed, by design:
 
 * **Rate limiting** (`app/ratelimit.py`) is an in-process, in-memory token-bucket dict keyed by IP/session. Fine for one instance; behind multiple replicas each one enforces its own limits independently, so the effective cap for a client is `limit x replica_count`, not `limit`.
 * **SQLite (WAL)** supports many concurrent readers and one writer *on one host*. It is not safe for multiple hosts writing over a shared network filesystem (NFS/EFS) — don't reach for that as a scaling shortcut.
@@ -185,31 +197,18 @@ Within those bounds, a single instance's practical ceiling for concurrent users 
 
 ### Scaling beyond one instance
 
-Single instance is still the design point for a v1 self-hosted install. Horizontal scaling is future work, not a supported path yet, and one assumption from early planning needs correcting now that task 2.4 surfaced how the embedded Chroma client behaves: **a replica cannot simply mount the Chroma persistence directory read-only.** Chroma's embedded `PersistentClient` caches its view of on-disk HNSW segments in the process that opened it (see the single-writer invariant above) — a read replica's handle goes stale exactly the same way the single-writer bug does, and there's no lighter-weight refresh call in chromadb 1.5.9, only a full `reset()`. A stale replica wouldn't just serve outdated results, it would eventually throw the same `Nothing found on disk` error on affected queries.
-
-The direction that avoids this: run Chroma in **client/server mode** (`chromadb.HttpClient` talking to one `chroma run` server process/container) instead of embedded `PersistentClient`, so every app replica is a stateless network client and the Chroma server process is the single owner of on-disk state — the same pattern SQLite already can't support across hosts, worth keeping in mind if a future write volume outgrows one SQLite writer too.
-
-**This is not a drop-in swap from a security standpoint.** `osv-scanner.toml` carries a documented, narrowly-scoped exception for a Critical pre-auth code-injection CVE (`GHSA-f4j7-r4q5-qw2c`) in chromadb's HTTP server API — ignored today specifically *because* this project only runs `PersistentClient` (embedded, no network listener). That exception's own text says to re-check immediately if HTTP server mode is ever adopted. Anyone picking up the horizontal-scaling roadmap item must re-verify a fixed chromadb version exists (or otherwise fully network-isolate the Chroma service — no public ingress, backend-only security group, no `trust_remote_code`) before shipping this, not just wire up `HttpClient` and move on.
-
-A minimal sketch for something like AWS, illustrative only:
+Single instance is the v1 self-hosted design point. Horizontal scaling is not a
+supported path. Do not mount either SQLite file on replicas, whether read-only or
+read-write, and do not use a shared network filesystem for the index or metadata.
+The local flat index and in-memory rate limiter have no cross-instance coherence
+contract. A future scaling architecture requires a separate approved design; this
+repository does not select a vendor or migration path for it.
 
 ```
-Route 53 -> ALB -> ECS Fargate service "cairn-backend" (N tasks, stateless,
-                    health check /readyz, autoscale on CPU/request count)
-                       |
-                       +--> ECS service "chroma" (1 task, HttpClient target,
-                       |     EFS-backed volume for persistence)
-                       |
-                       +--> RDS/EFS-hosted SQLite alternative only if write
-                       |     volume outgrows one host (Postgres, at that point)
-                       |
-                       +--> Ollama on a GPU-backed EC2/ECS task, or swap to
-                             a hosted OpenAI-compatible provider (already an
-                             adapter target on the roadmap) if local-model
-                             throughput becomes the bottleneck
+[one operator-managed host]
+  FastAPI process -> local SQLite flat index + local SQLite metadata database
+                   -> operator-managed Ollama endpoint
 ```
-
-None of this is committed scope — it's direction for an operator who outgrows one box, recorded so the read-only-mount assumption doesn't resurface uncorrected.
 
 ## 10. Roadmap and Non-Goals
 

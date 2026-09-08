@@ -36,6 +36,7 @@ class VectorStoreClient:
         database_path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(database_path, check_same_thread=False)
         self._lock = RLock()
+        self._closed = False
         self._initialize_schema()
 
     def _initialize_schema(self) -> None:
@@ -60,6 +61,14 @@ class VectorStoreClient:
     def heartbeat(self) -> None:
         with self._lock:
             self._connection.execute("SELECT 1").fetchone()
+
+    def close(self) -> None:
+        """Close the owned SQLite connection after the application lifespan ends."""
+        with self._lock:
+            if self._closed:
+                return
+            self._connection.close()
+            self._closed = True
 
     def get_or_create_collection(
         self, *, name: str, embedding_function: EmbeddingFunction

@@ -27,7 +27,7 @@ marks which.
 ┌──────────────────────────────────────────────┐
 │  Cairn backend  (FastAPI, one process)       │
 │                                              │
-│   retrieval ──▶ Chroma (embedded, in-proc)   │
+│   retrieval ──▶ SQLite flat index (local)    │
 │   metadata  ──▶ SQLite (WAL, local file)     │
 │   inference ──▶ Ollama  ◀── the only         │
 │                            outbound call     │
@@ -54,7 +54,7 @@ Three properties of this diagram carry most of the design weight:
 | Chat endpoint (SSE) | `backend/app/api/chat.py` | Built |
 | Provider adapters | `backend/app/providers/` | Built: echo, Ollama |
 | Embeddings | `backend/app/embeddings/` | Built: fake, Ollama |
-| Vector store | `backend/app/vectorstore.py` | Built. Embedded Chroma — see [ADR-0003](adr/0003-single-writer-vector-store.md) |
+| Vector store | `backend/app/vectorstore.py` | Built. SQLite flat index, version 1, see [ADR-0007](adr/0007-sqlite-flat-vector-index.md) |
 | Retrieval + refusal | `backend/app/retrieval.py` | Built |
 | Ingestion pipeline | `backend/app/ingest/` | Built as a callable; no HTTP route reaches it |
 | Rate limiting | `backend/app/ratelimit.py` | Built. In-process, single-instance |
@@ -104,11 +104,11 @@ not a bug fix.
 * **The server holds no conversation state.** History travels with the request from
   the client. Consequence: the backend is horizontally scalable in principle, and
   chat text never needs to touch disk. See [ADR-0004](adr/0004-stateless-conversation.md).
-* **Vector-store writes are single-writer and in-process.** Every ingestion path
-  must write through the same collection handle the chat endpoint queries. A second
-  handle against the same path desyncs on-disk segment views and breaks retrieval
-  until restart. This was found empirically, not assumed. See
-  [ADR-0003](adr/0003-single-writer-vector-store.md).
+* **The vector index is local and versioned.** Every ingestion path writes through
+  the lifespan-owned collection handle. The SQLite flat index is stored at
+  `CHROMA_PATH/cairn-vectors-v1.sqlite3`; legacy Chroma files are not read or
+  changed, and corpus re-ingestion is explicit. See
+  [ADR-0007](adr/0007-sqlite-flat-vector-index.md).
 * **Contracts change only with their consumers.** The wire format is a frozen
   Pydantic model; changing it requires updating widget, tests, and documentation in
   the same change. See [ADR-0002](adr/0002-frozen-wire-contracts.md).
@@ -122,13 +122,12 @@ not a bug fix.
 
 Each of these is a decision with a known price, accepted knowingly.
 
-**Single instance.** Rate limiting is an in-memory dictionary, and SQLite supports
-one writer on one host. Behind N replicas, a client's effective rate limit becomes
-N times the configured value, and SQLite over a shared network filesystem is unsafe.
-The practical concurrency ceiling is set by Ollama's inference parallelism, not by
-the web layer. Horizontal scaling requires moving Chroma to client/server mode —
-and that re-triggers a Critical CVE currently ignored precisely because no HTTP
-listener runs.
+**Single instance.** Rate limiting is an in-memory dictionary, the SQLite index is
+a bounded local corpus, and retrieval runs as a synchronous O(N) flat-vector query.
+Behind N replicas, a client's effective rate limit becomes N times the configured
+value, and SQLite over a shared network filesystem is unsafe. The practical
+concurrency ceiling is set by synchronous retrieval and Ollama inference parallelism,
+not by the web layer. Horizontal scaling is not a supported path.
 
 **Local models by default.** Slower and lower-quality than frontier hosted models,
 in exchange for the privacy claim being structural rather than contractual. See
@@ -145,8 +144,9 @@ is unsupported, not merely discouraged.
 
 ## 6. External dependencies
 
-**Runtime:** Ollama for inference and embeddings; embedded SQLite flat-vector index; SQLite; FastAPI
-and uvicorn; pypdf for PDF extraction. Every dependency has a written justification
+**Runtime:** Ollama for inference and embeddings; Python's standard-library SQLite
+for the local flat-vector index and metadata; FastAPI and uvicorn; pypdf for PDF
+extraction. Every dependency has a written justification
 and pin rationale in [DEPENDENCIES.md](DEPENDENCIES.md).
 
 **Supply-chain posture,** which is an architectural property here rather than a
@@ -174,7 +174,8 @@ The backend serves plain HTTP. There is no TLS termination in the stack, by desi
 operators are told to put a proxy in front and not to expose the published port
 directly.
 
-Backup is a file copy: the SQLite database and the SQLite vector-index directory.
+Backup is a file copy: the SQLite metadata database and
+`CHROMA_PATH/cairn-vectors-v1.sqlite3`.
 That backup contains the operator's corpus and document metadata. It contains no
 chat transcripts, because none were ever written.
 

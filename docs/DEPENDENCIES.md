@@ -14,9 +14,9 @@ Per `CLAUDE.md`: every new dependency gets a one-line justification here at the 
 * **pydantic-settings** — env-var config loader (`app/config.py`), consistent with the frozen-Pydantic-models approach already used for the API contracts.
 * **httpx** — runtime dependency as of task 1.6: `OllamaProvider` uses it to stream `/api/chat`. Also (still) used by FastAPI's `TestClient` in tests.
 * **pytest-asyncio** (dev) — runs the provider adapters' `async def test_*` functions (task 1.6); `asyncio_mode = "auto"` in `pyproject.toml` so tests don't need per-function markers.
-* **SQLite** (Python standard library) — embedded flat-vector index (KAN-76). It persists versioned vector rows locally without a vector database dependency; existing Chroma files are left untouched and operators explicitly re-ingest the corpus into `cairn-vectors-v1.sqlite3`.
+* **SQLite** (Python standard library): embedded flat-vector index (KAN-76). It persists versioned vector rows locally without a vector database dependency; existing Chroma files are left untouched and operators explicitly re-ingest the corpus into `cairn-vectors-v1.sqlite3`.
 * **pypdf** — PDF text extraction for upload ingestion (task 2.2); pinned to 6.18.0, the fixed floor for the indirect-object-header advisory. Released 2026-09-07, it has an owner-approved KAN-72 exact-pair early-release approval that applies only until the normal 14-day cooldown expires.
-* **pyyaml** — declared directly because `eval/run_eval.py` imports it to load `eval/questions/*.yaml`.
+* **pyyaml**: declared directly because `eval/run_eval.py` imports it to load `eval/questions/*.yaml`.
 * **types-pyyaml** (dev) — type stubs so `mypy --strict` can check `eval/run_eval.py`'s `yaml.safe_load` usage.
 
 ## Widget (`widget/package-lock.json`)

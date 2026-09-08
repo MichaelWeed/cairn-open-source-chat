@@ -7,7 +7,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.config import Settings
+from app.embedding_types import EmbeddingFunction
+from app.ingest.startup import CorpusStartupError
 from app.main import create_app
+from app.vectorstore import DocumentCollection, VectorStoreClient, get_vector_client
 
 
 @pytest.fixture
@@ -77,3 +80,70 @@ def test_database_file_created(tmp_path: Path) -> None:
     app = create_app(settings)
     with TestClient(app):
         assert db_path.exists()
+
+
+class _TrackingVectorClient:
+    def __init__(self, delegate: VectorStoreClient) -> None:
+        self._delegate = delegate
+        self.closed = False
+
+    def get_or_create_collection(
+        self, *, name: str, embedding_function: EmbeddingFunction
+    ) -> DocumentCollection:
+        return self._delegate.get_or_create_collection(
+            name=name, embedding_function=embedding_function
+        )
+
+    def heartbeat(self) -> None:
+        self._delegate.heartbeat()
+
+    def close(self) -> None:
+        self.closed = True
+        self._delegate.close()
+
+
+def test_lifespan_closes_vector_client_on_normal_shutdown(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    observed: list[_TrackingVectorClient] = []
+
+    def tracked_client(settings: Settings) -> _TrackingVectorClient:
+        client = _TrackingVectorClient(get_vector_client(settings))
+        observed.append(client)
+        return client
+
+    monkeypatch.setattr("app.main.get_vector_client", tracked_client)
+    app = create_app(Settings(database_path=tmp_path / "test.db", chroma_path=tmp_path / "chroma"))
+
+    with TestClient(app):
+        assert observed[0].closed is False
+
+    assert observed[0].closed is True
+
+
+def test_lifespan_closes_vector_client_after_failed_startup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    observed: list[_TrackingVectorClient] = []
+
+    def tracked_client(settings: Settings) -> _TrackingVectorClient:
+        client = _TrackingVectorClient(get_vector_client(settings))
+        observed.append(client)
+        return client
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    monkeypatch.setattr("app.main.get_vector_client", tracked_client)
+    app = create_app(
+        Settings(
+            database_path=tmp_path / "test.db",
+            chroma_path=tmp_path / "chroma",
+            corpus_path=corpus,
+        )
+    )
+
+    with pytest.raises(CorpusStartupError, match="no Markdown or PDF files"):
+        with TestClient(app):
+            pass
+
+    assert observed[0].closed is True
