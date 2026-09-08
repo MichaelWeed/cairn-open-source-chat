@@ -10,6 +10,7 @@ from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from app.config import Settings
 from app.db import bootstrap
+from app.ingest.pipeline import ingest_upload
 from app.ingest.startup import CorpusIngestSummary, CorpusStartupError, corpus_paths, ingest_corpus
 from app.main import create_app
 from app.vectorstore import get_document_collection, get_vector_client
@@ -71,6 +72,131 @@ def test_ingest_corpus_uses_the_given_handles_for_markdown_and_pdf(
         assert collection.count() == summary.chunk_count
         sources = {row[0] for row in db.execute("SELECT source FROM documents")}
         assert sources == {"guides/returns.md", "warranty.pdf"}
+    finally:
+        db.close()
+
+
+def test_ingest_corpus_removes_stale_corpus_vectors_and_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "fake")
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    present = corpus / "present.md"
+    removed = corpus / "removed.md"
+    present.write_text("Present corpus content")
+    removed.write_text("Removed corpus content")
+    settings = Settings(database_path=tmp_path / "cairn.db", chroma_path=tmp_path / "chroma")
+    db = bootstrap(settings.database_path)
+    collection = get_document_collection(get_vector_client(settings), settings)
+    try:
+        ingest_corpus(db=db, collection=collection, corpus_path=corpus)
+        ingest_upload(
+            db=db,
+            collection=collection,
+            document_id="upload:kept",
+            filename="kept.md",
+            content=b"Non-corpus content",
+        )
+        removed.unlink()
+
+        ingest_corpus(db=db, collection=collection, corpus_path=corpus)
+
+        assert collection.get(ids=["corpus:removed.md::chunk::0"])["ids"] == []
+        assert db.execute("SELECT id FROM documents ORDER BY id").fetchall() == [
+            ("corpus:present.md",),
+            ("upload:kept",),
+        ]
+    finally:
+        db.close()
+
+
+def test_ingest_corpus_reconciles_renamed_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "fake")
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    original = corpus / "original.md"
+    original.write_text("Renamed corpus content")
+    settings = Settings(database_path=tmp_path / "cairn.db", chroma_path=tmp_path / "chroma")
+    db = bootstrap(settings.database_path)
+    collection = get_document_collection(get_vector_client(settings), settings)
+    try:
+        ingest_corpus(db=db, collection=collection, corpus_path=corpus)
+        original.rename(corpus / "renamed.md")
+
+        ingest_corpus(db=db, collection=collection, corpus_path=corpus)
+
+        assert db.execute("SELECT id FROM documents ORDER BY id").fetchall() == [
+            ("corpus:renamed.md",)
+        ]
+        assert collection.get(ids=["corpus:original.md::chunk::0"])["ids"] == []
+    finally:
+        db.close()
+
+
+def test_ingest_corpus_does_not_reconcile_when_current_ingestion_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "fake")
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    current = corpus / "current.md"
+    stale = corpus / "stale.md"
+    current.write_text("Current corpus content")
+    stale.write_text("Stale corpus content")
+    settings = Settings(database_path=tmp_path / "cairn.db", chroma_path=tmp_path / "chroma")
+    db = bootstrap(settings.database_path)
+    collection = get_document_collection(get_vector_client(settings), settings)
+    try:
+        ingest_corpus(db=db, collection=collection, corpus_path=corpus)
+        stale.unlink()
+
+        def fail_current_ingestion(**_: object) -> object:
+            raise RuntimeError("current ingestion failed")
+
+        monkeypatch.setattr("app.ingest.startup.ingest_upload", fail_current_ingestion)
+        with pytest.raises(RuntimeError, match="current ingestion failed"):
+            ingest_corpus(db=db, collection=collection, corpus_path=corpus)
+
+        assert db.execute("SELECT id FROM documents WHERE id = ?", ("corpus:stale.md",)).fetchone()
+        assert collection.get(ids=["corpus:stale.md::chunk::0"])["ids"] == [
+            "corpus:stale.md::chunk::0"
+        ]
+    finally:
+        db.close()
+
+
+def test_ingest_corpus_propagates_stale_vector_deletion_failure_before_metadata_delete(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "fake")
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    current = corpus / "current.md"
+    stale = corpus / "stale.md"
+    current.write_text("Current corpus content")
+    stale.write_text("Stale corpus content")
+    settings = Settings(database_path=tmp_path / "cairn.db", chroma_path=tmp_path / "chroma")
+    db = bootstrap(settings.database_path)
+    collection = get_document_collection(get_vector_client(settings), settings)
+    try:
+        ingest_corpus(db=db, collection=collection, corpus_path=corpus)
+        stale.unlink()
+
+        def fail_vector_delete(*, ids: list[str]) -> None:
+            assert ids == ["corpus:stale.md::chunk::0"]
+            raise RuntimeError("vector deletion failed")
+
+        monkeypatch.setattr(collection, "delete", fail_vector_delete)
+        with pytest.raises(RuntimeError, match="vector deletion failed"):
+            ingest_corpus(db=db, collection=collection, corpus_path=corpus)
+
+        assert db.execute("SELECT id FROM documents WHERE id = ?", ("corpus:stale.md",)).fetchone()
+        assert collection.get(ids=["corpus:stale.md::chunk::0"])["ids"] == [
+            "corpus:stale.md::chunk::0"
+        ]
     finally:
         db.close()
 
