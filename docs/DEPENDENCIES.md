@@ -15,7 +15,7 @@ Per `CLAUDE.md`: every new dependency gets a one-line justification here at the 
 * **httpx** — runtime dependency as of task 1.6: `OllamaProvider` uses it to stream `/api/chat`. Also (still) used by FastAPI's `TestClient` in tests.
 * **pytest-asyncio** (dev) — runs the provider adapters' `async def test_*` functions (task 1.6); `asyncio_mode = "auto"` in `pyproject.toml` so tests don't need per-function markers.
 * **SQLite** (Python standard library): embedded flat-vector index (KAN-76). It persists versioned vector rows locally without a vector database dependency; existing Chroma files are left untouched and operators explicitly re-ingest the corpus into `cairn-vectors-v1.sqlite3`.
-* **pypdf** — PDF text extraction for upload ingestion (task 2.2); pinned to 6.18.0, the fixed floor for the indirect-object-header advisory. Released 2026-09-07, it has an owner-approved KAN-72 exact-pair early-release approval that applies only until the normal 14-day cooldown expires.
+* **pypdf**: PDF text extraction for upload ingestion (task 2.2); pinned to 6.18.0, the fixed floor for the indirect-object-header advisory. Released 2026-09-07, it has an owner-approved KAN-72 exact-pair early-release approval that applies only until the normal 14-day cooldown expires.
 * **pyyaml**: declared directly because `eval/run_eval.py` imports it to load `eval/questions/*.yaml`.
 * **types-pyyaml** (dev) — type stubs so `mypy --strict` can check `eval/run_eval.py`'s `yaml.safe_load` usage.
 
@@ -26,7 +26,7 @@ Per `CLAUDE.md`: every new dependency gets a one-line justification here at the 
 * **@cyclonedx/cyclonedx-npm** — generates the widget SBOM for `make validate`'s SBOM-diff gate. Pinned to 5.0.0 (6.0.0 was inside the cooldown window). Installed with `libxmljs2`/`ajv` (its optional XML/JSON-validation backends) omitted via `widget/.npmrc` (`omit=optional`) — we only need JSON SBOM output, and that dependency subtree pulled in several packages that were themselves inside the cooldown window.
 * **lru-cache** (transitive, via cyclonedx-npm → hosted-git-info) — pinned to 11.5.1 via `overrides` in `widget/package.json`; the resolver's default pick was inside the cooldown window.
 * **brace-expansion** (transitive, optional tooling path) — pinned to 2.1.4 via `overrides` to clear two uncontrolled-resource-consumption advisories; released 2026-07-30 and outside the cooldown.
-* **fast-uri** (transitive, via cyclonedx-npm → optional ajv) — pinned to 3.1.6 via `overrides` to clear four URI-parser advisories (GHSA-5jgf-p345-68v8, GHSA-f65p-4m7j-42xc, GHSA-fph4-wmhf-6fwf, and GHSA-jqff-g426-hqxp); released 2026-08-23 and outside the cooldown.
+* **fast-uri** (transitive, via cyclonedx-npm → optional ajv): pinned to 3.1.6 via `overrides` to clear four URI-parser advisories (GHSA-5jgf-p345-68v8, GHSA-f65p-4m7j-42xc, GHSA-fph4-wmhf-6fwf, and GHSA-jqff-g426-hqxp); released 2026-08-23 and outside the cooldown.
 * **ip-address** (transitive, optional tooling path) — pinned to 10.3.1 via `overrides` to clear three address-parser advisories; released 2026-07-25 and outside the cooldown.
 * **js-yaml** (transitive, via cyclonedx-npm → xmlbuilder2) — pinned to 4.3.1 via `overrides` to clear a prototype-pollution advisory; released 2026-07-31 and outside the cooldown.
 * **tar** (transitive, optional tooling path) — pinned to 7.5.21 via `overrides` to clear a path-traversal advisory; released 2026-07-21 and outside the cooldown.
