@@ -11,10 +11,12 @@ retrieves relevant passages, cites its sources, and refuses when retrieval is be
 its configured confidence threshold. The supported path uses local Ollama models,
 so an operator keeps the service and its data in their own infrastructure.
 
-**Developer preview / pre-release.** Today you can run the cited local demo. The
-production widget, human handoff, order-status deep links, admin experience,
-guardrail pipeline, hosted-provider adapter, and any author-hosted service are
-planned, not available behavior.
+**Developer preview / pre-release.** Today you can run the cited local demo and
+use the generic `<cairn-chat>` custom element. It provides a shadow-DOM chat UI,
+accepts `api-url` and `assistant-name`, and streams cited answers over SSE. Human
+handoff, order-status deep links, an admin experience, the guardrail pipeline, a
+hosted-provider adapter, and any author-hosted service are planned, not available
+behavior.
 
 It is for CTOs and support leaders evaluating a grounded, self-hosted alternative
 to an opaque support bot. The problem is practical: an unsupported answer can

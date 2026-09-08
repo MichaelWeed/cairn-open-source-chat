@@ -60,9 +60,9 @@ Three properties of this diagram carry most of the design weight:
 | Rate limiting | `backend/app/ratelimit.py` | Built. In-process, single-instance |
 | Metadata store | `backend/app/db/` | Built. SQLite, WAL |
 | Config | `backend/app/config.py` | Built |
-| Demo page | `backend/app/static/demo/` | Built. Placeholder for the real widget |
+| Demo page | `backend/app/static/demo/` | Built. Separate static demo UI, not the embeddable widget |
 | Evaluation harness | `eval/` | Built. One committed report |
-| Production widget | `widget/src/` | **Not built.** A version constant only |
+| Embeddable widget | `widget/src/` | Built. Generic `<cairn-chat>` custom element with a shadow-DOM chat UI; `api-url` and `assistant-name` are its supported attributes |
 | Tool registry, escalation | — | **Not built** |
 | Guardrail middleware, adversarial suite | `backend/tests/adversarial/` | **Not built.** Directory holds `.gitkeep` |
 | Admin surfaces and authentication | — | **Not built.** Nothing to authenticate against |

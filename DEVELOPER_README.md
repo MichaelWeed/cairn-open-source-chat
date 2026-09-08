@@ -32,12 +32,14 @@ built-vs-designed status, request flow, and the cost of each deliberate constrai
 
 The built developer-preview slice is the FastAPI chat endpoint, a local SQLite flat
 vector index and SQLite metadata state, in-process Markdown/PDF ingestion, Ollama
-and echo providers, retrieval/refusal/citations, and the `/demo` page. The admin
-surface, hosted provider, tools, production widget, and guardrail pipeline are planned.
+and echo providers, retrieval/refusal/citations, the `/demo` page, and the generic
+`<cairn-chat>` custom element with a shadow-DOM chat UI and `api-url` and
+`assistant-name` attributes. The admin surface, hosted provider, tools, and
+guardrail pipeline are planned.
 
 Design invariants and current limits:
 
-* **Server holds no conversation state.** The API accepts up to five caller-supplied history turns, but the current demo page sends an empty history array. Client-side history persistence belongs to the planned production widget.
+* **Server holds no conversation state.** The API accepts up to five caller-supplied history turns. The current demo page sends an empty history array; the generic widget keeps a session identifier in browser session storage when available and bounded history in memory.
 * **No admin endpoints exist yet.** The planned admin authentication design is a single account with Argon2id, a SameSite=Strict session cookie, CSRF protection, and optional TOTP.
 * **Contracts are frozen Pydantic models** (`extra="forbid"`). The SSE contract and tool schemas in `backend/app/api/contracts.py` are the source of truth.
 * **The vector index is local and versioned.** Every ingestion path (upload, scrape,

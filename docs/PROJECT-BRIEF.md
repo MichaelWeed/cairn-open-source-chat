@@ -74,7 +74,10 @@ outright; deterministic echo and real Ollama providers behind one interface; an
 embedded SQLite flat-vector index; markdown and PDF ingestion with content-hash
 incremental reindex; retrieval that produces citations and refuses below a
 confidence threshold; an evaluation harness with one committed report from a real
-model; and a demo page that exercises the whole round trip.
+model; a generic `<cairn-chat>` custom element with a shadow-DOM chat UI,
+`api-url` and `assistant-name` configuration, origin-aware SSE chat flow,
+citations, refusal and error states, close and abort behavior, and one retry for a
+server-marked retryable error; and a demo page that exercises the whole round trip.
 
 Measured, not asserted: the publication baseline completed the full `make validate`
 gate successfully, with one known Starlette TestClient deprecation warning. The
@@ -83,9 +86,8 @@ durable first-successful hosted-run evidence is recorded in `project.yaml`.
 Not built: HTTP upload endpoint and scrape ingestion; the entire tool and
 escalation layer; the always-on guardrail middleware and the adversarial test
 suite (`backend/tests/adversarial/` holds only a `.gitkeep`); any admin surface,
-and therefore any authentication; the production embeddable widget
-(`widget/src/index.ts` is a single version constant); and the release bundler
-(`make release` prints a placeholder).
+and therefore any authentication; and the release bundler (`make release` prints
+a placeholder).
 
 **The defining fact about the current state is now public evidence, not private
 availability.** The 2026-08-21 admission review recorded the then-headless source
@@ -131,7 +133,7 @@ Supporting conditions that make that test meaningful:
 Out of scope for **the next outcome** — deliberately deferred, not abandoned:
 
 * Any Phase 3+ feature work: tools, escalation, guardrail middleware, admin
-  surfaces, the production widget.
+  surfaces.
 * The two open ingestion tasks (scrape ingestion, HTTP upload endpoint).
 * Making the evaluation statistically meaningful.
 * Any deployment, hosted demo, or environment the author operates.
@@ -175,8 +177,9 @@ does not yet exist.
   limiter, retrieval, and provider, then discarded.
 * **Conversation history:** the API accepts up to five caller-supplied turns, but
   the current demo sends an empty history array and persists no conversation
-  history. The planned production widget will own client-side persistence; the
-  server remains stateless.
+  history. The generic widget keeps a session identifier in browser session
+  storage when available and bounded conversation history in memory; the server
+  remains stateless.
 * **Knowledge corpus:** operator-supplied. Chunk text and embeddings in the local
   SQLite flat index; per-document metadata in SQLite. Legacy Chroma files are
   untouched, and re-ingestion is explicit. This is the only durable data.
@@ -196,9 +199,8 @@ does not yet exist.
 Summarized in [ARCHITECTURE.md](ARCHITECTURE.md); the API contract and operational
 detail are in [DEVELOPER_README.md](../DEVELOPER_README.md). In one line: a FastAPI
 service streaming SSE, retrieving from a local SQLite flat index, calling a local
-Ollama model, with SQLite for metadata, fronted today by a demo page that sends no
-conversation history. The production widget and its client-side history are
-planned work.
+Ollama model, with SQLite for metadata, fronted by a generic shadow-DOM
+`cairn-chat` custom element and a demo page that sends no conversation history.
 
 Every dependency carries a written justification in
 [DEPENDENCIES.md](DEPENDENCIES.md), including the reasoning for version pins.
