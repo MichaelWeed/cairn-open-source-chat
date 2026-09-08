@@ -4,7 +4,9 @@ import {
   SseDecoder,
   boundedHistory,
   chatEndpoint,
+  retryOnce,
   safeCitationUrl,
+  type StreamAttemptResult,
 } from "../src/protocol";
 
 function expectThrows(action: () => void, message: string): void {
@@ -95,9 +97,101 @@ function testCitationSafety(): void {
   assert.equal(safeCitationUrl("/relative-reference"), null);
 }
 
-testSseDecoder();
-testMalformedSse();
-testHistoryAndEndpoint();
-testCitationSafety();
+async function testRetryOnce(): Promise<void> {
+  const retryableFailure: StreamAttemptResult<string> = {
+    kind: "error",
+    message: "The service is busy.",
+    retryable: true,
+  };
+  const successfulAnswer: StreamAttemptResult<string> = {
+    kind: "done",
+    value: "second attempt answer",
+  };
+  const stablePayloads: Array<{ message: string; sessionId: string; history: string[] }> = [];
+  let attempts = 0;
+  let resetCount = 0;
+  let visibleExchanges = 1;
+  const partialAssistant = {
+    citations: ["partial citation"],
+    error: "The service is busy.",
+    failed: true,
+    status: "Answer unavailable",
+    text: "partial answer",
+  };
+  const request = { message: "Where is my order?", sessionId: "session-1", history: ["prior turn"] };
 
-console.log("widget protocol tests passed");
+  const retried = await retryOnce(
+    async () => {
+      attempts += 1;
+      stablePayloads.push({ ...request, history: [...request.history] });
+      return attempts === 1 ? retryableFailure : successfulAnswer;
+    },
+    () => {
+      resetCount += 1;
+      partialAssistant.text = "";
+      partialAssistant.citations = [];
+      partialAssistant.status = "Retrying Cairn…";
+      partialAssistant.failed = false;
+      partialAssistant.error = "";
+    },
+  );
+  assert.deepEqual(retried, successfulAnswer);
+  assert.equal(attempts, 2, "a retryable SSE error makes exactly one retry");
+  assert.equal(resetCount, 1, "the partial assistant exchange resets before retrying");
+  assert.equal(visibleExchanges, 1, "retrying does not add a second visible exchange");
+  assert.deepEqual(partialAssistant, {
+    citations: [],
+    error: "",
+    failed: false,
+    status: "Retrying Cairn…",
+    text: "",
+  });
+  assert.deepEqual(stablePayloads, [
+    { message: "Where is my order?", sessionId: "session-1", history: ["prior turn"] },
+    { message: "Where is my order?", sessionId: "session-1", history: ["prior turn"] },
+  ]);
+
+  for (const terminal of [
+    { kind: "error", message: "Do not retry.", retryable: false } as const,
+    { kind: "aborted" } as const,
+  ]) {
+    let terminalAttempts = 0;
+    const result = await retryOnce(
+      async () => {
+        terminalAttempts += 1;
+        return terminal;
+      },
+      () => assert.fail("terminal outcomes never reset or retry"),
+    );
+    assert.deepEqual(result, terminal);
+    assert.equal(terminalAttempts, 1, "terminal outcomes use one request");
+  }
+
+  let secondFailureAttempts = 0;
+  const secondFailure = await retryOnce(
+    async () => {
+      secondFailureAttempts += 1;
+      return retryableFailure;
+    },
+    () => undefined,
+  );
+  assert.deepEqual(secondFailure, retryableFailure);
+  assert.equal(secondFailureAttempts, 2, "a second retryable error is terminal");
+
+  const history: string[] = [];
+  if (retried.kind === "done") {
+    history.push(request.message, retried.value);
+  }
+  assert.deepEqual(history, ["Where is my order?", "second attempt answer"], "history changes only after a clean done result");
+}
+
+async function main(): Promise<void> {
+  testSseDecoder();
+  testMalformedSse();
+  testHistoryAndEndpoint();
+  testCitationSafety();
+  await testRetryOnce();
+  console.log("widget protocol tests passed");
+}
+
+void main();

@@ -2,10 +2,12 @@ import {
   SseDecoder,
   boundedHistory,
   chatEndpoint,
+  retryOnce,
   safeCitationUrl,
   type ChatStreamEvent,
   type ChatTurn,
   type Citation,
+  type StreamAttemptResult,
 } from "./protocol";
 
 export const CAIRN_WIDGET_VERSION = "0.1.0";
@@ -203,13 +205,38 @@ class CairnChat extends HTMLElement {
     this.input.disabled = true;
     this.sendButton.disabled = true;
 
-    let streamCompleted = false;
-    let streamReportedError = false;
+    try {
+      const history = boundedHistory(this.history);
+      const result = await retryOnce(
+        () => this.streamAttempt(endpoint, message, history, controller, assistant),
+        () => this.resetAssistant(assistant),
+      );
+      if (result.kind === "done") {
+        this.history = boundedHistory([...this.history, { role: "user", content: message }, { role: "assistant", content: assistant.text }]);
+      } else if (result.kind === "error") {
+        this.failExchange(assistant, result.message);
+      }
+    } finally {
+      if (this.controller === controller) {
+        this.controller = null;
+        this.input.disabled = false;
+        this.sendButton.disabled = false;
+      }
+    }
+  }
+
+  private async streamAttempt(
+    endpoint: string,
+    message: string,
+    history: ChatTurn[],
+    controller: AbortController,
+    assistant: AssistantExchange,
+  ): Promise<StreamAttemptResult<void>> {
     try {
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: this.sessionId, message, history: boundedHistory(this.history) }),
+        body: JSON.stringify({ session_id: this.sessionId, message, history }),
         signal: controller.signal,
       });
       if (!response.ok || response.body === null) {
@@ -224,35 +251,37 @@ class CairnChat extends HTMLElement {
         if (done) {
           break;
         }
-        streamReportedError = this.handleEvents(decoder.push(textDecoder.decode(value, { stream: true })), assistant) || streamReportedError;
-        streamCompleted = streamCompleted || assistant.article.dataset.complete === "true";
+        const error = this.handleEvents(decoder.push(textDecoder.decode(value, { stream: true })), assistant);
+        if (error !== null) {
+          return error;
+        }
       }
-      streamReportedError = this.handleEvents(decoder.push(textDecoder.decode()), assistant) || streamReportedError;
-      streamReportedError = this.handleEvents(decoder.finish(), assistant) || streamReportedError;
-      streamCompleted = assistant.article.dataset.complete === "true";
-
-      if (!streamCompleted && !streamReportedError) {
-        throw new Error("The chat response ended before it was complete.");
+      for (const events of [decoder.push(textDecoder.decode()), decoder.finish()]) {
+        const error = this.handleEvents(events, assistant);
+        if (error !== null) {
+          return error;
+        }
       }
-      if (streamCompleted && !streamReportedError) {
-        this.history = boundedHistory([...this.history, { role: "user", content: message }, { role: "assistant", content: assistant.text }]);
+      if (assistant.article.dataset.complete === "true") {
+        return { kind: "done", value: undefined };
       }
+      return {
+        kind: "error",
+        message: "The connection was interrupted before Cairn could finish. Please try again.",
+        retryable: false,
+      };
     } catch (error) {
       if (controller.signal.aborted) {
-        return;
+        return { kind: "aborted" };
       }
-      this.failExchange(assistant, userSafeError(error));
-    } finally {
-      if (this.controller === controller) {
-        this.controller = null;
-        this.input.disabled = false;
-        this.sendButton.disabled = false;
-      }
+      return { kind: "error", message: userSafeError(error), retryable: false };
     }
   }
 
-  private handleEvents(events: ChatStreamEvent[], assistant: AssistantExchange): boolean {
-    let reportedError = false;
+  private handleEvents(
+    events: ChatStreamEvent[],
+    assistant: AssistantExchange,
+  ): Extract<StreamAttemptResult<void>, { kind: "error" }> | null {
     for (const event of events) {
       if (event.type === "status") {
         assistant.status.textContent = event.label;
@@ -262,8 +291,8 @@ class CairnChat extends HTMLElement {
       } else if (event.type === "citations") {
         this.appendCitations(assistant.citations, event.sources);
       } else if (event.type === "error") {
-        reportedError = true;
         this.failExchange(assistant, event.message);
+        return { kind: "error", message: event.message, retryable: event.retryable };
       } else if (event.type === "done") {
         assistant.article.dataset.complete = "true";
         assistant.status.textContent = event.finishReason === "refused" ? "Cairn could not find a confident answer." : "Answer complete";
@@ -272,7 +301,7 @@ class CairnChat extends HTMLElement {
         }
       }
     }
-    return reportedError;
+    return null;
   }
 
   private appendMessage(text: string): void {
@@ -332,6 +361,17 @@ class CairnChat extends HTMLElement {
       assistant.content.textContent = "Cairn could not complete that answer.";
     }
     this.showError(message);
+    this.scrollMessages();
+  }
+
+  private resetAssistant(assistant: AssistantExchange): void {
+    assistant.article.classList.remove("failed", "refusal");
+    delete assistant.article.dataset.complete;
+    assistant.content.textContent = "";
+    assistant.citations.replaceChildren();
+    assistant.status.textContent = "Retrying Cairn…";
+    assistant.text = "";
+    this.clearError();
     this.scrollMessages();
   }
 

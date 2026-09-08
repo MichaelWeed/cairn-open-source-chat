@@ -18,6 +18,11 @@ export type ChatStreamEvent =
   | { type: "error"; message: string; retryable: boolean }
   | { type: "done"; finishReason: "stop" | "refused" };
 
+export type StreamAttemptResult<T> =
+  | { kind: "done"; value: T }
+  | { kind: "error"; message: string; retryable: boolean }
+  | { kind: "aborted" };
+
 type RawEvent = Record<string, unknown>;
 
 export class SseDecodeError extends Error {
@@ -62,6 +67,19 @@ export class SseDecoder {
 
 export function boundedHistory(history: readonly ChatTurn[]): ChatTurn[] {
   return history.slice(-HISTORY_LIMIT);
+}
+
+/** Run a stream once more only after its first explicit retryable error. */
+export async function retryOnce<T>(
+  attempt: () => Promise<StreamAttemptResult<T>>,
+  onRetry: () => void,
+): Promise<StreamAttemptResult<T>> {
+  const first = await attempt();
+  if (first.kind !== "error" || !first.retryable) {
+    return first;
+  }
+  onRetry();
+  return attempt();
 }
 
 export function chatEndpoint(apiUrl: string | null): string | null {
