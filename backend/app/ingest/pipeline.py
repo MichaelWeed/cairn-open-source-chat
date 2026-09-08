@@ -47,7 +47,9 @@ def ingest_upload(
     previous_hash = row[0] if row else None
 
     if previous_hash == new_hash:
-        return IngestResult(document_id=document_id, status="unchanged", chunk_count=row[1])
+        expected_ids = _chunk_ids(document_id, row[1])
+        if collection.get(ids=expected_ids)["ids"] == expected_ids:
+            return IngestResult(document_id=document_id, status="unchanged", chunk_count=row[1])
 
     text = extract_text(filename, content)
     chunks = chunk_text(text)

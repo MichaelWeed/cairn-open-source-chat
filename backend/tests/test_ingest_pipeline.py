@@ -57,6 +57,30 @@ def test_reingesting_identical_bytes_is_unchanged(env: Env) -> None:
     assert collection.count() == 1
 
 
+@pytest.mark.parametrize(
+    "missing_chunk_indexes", [[0, 1], [1]], ids=["missing-all", "missing-one"]
+)
+def test_reingesting_identical_bytes_restores_missing_index_chunks(
+    env: Env, missing_chunk_indexes: list[int]
+) -> None:
+    db, collection = env
+    content = b"a" * 900
+    created = ingest_upload(
+        db=db, collection=collection, document_id="doc-1", filename="doc.md", content=content
+    )
+    assert created.chunk_count == 2
+    expected_ids = [f"doc-1::chunk::{i}" for i in range(created.chunk_count)]
+    collection.delete(ids=[expected_ids[i] for i in missing_chunk_indexes])
+
+    result = ingest_upload(
+        db=db, collection=collection, document_id="doc-1", filename="doc.md", content=content
+    )
+
+    assert result.status == "updated"
+    assert result.chunk_count == created.chunk_count
+    assert collection.get(ids=expected_ids)["ids"] == expected_ids
+
+
 def test_reingesting_changed_content_replaces_chunks(env: Env) -> None:
     db, collection = env
     ingest_upload(
