@@ -111,6 +111,46 @@ def test_ingest_corpus_removes_stale_corpus_vectors_and_metadata(
         db.close()
 
 
+def test_ingest_corpus_removes_emptied_corpus_vectors_and_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "fake")
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    present = corpus / "present.md"
+    emptied = corpus / "emptied.md"
+    present.write_text("Present corpus content")
+    emptied.write_text("Retrievable former content")
+    settings = Settings(database_path=tmp_path / "cairn.db", chroma_path=tmp_path / "chroma")
+    db = bootstrap(settings.database_path)
+    collection = get_document_collection(get_vector_client(settings), settings)
+    try:
+        ingest_corpus(db=db, collection=collection, corpus_path=corpus)
+        ingest_upload(
+            db=db,
+            collection=collection,
+            document_id="upload:kept",
+            filename="kept.md",
+            content=b"Non-corpus content",
+        )
+        emptied.write_text("")
+
+        ingest_corpus(db=db, collection=collection, corpus_path=corpus)
+
+        assert collection.get(ids=["corpus:emptied.md::chunk::0"])["ids"] == []
+        result = collection.query(query_texts=["Retrievable former content"], n_results=10)
+        assert all(
+            "Retrievable former content" not in document
+            for document in result["documents"][0]
+        )
+        assert db.execute("SELECT id FROM documents ORDER BY id").fetchall() == [
+            ("corpus:present.md",),
+            ("upload:kept",),
+        ]
+    finally:
+        db.close()
+
+
 def test_ingest_corpus_reconciles_renamed_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

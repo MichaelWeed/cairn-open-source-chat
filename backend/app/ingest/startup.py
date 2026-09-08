@@ -45,13 +45,14 @@ def ingest_corpus(
 ) -> CorpusIngestSummary:
     """Ingest a non-empty mounted corpus through the application's own handles."""
     paths = corpus_paths(corpus_path)
-    current_paths = {path.relative_to(corpus_path).as_posix() for path in paths}
+    current_paths: set[str] = set()
     results = []
     for path in paths:
         content = path.read_bytes()
         if not content.strip():
             continue
         relative_path = path.relative_to(corpus_path).as_posix()
+        current_paths.add(relative_path)
         results.append(
             ingest_upload(
                 db=db,
