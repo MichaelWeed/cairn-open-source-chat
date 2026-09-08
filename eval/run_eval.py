@@ -6,7 +6,7 @@ pass/fail isn't reported — that suite is task 4.4, not built yet.
 
 Self-contained by design: there's no HTTP upload endpoint yet (task 2.7),
 so this ingests eval/corpus/ directly via ingest_upload() into a fresh,
-ephemeral app instance (its own SQLite/Chroma paths) rather than assuming
+ephemeral app instance (its own SQLite metadata and vector-index files) rather than assuming
 some already-running, already-ingested deployment. Once 2.7 exists,
 pointing this at a live deployment's own corpus instead is a natural
 follow-up, not a redesign.
