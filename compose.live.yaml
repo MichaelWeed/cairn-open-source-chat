@@ -1,0 +1,12 @@
+# Grounded live-beta override. Keep compose.yaml's default `make up` path as
+# deterministic echo/fake plumbing; use `make live` for a real operator path.
+services:
+  backend:
+    environment:
+      PROVIDER: ollama
+      EMBEDDING_PROVIDER: ollama
+      CORPUS_PATH: /corpus
+    volumes:
+      # The live path has no sample-corpus fallback. The operator bootstrap
+      # validates this explicit absolute Markdown/PDF directory before Compose.
+      - ${CAIRN_CORPUS_PATH:?set CAIRN_CORPUS_PATH to an absolute Markdown/PDF directory}:/corpus:ro

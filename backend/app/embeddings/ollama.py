@@ -1,15 +1,14 @@
 from typing import Any
 
 import httpx
-import numpy as np
-from chromadb.api.types import Embeddable, Embeddings
-from chromadb.api.types import EmbeddingFunction as ChromaEmbeddingFunction
+
+from app.embedding_types import EmbeddingInput, EmbeddingVectors
 
 
-class OllamaEmbeddingFunction(ChromaEmbeddingFunction[Embeddable]):
+class OllamaEmbeddingFunction:
     """Local-model embedding function (default for real corpora), calling
-    Ollama's batch /api/embed endpoint. Synchronous — Chroma's embedding
-    function interface is sync-only, unlike the chat path's Provider."""
+    Ollama's batch /api/embed endpoint. Synchronous like the vector-store
+    interface, unlike the chat path's Provider."""
 
     # See OllamaProvider's identical default for why httpx's unconfigured
     # 5s is too tight for a local model — a batch of chunks from a large
@@ -22,7 +21,7 @@ class OllamaEmbeddingFunction(ChromaEmbeddingFunction[Embeddable]):
         self._model = model
         self._client = client or httpx.Client(timeout=self._DEFAULT_TIMEOUT)
 
-    def __call__(self, input: Embeddable) -> Embeddings:
+    def __call__(self, input: EmbeddingInput) -> EmbeddingVectors:
         for item in input:
             if not isinstance(item, str):
                 raise TypeError(f"OllamaEmbeddingFunction only embeds text, got {type(item)}")
@@ -31,7 +30,8 @@ class OllamaEmbeddingFunction(ChromaEmbeddingFunction[Embeddable]):
             json={"model": self._model, "input": list(input)},
         )
         response.raise_for_status()
-        return [np.array(e, dtype=np.float32) for e in response.json()["embeddings"]]
+        embeddings = response.json()["embeddings"]
+        return [[float(value) for value in embedding] for embedding in embeddings]
 
     @staticmethod
     def name() -> str:

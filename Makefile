@@ -1,4 +1,5 @@
 .PHONY: validate verify eval demo release up down \
+	live live-down \
 	no-stub-check lint-backend test-backend build-widget \
 	workflow-policy-check publication-baseline-check lockfile-audit cooldown-check gen-sbom sbom-check digest-pin-lint image-scan
 
@@ -20,6 +21,14 @@ up:
 
 down:
 	$(COMPOSE_CMD) down
+
+# Grounded operator path. The override replaces smoke providers with real
+# Ollama services and requires a read-only mounted corpus before readiness.
+live:
+	@$(if $(filter environment command line override,$(origin COMPOSE_CMD)),COMPOSE_CMD="$(COMPOSE_CMD)" ,)python3 scripts/live.py up
+
+live-down:
+	@$(if $(filter environment command line override,$(origin COMPOSE_CMD)),COMPOSE_CMD="$(COMPOSE_CMD)" ,)python3 scripts/live.py down
 
 # Scoped to source directories, not docs/*.md — the documentation and README
 # discuss this policy in prose, which isn't a stub marker.
@@ -44,7 +53,7 @@ test-backend:
 	cd backend && uv run pytest -q
 
 build-widget:
-	cd widget && npm ci && npm run typecheck && npm run build && npm run check-size
+	cd widget && npm ci && npm test && npm run typecheck && npm run build && npm run check-size && npm run check-distribution
 
 lockfile-audit:
 	osv-scanner scan source --config osv-scanner.toml \
@@ -54,7 +63,7 @@ cooldown-check:
 	python3 scripts/check_cooldown.py
 
 gen-sbom:
-	cd backend && uv sync --locked && cyclonedx-py environment .venv --pyproject pyproject.toml --output-reproducible -o sbom.cdx.json --of JSON
+	cd backend && uv sync --locked && cyclonedx-py environment .venv/bin/python --pyproject pyproject.toml --output-reproducible -o sbom.cdx.json --of JSON
 	cd widget && npm ci && node_modules/.bin/cyclonedx-npm --output-reproducible -o sbom.cdx.json
 
 # Regenerates both SBOMs and fails if they drifted from the committed

@@ -61,11 +61,13 @@ data:
   conversation_history:
     persisted: false
     note: >-
-      API accepts bounded history; the demo sends no prior turns and the server
-      persists none. Production widget and client-side history are planned.
+      API accepts bounded history; the demo sends no prior turns, while the generic
+      widget keeps up to five turns in memory. The server persists none.
   knowledge_corpus:
     persisted: true
-    note: Operator-supplied documents. Chunk text and embeddings in Chroma; metadata in SQLite.
+    note: >-
+      Operator-supplied documents. Chunk text and embeddings in the local SQLite
+      flat index; per-document metadata in SQLite. Legacy Chroma files are not read.
   credentials_handled:
     - name: ADMIN_BOOTSTRAP_PASSWORD
       status: not-implemented

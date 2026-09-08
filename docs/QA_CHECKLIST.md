@@ -78,5 +78,5 @@ tracking.
 
 ## Known, deliberately out of scope for this checklist
 
-* Production widget UX (shadow DOM, embed on a third-party page) — doesn't exist yet, lands in Phase 6. This checklist covers the demo page only.
+* Embeddable widget UX (shadow DOM, embed on a third-party page). The generic widget is built, but this checklist covers the demo page only; neutral-host browser verification is tracked separately.
 * Adversarial/prompt-injection cases — that's the adversarial suite, task 4.4, a `make validate` gate item, not manual QA.

@@ -42,11 +42,9 @@ this stage.
 * **Supply chain.** `uv.lock`/`package-lock.json` with hashes; CycloneDX SBOM regenerated and
   diffed against the committed one on every `make validate` run; `osv-scanner` (lockfiles) and
   `grype` (built images) gates; container images pinned by digest; a 14-day dependency cooldown
-  window. Documented, narrowly-scoped exceptions live in `osv-scanner.toml` and `.grype.yaml` with
-  a stated re-check condition each — e.g. a Critical pre-auth code-injection CVE in chromadb's HTTP
-  server API is currently ignored because this deployment only runs chromadb's embedded
-  `PersistentClient` (no network listener); that exception is void the moment anyone adopts
-  chromadb's client/server mode (see the horizontal-scaling note in DEVELOPER_README.md §9).
+  window. Any documented, narrowly-scoped exception includes a stated re-check condition. The
+  retired ChromaDB exception was removed with that dependency, so the backend lockfile has no OSV
+  vulnerability ignores; remaining image exceptions are documented in `.grype.yaml`.
 
 ## Not yet built — do not assume these exist
 

@@ -6,7 +6,10 @@
   "type": "module",
   "scripts": {
     "build": "esbuild src/index.ts --bundle --minify --outfile=dist/widget.js",
+    "check-distribution": "node scripts/distribution.mjs check",
     "check-size": "node scripts/check-size.mjs",
+    "sync-distribution": "node scripts/distribution.mjs sync",
+    "test": "esbuild tests/protocol.test.ts --bundle --platform=node --format=esm --outfile=dist/protocol.test.mjs && node dist/protocol.test.mjs && esbuild tests/layout.test.ts --bundle --platform=node --format=esm --outfile=dist/layout.test.mjs && node dist/layout.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
@@ -16,7 +19,7 @@
   },
   "overrides": {
     "brace-expansion": "2.1.4",
-    "fast-uri": "3.1.5",
+    "fast-uri": "3.1.6",
     "ip-address": "10.3.1",
     "js-yaml": "4.3.1",
     "lru-cache": "11.5.1",

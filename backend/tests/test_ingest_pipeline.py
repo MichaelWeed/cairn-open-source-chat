@@ -3,14 +3,20 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from chromadb.api.models.Collection import Collection
 
 from app.config import Settings
 from app.db import bootstrap
+from app.embedding_types import EmbeddingInput, EmbeddingVectors
 from app.ingest.pipeline import ingest_upload
-from app.vectorstore import get_chroma_client, get_document_collection
+from app.vectorstore import DocumentCollection, get_document_collection, get_vector_client
 
-Env = tuple[sqlite3.Connection, Collection]
+Env = tuple[sqlite3.Connection, DocumentCollection]
+
+
+class _FailingEmbeddings:
+    def __call__(self, input: EmbeddingInput) -> EmbeddingVectors:
+        del input
+        raise RuntimeError("simulated embedding failure")
 
 
 @pytest.fixture(autouse=True)
@@ -22,7 +28,7 @@ def fake_embeddings(monkeypatch: pytest.MonkeyPatch) -> None:
 def env(tmp_path: Path) -> Iterator[Env]:
     db = bootstrap(tmp_path / "test.db")
     settings = Settings(chroma_path=tmp_path / "chroma")
-    client = get_chroma_client(settings)
+    client = get_vector_client(settings)
     collection = get_document_collection(client, settings)
     yield db, collection
     db.close()
@@ -51,6 +57,30 @@ def test_reingesting_identical_bytes_is_unchanged(env: Env) -> None:
     assert collection.count() == 1
 
 
+@pytest.mark.parametrize(
+    "missing_chunk_indexes", [[0, 1], [1]], ids=["missing-all", "missing-one"]
+)
+def test_reingesting_identical_bytes_restores_missing_index_chunks(
+    env: Env, missing_chunk_indexes: list[int]
+) -> None:
+    db, collection = env
+    content = b"a" * 900
+    created = ingest_upload(
+        db=db, collection=collection, document_id="doc-1", filename="doc.md", content=content
+    )
+    assert created.chunk_count == 2
+    expected_ids = [f"doc-1::chunk::{i}" for i in range(created.chunk_count)]
+    collection.delete(ids=[expected_ids[i] for i in missing_chunk_indexes])
+
+    result = ingest_upload(
+        db=db, collection=collection, document_id="doc-1", filename="doc.md", content=content
+    )
+
+    assert result.status == "updated"
+    assert result.chunk_count == created.chunk_count
+    assert collection.get(ids=expected_ids)["ids"] == expected_ids
+
+
 def test_reingesting_changed_content_replaces_chunks(env: Env) -> None:
     db, collection = env
     ingest_upload(
@@ -70,6 +100,25 @@ def test_reingesting_changed_content_replaces_chunks(env: Env) -> None:
     documents = stored["documents"]
     assert documents is not None
     assert all("version two" in doc for doc in documents)
+
+
+def test_failed_reingestion_keeps_existing_chunks(env: Env) -> None:
+    db, collection = env
+    ingest_upload(
+        db=db, collection=collection, document_id="doc-1", filename="doc.md", content=b"version one"
+    )
+    collection._embedding_function = _FailingEmbeddings()
+
+    with pytest.raises(RuntimeError, match="simulated embedding failure"):
+        ingest_upload(
+            db=db,
+            collection=collection,
+            document_id="doc-1",
+            filename="doc.md",
+            content=b"version two",
+        )
+
+    assert collection.get(ids=["doc-1::chunk::0"])["documents"] == ["version one"]
 
 
 def test_two_documents_are_independent(env: Env) -> None:

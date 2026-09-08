@@ -26,7 +26,7 @@ the complete diff before proposing it; partial-diff review is not sufficient.
 ## Scope boundary
 
 The supported boundary is grounded, cited answers over an operator-supplied
-corpus, low-confidence refusal, local-model-first self-hosting, a future
+corpus, low-confidence refusal, local-model-first self-hosting, a generic
 embeddable widget, order-status deep links, and clean human escalation. CRM
 synchronization, auth-aware or per-user answers, multi-tenancy, and voice are
 out of scope. Do not reopen those proposals as ordinary feature requests; they

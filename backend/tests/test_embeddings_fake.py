@@ -1,12 +1,8 @@
-from chromadb.api.types import Embeddings
-
 from app.embeddings.fake import FakeEmbeddingFunction
 
 
-def as_lists(embeddings: Embeddings) -> list[list[float]]:
-    # The chromadb base class normalizes __call__'s return value into numpy
-    # arrays; compare as plain lists instead of fighting array truthiness.
-    return [list(v) for v in embeddings]
+def as_lists(embeddings: list[list[float]]) -> list[list[float]]:
+    return embeddings
 
 
 def test_deterministic() -> None:

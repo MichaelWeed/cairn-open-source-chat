@@ -7,10 +7,9 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Literal
 
-from chromadb.api.models.Collection import Collection
-
 from app.ingest.chunking import chunk_text
 from app.ingest.parsers import extract_text
+from app.vectorstore import DocumentCollection
 
 IngestStatus = Literal["created", "updated", "unchanged"]
 
@@ -33,7 +32,7 @@ def _chunk_ids(document_id: str, count: int) -> list[str]:
 def ingest_upload(
     *,
     db: sqlite3.Connection,
-    collection: Collection,
+    collection: DocumentCollection,
     document_id: str,
     filename: str,
     content: bytes,
@@ -48,23 +47,22 @@ def ingest_upload(
     previous_hash = row[0] if row else None
 
     if previous_hash == new_hash:
-        return IngestResult(document_id=document_id, status="unchanged", chunk_count=row[1])
+        expected_ids = _chunk_ids(document_id, row[1])
+        if collection.get(ids=expected_ids)["ids"] == expected_ids:
+            return IngestResult(document_id=document_id, status="unchanged", chunk_count=row[1])
 
     text = extract_text(filename, content)
     chunks = chunk_text(text)
 
-    if row is not None:
-        collection.delete(ids=_chunk_ids(document_id, row[1]))
-
-    if chunks:
-        collection.add(
-            ids=_chunk_ids(document_id, len(chunks)),
-            documents=chunks,
-            metadatas=[
-                {"document_id": document_id, "source": filename, "chunk_index": i}
-                for i in range(len(chunks))
-            ],
-        )
+    collection.replace(
+        ids_to_delete=_chunk_ids(document_id, row[1]) if row is not None else [],
+        ids=_chunk_ids(document_id, len(chunks)),
+        documents=chunks,
+        metadatas=[
+            {"document_id": document_id, "source": filename, "chunk_index": i}
+            for i in range(len(chunks))
+        ],
+    )
 
     with db:
         db.execute(

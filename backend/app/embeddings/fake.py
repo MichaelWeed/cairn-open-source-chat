@@ -2,15 +2,13 @@ import hashlib
 import struct
 from typing import Any
 
-import numpy as np
-from chromadb.api.types import Embeddable, Embedding, Embeddings
-from chromadb.api.types import EmbeddingFunction as ChromaEmbeddingFunction
+from app.embedding_types import EmbeddingInput, EmbeddingVector, EmbeddingVectors
 
 DIMENSIONS = 16
 
 
-class FakeEmbeddingFunction(ChromaEmbeddingFunction[Embeddable]):
-    """Deterministic, offline embedding function — no network, no model.
+class FakeEmbeddingFunction:
+    """Deterministic, offline embedding function without network or model use.
 
     Hashes each document into a fixed-size vector. Not semantically
     meaningful (don't use for real retrieval quality), only for exercising
@@ -21,19 +19,17 @@ class FakeEmbeddingFunction(ChromaEmbeddingFunction[Embeddable]):
     def __init__(self) -> None:
         pass
 
-    def __call__(self, input: Embeddable) -> Embeddings:
-        # Only text documents are meaningful to hash; the wider Embeddable
-        # union (pre-embedded arrays) isn't a real input in this project.
+    def __call__(self, input: EmbeddingInput) -> EmbeddingVectors:
         for item in input:
             if not isinstance(item, str):
                 raise TypeError(f"FakeEmbeddingFunction only embeds text, got {type(item)}")
         return [self._embed_one(text) for text in input if isinstance(text, str)]
 
     @staticmethod
-    def _embed_one(text: str) -> Embedding:
+    def _embed_one(text: str) -> EmbeddingVector:
         digest = hashlib.sha256(text.encode()).digest()
         floats = struct.unpack(f"{DIMENSIONS}b", digest[:DIMENSIONS])
-        return np.array([f / 127.0 for f in floats], dtype=np.float32)
+        return [f / 127.0 for f in floats]
 
     @staticmethod
     def name() -> str:

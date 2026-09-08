@@ -5,11 +5,10 @@ ingested into it, then serves it for interactive browser testing.
 Not part of `make validate` — this is for a human at the demo page,
 not CI. See docs/QA_CHECKLIST.md for the scenarios to run against it.
 
-Ingestion happens inside the app's own lifespan context rather than a
-second `chromadb.PersistentClient` against the same `CHROMA_PATH`, per
-the single-writer invariant in DEVELOPER_README.md #1 — a second
-handle desyncs the long-lived server handle's view of on-disk HNSW
-segments, breaking every later query until the process restarts.
+Ingestion happens inside the app's own lifespan context through its
+`document_collection`, the same vector-index path used by requests.
+This keeps the helper aligned with the application's startup and
+persistence lifecycle.
 
 Run: `make demo` from the repo root, or directly:
     cd backend && uv run python ../scripts/dev_demo.py [--corpus PATH]

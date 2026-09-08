@@ -1,15 +1,14 @@
 import os
 
-from chromadb.api.types import Embeddable, EmbeddingFunction
-
 from app.config import Settings
+from app.embedding_types import EmbeddingFunction
 from app.embeddings.fake import FakeEmbeddingFunction
 from app.embeddings.ollama import OllamaEmbeddingFunction
 
 __all__ = ["FakeEmbeddingFunction", "OllamaEmbeddingFunction", "default_embedding_function"]
 
 
-def default_embedding_function(settings: Settings) -> EmbeddingFunction[Embeddable]:
+def default_embedding_function(settings: Settings) -> EmbeddingFunction:
     # Same knob shape and same default-safe reasoning as PROVIDER
     # (app/main.py): EMBEDDING_PROVIDER defaults to `fake` (offline,
     # deterministic — a fresh `docker compose up` never requires a model
