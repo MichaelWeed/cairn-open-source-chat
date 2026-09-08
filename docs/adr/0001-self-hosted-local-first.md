@@ -46,5 +46,5 @@ separately. Each would reintroduce either shared infrastructure or an identity
 system that this architecture deliberately does not have.
 
 **Where it shows up in the code.** No authentication anywhere; SQLite and embedded
-Chroma rather than networked datastores; in-process rate limiting; and a
+SQLite flat-vector index rather than networked datastores; in-process rate limiting; and a
 configuration surface built around one operator, not a tenant hierarchy.
