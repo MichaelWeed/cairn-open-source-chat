@@ -8,13 +8,13 @@
         button:focus-visible, textarea:focus-visible, a:focus-visible { outline: 3px solid #3e6b4f; outline-offset: 3px; }
         .launcher { align-items: center; background: #3e6b4f; border: 0; border-radius: 999px; box-shadow: 0 12px 30px rgb(27 30 26 / 24%); color: #f4faf6; display: flex; font-weight: 700; gap: .5rem; min-height: 3.25rem; padding: .75rem 1rem; }
         .launcher:hover { background: #315940; }
-        .panel { background: #fff; border: 1px solid #e2ded4; border-radius: 1rem; bottom: 4.1rem; box-shadow: 0 18px 48px rgb(27 30 26 / 23%); display: grid; grid-template-rows: auto minmax(9rem, 1fr) auto; max-height: min(38rem, calc(100vh - 6.5rem)); overflow: hidden; position: absolute; right: 0; width: min(25rem, calc(100vw - 2.5rem)); }
+        .panel { background: #fff; border: 1px solid #e2ded4; border-radius: 1rem; bottom: 4.1rem; box-shadow: 0 18px 48px rgb(27 30 26 / 23%); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: min(38rem, calc(100vh - 6.5rem)); overflow: hidden; position: absolute; right: 0; width: min(25rem, calc(100vw - 2.5rem)); }
         .panel[hidden] { display: none; }
         header { align-items: center; background: #eef1ec; border-bottom: 1px solid #e2ded4; display: flex; justify-content: space-between; padding: .875rem 1rem; }
         .title { font-size: 1rem; font-weight: 750; margin: 0; }
         .close { background: transparent; border: 0; border-radius: .375rem; color: #384238; font-size: 1.25rem; height: 2rem; line-height: 1; width: 2rem; }
         .close:hover { background: #dce5dc; }
-        .messages { display: flex; flex-direction: column; gap: .75rem; min-height: 13rem; overflow-y: auto; padding: 1rem; }
+        .messages { display: flex; flex-direction: column; gap: .75rem; min-height: 0; overflow-y: auto; padding: 1rem; }
         .empty { color: #5e665d; font-size: .925rem; line-height: 1.5; margin: auto 0; text-align: center; }
         article { align-self: flex-start; max-width: 92%; }
         .message { border-radius: .75rem; line-height: 1.5; overflow-wrap: anywhere; padding: .7rem .8rem; white-space: pre-wrap; word-break: break-word; }
@@ -37,7 +37,7 @@
         .send:disabled { background: #92a392; cursor: not-allowed; }
         .error { background: #fdecea; border-top: 1px solid #efc3bd; color: #8c211b; font-size: .84rem; line-height: 1.4; margin: 0; padding: .65rem .75rem; }
         .error[hidden] { display: none; }
-        @media (max-width: 480px) { :host { bottom: .75rem; right: .75rem; } .panel { bottom: 4rem; max-height: calc(100vh - 5.25rem); width: calc(100vw - 1.5rem); } .messages { min-height: 11rem; } }
+        @media (max-width: 480px) { :host { bottom: .75rem; right: .75rem; } .panel { bottom: 4rem; height: calc(100vh - 5.25rem); width: calc(100vw - 1.5rem); } }
         @media (prefers-color-scheme: dark) { :host { color: #eef2ec; } .panel { background: #20251f; border-color: #495045; box-shadow: 0 18px 48px rgb(0 0 0 / 45%); } header, .assistant .message { background: #2c352b; border-color: #495045; color: #eef2ec; } .close { color: #dbe7da; } .close:hover { background: #3a4739; } .empty, .stream-status, .hint { color: #b9c0b6; } textarea { background: #182018; border-color: #596355; color: #eef2ec; } textarea:disabled { background: #293028; } form { border-color: #495045; } label { color: #d2d9d0; } .citation { background: #273026; border-color: #536052; color: #9ed2a8; } .citation:hover { background: #354335; } .citation.inert { color: #c4cbc0; } .assistant.refusal .message { background: #3c3526; border-color: #827144; } .error { background: #472722; border-color: #704039; color: #ffd7d2; } }
         @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; } }
       </style>
