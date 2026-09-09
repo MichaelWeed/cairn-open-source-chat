@@ -1,7 +1,7 @@
 # Cairn — Architecture
 
 What the system is, how a request moves through it, and which parts are load-bearing
-constraints rather than current implementation choices. Accurate as of 2026-08-21.
+constraints rather than current implementation choices. Accurate as of 2026-09-08.
 
 For the wire contract, configuration knobs, and operational procedures, see
 [DEVELOPER_README.md](../DEVELOPER_README.md). For the reasoning behind individual
@@ -52,6 +52,7 @@ Three properties of this diagram carry most of the design weight:
 | --- | --- | --- |
 | Wire contracts | `backend/app/api/contracts.py` | Built. Frozen — see [ADR-0002](adr/0002-frozen-wire-contracts.md) |
 | Chat endpoint (SSE) | `backend/app/api/chat.py` | Built |
+| Capability discovery | `backend/app/capabilities.json`, `backend/app/api/capabilities.py` | Built. Static package metadata; see [COMPATIBILITY.md](COMPATIBILITY.md) |
 | Provider adapters | `backend/app/providers/` | Built: echo, Ollama |
 | Embeddings | `backend/app/embeddings/` | Built: fake, Ollama |
 | Vector store | `backend/app/vectorstore.py` | Built. SQLite flat index, version 1, see [ADR-0007](adr/0007-sqlite-flat-vector-index.md) |

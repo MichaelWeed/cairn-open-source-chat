@@ -49,6 +49,7 @@ that Cairn provides order-status integrations today.
 ## Learn more
 
 * [DEVELOPER_README.md](DEVELOPER_README.md) — full technical guide: setup, configuration, architecture, API, security, evaluation, development, and operations.
+* [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) — machine-readable capability discovery, current compatibility versions, and pre-1.0 upgrade rules.
 * [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/adr/](docs/adr/) — system shape, built-versus-planned boundaries, and decisions.
 * [docs/SECURITY.md](docs/SECURITY.md) and [docs/PRIVACY.md](docs/PRIVACY.md) — security status, vulnerability reporting, and data handling.
 * [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) — supported contribution boundary and non-goals.

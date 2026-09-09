@@ -6,6 +6,8 @@ Cairn was formerly AetherChat; [project.yaml](project.yaml) is the durable ident
 record. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/adr/](docs/adr/) are
 the durable design authorities, while [docs/PUBLIC-AVAILABILITY.md](docs/PUBLIC-AVAILABILITY.md)
 records the delivered public-availability outcome and open tracking decision D4.
+[docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) records the exact packaged capability
+manifest, compatibility versions, and pre-1.0 upgrade rules.
 
 ---
 
@@ -36,6 +38,10 @@ and echo providers, retrieval/refusal/citations, the `/demo` page, and the gener
 `<cairn-chat>` custom element with a shadow-DOM chat UI and `api-url` and
 `assistant-name` attributes. The admin surface, hosted provider, tools, and
 guardrail pipeline are planned.
+
+`GET /api/v1/capabilities` returns the static packaged capability manifest. Use it
+to discover exact compatibility versions and built, development-only, or planned
+states; use `/readyz` for runtime readiness.
 
 Design invariants and current limits:
 

@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.api.capabilities import router as capabilities_router
 from app.api.chat import router as chat_router
 from app.config import Settings, get_settings
 from app.db import bootstrap
@@ -104,6 +105,7 @@ def create_app(settings: Settings | None = None, provider: Provider | None = Non
         allow_headers=["*"],
     )
 
+    app.include_router(capabilities_router)
     app.include_router(chat_router)
     app.mount("/demo", StaticFiles(directory=STATIC_DIR / "demo", html=True), name="demo")
     app.mount("/widget", StaticFiles(directory=STATIC_DIR / "widget"), name="widget")
