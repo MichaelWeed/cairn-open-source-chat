@@ -1,9 +1,10 @@
 import asyncio
+import importlib.util
 import socket
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -60,6 +61,13 @@ _EMBEDDINGS = {
     "offset query": 0.5,
     **dict(zip(_DOCUMENTS, (0.0, -1.0, 1.0, 2.0, 3.0, 4.0, 5.0), strict=True)),
 }
+
+
+def _google_auth_available() -> bool:
+    try:
+        return importlib.util.find_spec("google.auth") is not None
+    except ModuleNotFoundError:
+        return False
 
 
 def _fixed_embeddings(input: Sequence[str]) -> list[list[float]]:
@@ -171,6 +179,9 @@ def no_external_retrieval_calls(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(socket, "getaddrinfo", forbidden)
     monkeypatch.setattr("app.providers.gemini.GeminiProvider.stream", forbidden)
     monkeypatch.setattr("app.providers.ollama.OllamaProvider.stream", forbidden)
+    if _google_auth_available():
+        monkeypatch.setattr("google.auth.default", forbidden)
+    monkeypatch.setattr("app.main._default_firestore_adapter", forbidden)
 
 
 def test_external_call_guard_denies_dns_and_connection_attempts() -> None:
@@ -182,6 +193,30 @@ def test_external_call_guard_denies_dns_and_connection_attempts() -> None:
         lambda: socket.getaddrinfo("localhost", 0),
         lambda: socket.create_connection(("localhost", 9)),
         direct_connect,
+    )
+    for operation in operations:
+        with pytest.raises(
+            AssertionError,
+            match="external call forbidden in retrieval conformance tests",
+        ):
+            operation()
+    if _google_auth_available():
+        with pytest.raises(
+            AssertionError,
+            match="external call forbidden in retrieval conformance tests",
+        ):
+            __import__("google.auth").auth.default()
+
+
+def test_external_call_guard_denies_providers_and_firestore_factory() -> None:
+    from app.main import _default_firestore_adapter
+    from app.providers.gemini import GeminiProvider
+    from app.providers.ollama import OllamaProvider
+
+    operations = (
+        lambda: GeminiProvider.stream(cast(GeminiProvider, object()), cast(Any, object())),
+        lambda: OllamaProvider.stream(cast(OllamaProvider, object()), cast(Any, object())),
+        lambda: _default_firestore_adapter(cast(Any, object())),
     )
     for operation in operations:
         with pytest.raises(

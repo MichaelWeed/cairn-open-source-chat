@@ -1,9 +1,11 @@
+import json
 import math
 from pathlib import Path
+from typing import Literal, cast
 
 import pytest
 import yaml
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from app.config import Settings
 
@@ -37,6 +39,11 @@ def test_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.max_output_chars == 6000
     assert settings.retrieval_top_k == 4
     assert settings.retrieval_max_distance == 1.2
+    assert settings.retrieval_backend == "local"
+    assert settings.firestore_project_id == ""
+    assert settings.firestore_embedding_dimensions is None
+    assert settings.firestore_query_timeout_seconds is None
+    assert settings.firestore_max_retries is None
 
 
 @pytest.mark.parametrize("value", [0, 7, True, 1.5, "1.5", "four"])
@@ -115,8 +122,18 @@ def test_generation_setting_defaults_match_env_example_and_compose(
 def test_retrieval_setting_defaults_match_env_example_and_compose() -> None:
     settings = Settings()
     expected = {
+        "RETRIEVAL_BACKEND": settings.retrieval_backend,
         "RETRIEVAL_TOP_K": str(settings.retrieval_top_k),
         "RETRIEVAL_MAX_DISTANCE": str(settings.retrieval_max_distance),
+        "FIRESTORE_PROJECT_ID": "",
+        "FIRESTORE_CORPUS_ID": "",
+        "FIRESTORE_CORPUS_VERSION": "",
+        "FIRESTORE_EMBEDDING_IDENTITY": "",
+        "FIRESTORE_EMBEDDING_DIMENSIONS": "",
+        "FIRESTORE_DISTANCE_MEASURE": "",
+        "FIRESTORE_MAX_DISTANCE": "",
+        "FIRESTORE_QUERY_TIMEOUT_SECONDS": "",
+        "FIRESTORE_MAX_RETRIES": "",
     }
     env_values = _dotenv_values(REPO_ROOT / ".env.example")
     compose = yaml.safe_load((REPO_ROOT / "compose.yaml").read_text())
@@ -128,9 +145,254 @@ def test_retrieval_setting_defaults_match_env_example_and_compose() -> None:
     }
 
     assert env_values["CAIRN_INSTALL_GEMINI"] == "false"
+    assert env_values["CAIRN_INSTALL_FIRESTORE"] == "false"
     assert compose["services"]["backend"]["build"]["args"] == {
-        "CAIRN_INSTALL_GEMINI": "${CAIRN_INSTALL_GEMINI:-false}"
+        "CAIRN_INSTALL_GEMINI": "${CAIRN_INSTALL_GEMINI:-false}",
+        "CAIRN_INSTALL_FIRESTORE": "${CAIRN_INSTALL_FIRESTORE:-false}",
     }
+
+
+def _firestore_settings(**updates: object) -> dict[str, object]:
+    values: dict[str, object] = {
+        "retrieval_backend": "firestore",
+        "firestore_project_id": "cairn1",
+        "firestore_corpus_id": "docs",
+        "firestore_corpus_version": "v1",
+        "firestore_embedding_identity": "ollama:nomic-embed-text",
+        "firestore_embedding_dimensions": 768,
+        "firestore_distance_measure": "cosine",
+        "firestore_max_distance": 0.8,
+        "firestore_query_timeout_seconds": 5,
+        "firestore_max_retries": 1,
+    }
+    values.update(updates)
+    return values
+
+
+def test_firestore_configuration_accepts_only_complete_development_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GOOGLE_SDK_PYTHON_LOGGING_SCOPE", raising=False)
+    settings = Settings.model_validate(_firestore_settings())
+    assert settings.retrieval_backend == "firestore"
+    assert settings.firestore_embedding_dimensions == 768
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("deployment_mode", "production"),
+        ("retrieval_backend", "FIRESTORE"),
+        ("corpus_path", Path("corpus")),
+        ("firestore_project_id", "Bad_Project"),
+        ("firestore_corpus_id", "latest"),
+        ("firestore_corpus_version", "latest"),
+        ("firestore_embedding_identity", " padded "),
+        ("firestore_embedding_dimensions", True),
+        ("firestore_embedding_dimensions", 0),
+        ("firestore_embedding_dimensions", 2049),
+        ("firestore_distance_measure", "squared_l2"),
+        ("firestore_max_distance", True),
+        ("firestore_max_distance", math.inf),
+        ("firestore_query_timeout_seconds", 0),
+        ("firestore_query_timeout_seconds", 31),
+        ("firestore_max_retries", 2),
+    ],
+)
+def test_firestore_configuration_rejects_unsafe_values(field: str, value: object) -> None:
+    expected = "RETRIEVAL_BACKEND" if field == "deployment_mode" else field
+    with pytest.raises(ValidationError, match=f"(?i){expected}"):
+        Settings.model_validate(_firestore_settings(**{field: value}))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("firestore_project_id", "cairn1"),
+        ("firestore_corpus_id", "docs"),
+        ("firestore_corpus_version", "v1"),
+        ("firestore_embedding_identity", "embed-v1"),
+        ("firestore_embedding_dimensions", 2),
+        ("firestore_distance_measure", "cosine"),
+        ("firestore_max_distance", 0.8),
+        ("firestore_query_timeout_seconds", 7),
+        ("firestore_max_retries", 0),
+    ],
+)
+def test_local_backend_rejects_every_stale_firestore_value(
+    field: str, value: object
+) -> None:
+    with pytest.raises(ValidationError, match=field.upper()):
+        Settings.model_validate({field: value})
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "firestore_project_id",
+        "firestore_corpus_id",
+        "firestore_corpus_version",
+        "firestore_embedding_identity",
+        "firestore_embedding_dimensions",
+        "firestore_distance_measure",
+        "firestore_max_distance",
+        "firestore_query_timeout_seconds",
+        "firestore_max_retries",
+    ],
+)
+def test_firestore_requires_every_hosted_setting(field: str) -> None:
+    values = _firestore_settings()
+    values[field] = (
+        None
+        if field
+        in {
+            "firestore_embedding_dimensions",
+            "firestore_max_distance",
+            "firestore_query_timeout_seconds",
+            "firestore_max_retries",
+        }
+        else ""
+    )
+    with pytest.raises(ValidationError, match=field.upper()):
+        Settings.model_validate(values)
+
+
+def test_firestore_rejects_sdk_debug_logging_without_echoing_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "private-debug-scope"
+    monkeypatch.setenv("GOOGLE_SDK_PYTHON_LOGGING_SCOPE", secret)
+    with pytest.raises(ValidationError) as caught:
+        Settings.model_validate(_firestore_settings())
+    assert "GOOGLE_SDK_PYTHON_LOGGING_SCOPE" in str(caught.value)
+    assert secret not in str(caught.value)
+
+
+def test_firestore_validation_string_hides_rejected_values() -> None:
+    secret = "Bad_Project-secret"
+    with pytest.raises(ValidationError) as caught:
+        Settings.model_validate(_firestore_settings(firestore_project_id=secret))
+    assert "FIRESTORE_PROJECT_ID" in str(caught.value)
+    assert secret not in str(caught.value)
+    assert secret not in repr(caught.value)
+
+
+ValidationExtra = Literal["allow", "ignore", "forbid"] | None
+
+
+def _settings_surface(
+    mode: str,
+    payload: dict[str, object],
+    extra: ValidationExtra,
+) -> Settings:
+    if mode.endswith("strings"):
+        value: object = {key: str(item) for key, item in payload.items()}
+    elif mode.endswith("json"):
+        value = json.dumps(payload)
+    else:
+        value = payload
+    if mode.startswith("model_"):
+        method = getattr(Settings, mode)
+    else:
+        method = getattr(TypeAdapter(Settings), mode.removeprefix("adapter_"))
+    return cast(Settings, method(value, extra=extra))
+
+
+def _assert_content_free_settings_error(
+    error: ValidationError, canaries: tuple[str, ...]
+) -> None:
+    rendered = (
+        str(error)
+        + repr(error)
+        + repr(error.errors(include_input=True, include_context=True))
+        + error.json(include_input=True, include_context=True)
+        + repr(error.__cause__)
+        + repr(error.__context__)
+        + repr(error.__dict__)
+    )
+    assert "FIRESTORE_PROJECT_ID" in rendered
+    assert all(canary not in rendered for canary in canaries)
+
+
+def test_firestore_constructor_structured_error_never_retains_values() -> None:
+    canaries = (
+        "Bad_Project-secret",
+        "corpus-secret",
+        "v1-secret",
+        "embedding-secret",
+        "retained-extra-secret",
+    )
+    payload = _firestore_settings(
+        firestore_project_id=canaries[0],
+        firestore_corpus_id=canaries[1],
+        firestore_corpus_version=canaries[2],
+        firestore_embedding_identity=canaries[3],
+    )
+    payload["unknown_content"] = canaries[4]
+
+    with pytest.raises(ValidationError) as caught:
+        Settings(**payload)  # type: ignore[arg-type]
+    _assert_content_free_settings_error(caught.value, canaries)
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "model_validate",
+        "model_validate_json",
+        "model_validate_strings",
+        "adapter_validate_python",
+        "adapter_validate_json",
+        "adapter_validate_strings",
+    ],
+)
+@pytest.mark.parametrize("extra", [None, "allow", "ignore", "forbid"])
+def test_firestore_structured_validation_errors_never_retain_values(
+    mode: str,
+    extra: ValidationExtra,
+) -> None:
+    canaries = (
+        "Bad_Project-secret",
+        "corpus-secret",
+        "v1-secret",
+        "embedding-secret",
+        "retained-extra-secret",
+    )
+    payload = _firestore_settings(
+        firestore_project_id=canaries[0],
+        firestore_corpus_id=canaries[1],
+        firestore_corpus_version=canaries[2],
+        firestore_embedding_identity=canaries[3],
+    )
+    payload["unknown_content"] = canaries[4]
+
+    with pytest.raises(ValidationError) as caught:
+        _settings_surface(mode, payload, extra)
+    _assert_content_free_settings_error(caught.value, canaries)
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "model_validate",
+        "model_validate_json",
+        "model_validate_strings",
+        "adapter_validate_python",
+        "adapter_validate_json",
+        "adapter_validate_strings",
+    ],
+)
+@pytest.mark.parametrize("extra", [None, "allow", "ignore", "forbid"])
+def test_firestore_valid_surfaces_ignore_unknown_content_without_retention(
+    mode: str,
+    extra: ValidationExtra,
+) -> None:
+    payload = _firestore_settings()
+    payload["unknown_content"] = "retained-extra-secret"
+    settings = _settings_surface(mode, payload, extra)
+    assert settings.firestore_project_id == "cairn1"
+    assert "unknown_content" not in settings.__dict__
+    assert settings.model_extra is None
 
 
 def test_origins_splits_and_strips() -> None:

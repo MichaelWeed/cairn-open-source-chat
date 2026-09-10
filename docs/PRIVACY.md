@@ -47,6 +47,13 @@ message is never added to the retrievable corpus.
   request. Gemini may return token counts and a service tier, which Cairn normalizes
   in memory without retaining raw provider metadata. Cairn does not persist chat
   transcripts or normalized usage metadata.
+* **Firestore retrieval (optional, development/test only).** The current question is
+  embedded by the selected embedding provider and the query vector is sent to the
+  configured Google Cloud project through Application Default Credentials. The
+  bounded result can contain corpus chunk text and citation metadata. Cairn does
+  not send conversation history, session IDs, client IPs, or credentials to the
+  Firestore query, and the adapter neither writes nor logs query/result content.
+  No live Firestore call is part of validation.
 
 ## Backups
 
