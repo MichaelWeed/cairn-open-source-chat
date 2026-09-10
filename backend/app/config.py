@@ -1,19 +1,221 @@
+import json
 import math
+import os
+import re
+from contextvars import ContextVar
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated, Literal, cast
+from typing import Annotated, Any, Literal, cast
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.api.contracts import OUTPUT_CHARS_MAX, OUTPUT_TOKENS_MAX, SYSTEM_INSTRUCTION_MAX_CHARS
 
 DEFAULT_DB_PATH = Path("data/cairn.db")
 DEFAULT_CHROMA_PATH = Path("data/chroma")
+_FIRESTORE_PROJECT_PATTERN = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
+_SETTINGS_VALIDATION_DEPTH: ContextVar[int] = ContextVar(
+    "settings_validation_depth", default=0
+)
+_SAFE_SETTING_NAMES = (
+    "CAIRN_PORT",
+    "CORPUS_PATH",
+    "DATABASE_PATH",
+    "DEPLOYMENT_MODE",
+    "EMBEDDING_PROVIDER",
+    "FIRESTORE_CORPUS_ID",
+    "FIRESTORE_CORPUS_VERSION",
+    "FIRESTORE_DISTANCE_MEASURE",
+    "FIRESTORE_EMBEDDING_DIMENSIONS",
+    "FIRESTORE_EMBEDDING_IDENTITY",
+    "FIRESTORE_MAX_DISTANCE",
+    "FIRESTORE_MAX_RETRIES",
+    "FIRESTORE_PROJECT_ID",
+    "FIRESTORE_QUERY_TIMEOUT_SECONDS",
+    "GEMINI_API_KEY",
+    "GEMINI_MAX_RETRIES",
+    "GEMINI_MODEL",
+    "GEMINI_TIMEOUT_SECONDS",
+    "GOOGLE_SDK_PYTHON_LOGGING_SCOPE",
+    "MAX_OUTPUT_CHARS",
+    "MAX_OUTPUT_TOKENS",
+    "PROVIDER",
+    "RETRIEVAL_BACKEND",
+    "RETRIEVAL_MAX_DISTANCE",
+    "RETRIEVAL_TOP_K",
+    "SYSTEM_INSTRUCTION",
+)
 
 
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+class SettingsValidationError(ValidationError):
+    """ValidationError-compatible settings failure without rejected values."""
+
+    _safe_errors: tuple[dict[str, object], ...]
+
+    @classmethod
+    def sanitized(cls, error: ValidationError) -> "SettingsValidationError":
+        if isinstance(error, cls):
+            return error
+
+        def safe_error(item: Any) -> dict[str, object]:
+            location = tuple(item.get("loc", ()))
+            message = str(item.get("msg", ""))
+            setting_name = next(
+                (
+                    name
+                    for name in _SAFE_SETTING_NAMES
+                    if name in message
+                    or any(
+                        isinstance(part, str) and part.upper() == name
+                        for part in location
+                    )
+                ),
+                None,
+            )
+            safe_message = (
+                f"{setting_name} is invalid."
+                if setting_name is not None
+                else "Settings configuration is invalid."
+            )
+            return {
+                "type": "settings_invalid",
+                "loc": location,
+                "msg": safe_message,
+            }
+
+        safe_errors = tuple(
+            safe_error(item)
+            for item in error.errors(
+                include_url=False,
+                include_context=False,
+                include_input=False,
+            )
+        )
+        sanitized = cls.from_exception_data(
+            "Settings",
+            [
+                {
+                    "type": "value_error",
+                    "loc": (),
+                    "input": None,
+                    "ctx": {"error": ValueError("Settings configuration is invalid.")},
+                }
+            ],
+            hide_input=True,
+        )
+        sanitized._safe_errors = safe_errors
+        return sanitized
+
+    def __str__(self) -> str:
+        parts = []
+        for item in self._safe_errors:
+            location = ".".join(
+                str(value) for value in cast(tuple[object, ...], item["loc"])
+            )
+            prefix = f"{location}: " if location else ""
+            parts.append(prefix + str(item["msg"]))
+        return "Settings configuration is invalid. " + "; ".join(parts)
+
+    def __repr__(self) -> str:
+        return "SettingsValidationError()"
+
+    def errors(
+        self,
+        *,
+        include_url: bool = True,
+        include_context: bool = True,
+        include_input: bool = True,
+    ) -> list[Any]:
+        del include_url, include_context, include_input
+        return [dict(item) for item in self._safe_errors]
+
+    def json(
+        self,
+        *,
+        indent: int | None = None,
+        include_url: bool = True,
+        include_context: bool = True,
+        include_input: bool = True,
+    ) -> str:
+        return json.dumps(
+            self.errors(
+                include_url=include_url,
+                include_context=include_context,
+                include_input=include_input,
+            ),
+            indent=indent,
+            separators=None if indent is not None else (",", ":"),
+        )
+
+
+class _ContentFreeSettingsValidator:
+    def __init__(self, validator: Any) -> None:
+        self._validator = validator
+
+    def _validate(
+        self,
+        method_name: Literal["validate_python", "validate_json", "validate_strings"],
+        value: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        kwargs["extra"] = "ignore"
+        depth = _SETTINGS_VALIDATION_DEPTH.get()
+        token = _SETTINGS_VALIDATION_DEPTH.set(depth + 1)
+        failure: SettingsValidationError | None = None
+        try:
+            return getattr(self._validator, method_name)(value, *args, **kwargs)
+        except SettingsValidationError as error:
+            if depth:
+                raise
+            failure = error
+        except ValidationError as error:
+            if depth:
+                raise
+            failure = SettingsValidationError.sanitized(error)
+        finally:
+            _SETTINGS_VALIDATION_DEPTH.reset(token)
+        assert failure is not None
+        raise failure from None
+
+    def validate_python(self, value: Any, *args: Any, **kwargs: Any) -> Any:
+        return self._validate("validate_python", value, *args, **kwargs)
+
+    def validate_json(self, value: Any, *args: Any, **kwargs: Any) -> Any:
+        return self._validate("validate_json", value, *args, **kwargs)
+
+    def validate_strings(self, value: Any, *args: Any, **kwargs: Any) -> Any:
+        return self._validate("validate_strings", value, *args, **kwargs)
+
+    def validate_assignment(self, *args: Any, **kwargs: Any) -> Any:
+        failure: SettingsValidationError | None = None
+        try:
+            return self._validator.validate_assignment(*args, **kwargs)
+        except SettingsValidationError as error:
+            failure = error
+        except ValidationError as error:
+            failure = SettingsValidationError.sanitized(error)
+        assert failure is not None
+        raise failure from None
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._validator, name)
+
+
+class ContentFreeBaseSettings(BaseSettings):
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        validator = cls.__pydantic_validator__
+        if not isinstance(validator, _ContentFreeSettingsValidator):
+            cls.__pydantic_validator__ = _ContentFreeSettingsValidator(validator)  # type: ignore[assignment]
+
+
+class Settings(ContentFreeBaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env", extra="ignore", hide_input_in_errors=True
+    )
 
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b-instruct"
@@ -41,6 +243,16 @@ class Settings(BaseSettings):
     embedding_model: str = "nomic-embed-text"
     retrieval_top_k: Annotated[int, Field(ge=1, le=6)] = 4
     retrieval_max_distance: Annotated[float, Field(ge=0, allow_inf_nan=False)] = 1.2
+    retrieval_backend: Literal["local", "firestore"] = "local"
+    firestore_project_id: str = ""
+    firestore_corpus_id: str = ""
+    firestore_corpus_version: str = ""
+    firestore_embedding_identity: str = ""
+    firestore_embedding_dimensions: int | None = None
+    firestore_distance_measure: Literal["", "cosine", "euclidean"] = ""
+    firestore_max_distance: float | None = None
+    firestore_query_timeout_seconds: int | None = None
+    firestore_max_retries: Literal[0, 1] | None = None
 
     rate_limit_ip_capacity: float = 20
     rate_limit_ip_refill_per_minute: float = 20
@@ -96,8 +308,111 @@ class Settings(BaseSettings):
             return value.get_secret_value().strip()
         return value.strip() if isinstance(value, str) else value
 
+    @field_validator(
+        "firestore_embedding_dimensions",
+        "firestore_query_timeout_seconds",
+        "firestore_max_retries",
+        mode="before",
+    )
+    @classmethod
+    def validate_optional_strict_integer(cls, value: object, info: object) -> object:
+        field_name = getattr(info, "field_name", "firestore setting")
+        if value == "":
+            return None
+        if isinstance(value, bool):
+            raise ValueError(f"{field_name.upper()} must be a strict integer")
+        if isinstance(value, str):
+            if not value.isascii() or not value.isdecimal():
+                raise ValueError(f"{field_name.upper()} must be a strict integer")
+            return int(value)
+        if type(value) is not int and value is not None:
+            raise ValueError(f"{field_name.upper()} must be a strict integer")
+        return value
+
+    @field_validator("firestore_max_distance", mode="before")
+    @classmethod
+    def validate_firestore_distance_type(cls, value: object) -> object:
+        if value == "":
+            return None
+        if isinstance(value, bool):
+            raise ValueError("FIRESTORE_MAX_DISTANCE must be a finite non-negative number")
+        if isinstance(value, str):
+            try:
+                value = float(value)
+            except ValueError as error:
+                raise ValueError(
+                    "FIRESTORE_MAX_DISTANCE must be a finite non-negative number"
+                ) from error
+        if type(value) not in {int, float} and value is not None:
+            raise ValueError("FIRESTORE_MAX_DISTANCE must be a finite non-negative number")
+        if value is not None:
+            numeric = cast(int | float, value)
+            if not math.isfinite(float(numeric)) or numeric < 0:
+                raise ValueError("FIRESTORE_MAX_DISTANCE must be a finite non-negative number")
+        return value
+
     @model_validator(mode="after")
     def validate_provider_pair(self) -> "Settings":
+        hosted_values: tuple[tuple[str, object], ...] = (
+            ("FIRESTORE_PROJECT_ID", self.firestore_project_id),
+            ("FIRESTORE_CORPUS_ID", self.firestore_corpus_id),
+            ("FIRESTORE_CORPUS_VERSION", self.firestore_corpus_version),
+            ("FIRESTORE_EMBEDDING_IDENTITY", self.firestore_embedding_identity),
+            ("FIRESTORE_EMBEDDING_DIMENSIONS", self.firestore_embedding_dimensions),
+            ("FIRESTORE_DISTANCE_MEASURE", self.firestore_distance_measure),
+            ("FIRESTORE_MAX_DISTANCE", self.firestore_max_distance),
+            ("FIRESTORE_QUERY_TIMEOUT_SECONDS", self.firestore_query_timeout_seconds),
+            ("FIRESTORE_MAX_RETRIES", self.firestore_max_retries),
+        )
+        if self.retrieval_backend == "local":
+            for name, value in hosted_values:
+                if value not in (None, ""):
+                    raise ValueError(f"{name} must be blank when RETRIEVAL_BACKEND=local")
+        else:
+            if self.deployment_mode == "production":
+                raise ValueError("RETRIEVAL_BACKEND=firestore is not available in production")
+            if self.corpus_path is not None:
+                raise ValueError("CORPUS_PATH must be unset when RETRIEVAL_BACKEND=firestore")
+            if os.getenv("GOOGLE_SDK_PYTHON_LOGGING_SCOPE", "").strip():
+                raise ValueError(
+                    "GOOGLE_SDK_PYTHON_LOGGING_SCOPE must be blank when RETRIEVAL_BACKEND=firestore"
+                )
+            for name, value in hosted_values:
+                if value in (None, ""):
+                    raise ValueError(f"{name} is required when RETRIEVAL_BACKEND=firestore")
+            if _FIRESTORE_PROJECT_PATTERN.fullmatch(self.firestore_project_id) is None:
+                raise ValueError("FIRESTORE_PROJECT_ID is invalid")
+            from app.retrieval_contracts import ExactCorpusReference
+            try:
+                ExactCorpusReference(
+                    corpus_id=self.firestore_corpus_id,
+                    corpus_version="v1",
+                )
+            except ValidationError:
+                raise ValueError("FIRESTORE_CORPUS_ID is invalid") from None
+            try:
+                ExactCorpusReference(
+                    corpus_id="docs",
+                    corpus_version=self.firestore_corpus_version,
+                )
+            except ValidationError:
+                raise ValueError("FIRESTORE_CORPUS_VERSION is invalid") from None
+            identity = self.firestore_embedding_identity
+            if (
+                identity != identity.strip()
+                or not 1 <= len(identity) <= 256
+                or not identity.isascii()
+                or any(ord(char) < 32 or ord(char) > 126 for char in identity)
+            ):
+                raise ValueError("FIRESTORE_EMBEDDING_IDENTITY is invalid")
+            dimensions = self.firestore_embedding_dimensions
+            if dimensions is None or not 1 <= dimensions <= 2_048:
+                raise ValueError("FIRESTORE_EMBEDDING_DIMENSIONS is invalid")
+            if self.firestore_distance_measure not in ("cosine", "euclidean"):
+                raise ValueError("FIRESTORE_DISTANCE_MEASURE is invalid")
+            timeout = self.firestore_query_timeout_seconds
+            if timeout is None or not 1 <= timeout <= 30:
+                raise ValueError("FIRESTORE_QUERY_TIMEOUT_SECONDS is invalid")
         if self.provider == "gemini" and (
             self.gemini_api_key is None or not self.gemini_api_key.get_secret_value()
         ):

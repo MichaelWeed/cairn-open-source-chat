@@ -42,7 +42,7 @@ EXPECTED_MANIFEST: dict[str, Any] = {
         },
         "retrieval": {
             "local_sqlite_flat": "available",
-            "hosted_durable": "planned",
+            "hosted_durable": "development_only",
         },
         "corpus": {
             "local_directory": "available",

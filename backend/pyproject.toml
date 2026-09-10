@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 gemini = ["google-genai==2.16.0"]
+firestore = ["google-cloud-firestore==2.29.0"]
 
 [dependency-groups]
 dev = [
@@ -46,7 +47,12 @@ asyncio_mode = "auto"
 # Pin transitive deps that would otherwise resolve to a version inside the
 # 14-day dependency cooldown window.
 constraint-dependencies = [
+    "google-api-core==2.34.0",
     "google-auth==2.57.0",
+    "googleapis-common-protos==1.75.1",
+    "grpcio==1.83.0",
+    "grpcio-status==1.83.0",
+    "protobuf==7.35.1",
     "typing-extensions==4.15.0",
     "websockets==16.0",
 ]

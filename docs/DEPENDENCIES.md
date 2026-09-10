@@ -19,10 +19,17 @@ Per `CLAUDE.md`: every new dependency gets a one-line justification here at the 
 * **pyyaml**: declared directly because `eval/run_eval.py` imports it to load `eval/questions/*.yaml`.
 * **types-pyyaml** (dev) — type stubs so `mypy --strict` can check `eval/run_eval.py`'s `yaml.safe_load` usage.
 * **google-genai** (optional `gemini` extra) — Google's maintained Python client supplies the bounded async Gemini generation and model-probe transport; local Echo and Ollama installs do not require it. Its existing `google-auth` transitive is constrained to 2.57.0 so the lockfile remains outside the dependency cooldown.
+* **google-cloud-firestore** (optional `firestore` extra) — Google's maintained async gRPC client supplies bounded Firestore vector reads and client lifecycle support; the default local installation does not include it.
+* **google-api-core** (transitive, via Firestore) — constrained to 2.34.0, a non-yanked 2026-08-06 release outside the 14-day dependency cooldown.
+* **googleapis-common-protos** (transitive, via Firestore) — constrained to 1.75.1, a non-yanked 2026-08-06 release outside the 14-day dependency cooldown.
+* **grpcio** (transitive, via Firestore) — constrained to 1.83.0, a non-yanked 2026-07-23 release outside the 14-day dependency cooldown.
+* **grpcio-status** (transitive, via Firestore) — constrained to 1.83.0, a non-yanked 2026-07-23 release outside the 14-day dependency cooldown.
+* **protobuf** (transitive, via Firestore) — constrained to 7.35.1, a non-yanked 2026-06-11 release outside the 14-day dependency cooldown.
 
-The default backend SBOM and image are generated without optional extras. The
-separate Gemini-profile SBOM and image gate use `uv sync --locked --extra gemini`;
-both profiles are reproducible from the same lockfile and scanned by validation.
+The default backend SBOM and image are generated without optional extras. Separate
+Gemini, Firestore, and combined hosted SBOMs are generated from the same lockfile.
+Feature image gates prove all four dependency combinations, scan each Firestore
+profile, and restore the default image after success or failure.
 
 ## Widget (`widget/package-lock.json`)
 

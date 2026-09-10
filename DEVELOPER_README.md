@@ -34,7 +34,8 @@ built-vs-designed status, request flow, and the cost of each deliberate constrai
 
 The built developer-preview slice is the FastAPI chat endpoint, a local SQLite flat
 vector index and SQLite metadata state, in-process Markdown/PDF ingestion, Ollama,
-optional Gemini, and echo providers, retrieval/refusal/citations, the `/demo` page, and the generic
+optional Gemini, and echo providers, retrieval/refusal/citations, an optional
+development-only Firestore retrieval adapter, the `/demo` page, and the generic
 `<cairn-chat>` custom element with a shadow-DOM chat UI and `api-url` and
 `assistant-name` attributes. The admin surface, hosted operations, tools, and
 guardrail pipeline are planned.
@@ -146,6 +147,41 @@ live Gemini call is part of validation, and `/readyz` does not probe Gemini.
 | production | Ollama | Ollama | Accepted without Gemini inputs |
 | production | Gemini | Ollama | Requires nonblank key and the optional profile |
 
+### Optional Firestore retrieval profile
+
+Local SQLite retrieval remains the default. For deterministic development and test
+composition only, install `cd backend && uv sync --extra firestore` or build with
+`CAIRN_INSTALL_FIRESTORE=true`. Set `RETRIEVAL_BACKEND=firestore` together with
+all nine `FIRESTORE_*` values shown in `.env.example`. Production selection is
+rejected until immutable corpus promotion and hosted readiness land.
+
+| Setting | Required Firestore value |
+| --- | --- |
+| `FIRESTORE_PROJECT_ID` | 6-30 character lowercase Google project ID |
+| `FIRESTORE_CORPUS_ID` / `FIRESTORE_CORPUS_VERSION` | one stable exact reference, never a moving alias |
+| `FIRESTORE_EMBEDDING_IDENTITY` | 1-256 printable ASCII characters with no surrounding whitespace |
+| `FIRESTORE_EMBEDDING_DIMENSIONS` | strict integer from 1 through 2,048 |
+| `FIRESTORE_DISTANCE_MEASURE` | exact `cosine` or `euclidean` |
+| `FIRESTORE_MAX_DISTANCE` | finite nonnegative number |
+| `FIRESTORE_QUERY_TIMEOUT_SECONDS` | strict integer from 1 through 30 |
+| `FIRESTORE_MAX_RETRIES` | strict integer `0` or `1` |
+
+The database and collection are fixed to `(default)` and
+`cairn_corpus_chunks_v1`. Queries require a neutral composite vector index over
+`schema_version`, `corpus_id`, `corpus_version`, `embedding_identity`, and
+`embedding`. Each attempt has the configured 1 through 30 second timeout; the
+application makes zero or one retry after exactly 100 ms for unavailable,
+deadline-exceeded, or aborted transport failures only. The adapter fetches K + 1
+rows, sorts by `(distance, chunk_id)`, and rejects an unresolved distance tie at
+the K boundary.
+
+Authentication is Application Default Credentials at runtime. Cairn never accepts
+credential JSON, credential paths, endpoints, or emulator addresses as Firestore
+settings. `GOOGLE_SDK_PYTHON_LOGGING_SCOPE` must be blank. Focused tests inject a
+fake transport, deny DNS, sockets, providers, ADC, and the production factory, and
+make no live or credentialed call. `/readyz` intentionally does not probe
+Firestore in this milestone.
+
 **Config plumbing:** compose only interpolates `.env` into `compose.yaml` — it never passes `.env` to the container by itself. Every knob in `.env.example` is therefore forwarded explicitly in the `environment:` block of `compose.yaml`, with defaults mirroring `backend/app/config.py`. Add new settings in all three places.
 
 `compose.yaml` stays within the vendor-neutral Compose Specification (no Docker-specific extensions), so it runs unmodified under either engine. `make up`/`make down` use the available `COMPOSE_CMD`; set it explicitly (`COMPOSE_CMD="podman compose" make up`) if both are installed and you want a specific one. The grounded `make live` path uses the Podman-first validated selection described above.
@@ -198,13 +234,15 @@ and projections are available only with complete priced coverage. No default
 price catalog, persistence sink, budget enforcement, or public usage event exists.
 
 Retrieval crosses a separate frozen internal contract (`retrieval_contracts.py`,
-version `1.0`). Chat currently requests only `local_active` corpus compatibility 2
-with squared-L2 distance. The local adapter clamps `RETRIEVAL_TOP_K` to the store
+version `1.0`). Local chat requests `local_active` corpus compatibility 2 with
+squared-L2 distance. The local adapter clamps `RETRIEVAL_TOP_K` to the store
 count and the public maximum of 6, validates every returned SQLite row and its
 provenance metadata without coercion, and fails closed on unsupported scope,
 malformed output, or context larger than 12,000 characters. Exact immutable corpus
-references are modeled for adapter portability but are not implemented by the local
-store. `RETRIEVAL_TOP_K` must be an integer from 1 through 6 and
+references remain unsupported by the local store. The optional development-only
+Firestore adapter accepts one configured exact reference and either cosine or
+Euclidean distance without changing the public chat or SSE contracts.
+`RETRIEVAL_TOP_K` must be an integer from 1 through 6 and
 `RETRIEVAL_MAX_DISTANCE` must be finite and non-negative; invalid settings stop
 startup rather than changing retrieval behavior silently.
 
