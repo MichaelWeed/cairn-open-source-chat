@@ -9,7 +9,7 @@
     "sse_events": "1.1",
     "widget": "0.1.0",
     "local_retrieval_store": "1",
-    "local_corpus": "1"
+    "local_corpus": "2"
   },
   "capabilities": {
     "providers": {
@@ -28,7 +28,7 @@
     },
     "corpus": {
       "local_directory": "available",
-      "reviewed_manifest": "planned",
+      "reviewed_manifest": "available",
       "immutable_versions": "planned"
     },
     "widget": {

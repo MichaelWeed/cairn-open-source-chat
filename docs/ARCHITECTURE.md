@@ -57,7 +57,7 @@ Three properties of this diagram carry most of the design weight:
 | Embeddings | `backend/app/embeddings/` | Built: fake, Ollama |
 | Vector store | `backend/app/vectorstore.py` | Built. SQLite flat index, version 1, see [ADR-0007](adr/0007-sqlite-flat-vector-index.md) |
 | Retrieval + refusal | `backend/app/retrieval.py` | Built |
-| Ingestion pipeline | `backend/app/ingest/` | Built as a callable; no HTTP route reaches it |
+| Ingestion pipeline | `backend/app/ingest/` | Built; mounted startup requires a versioned provenance manifest, while direct callable ingestion retains internal citations |
 | Rate limiting | `backend/app/ratelimit.py` | Built. In-process, single-instance |
 | Metadata store | `backend/app/db/` | Built. SQLite, WAL |
 | Config | `backend/app/config.py` | Built |
@@ -95,6 +95,12 @@ Built and tested today, in order:
    Public context metadata does not enter its instructions or retrieved context.
    Provider chunks and total output are bounded before the endpoint emits `status`,
    `citations`, `chunk`, `ping`, and `done`/`error` events per the contract.
+
+Mounted startup ingestion validates the complete versioned provenance manifest before
+writing either SQLite store. Verified public titles and canonical HTTP(S) URLs travel
+in existing chunk metadata and emerge through the frozen citation response. Direct
+programmatic ingestion has no public-source attestation and keeps an internal
+`document://` reference. See [CORPUS-PROVENANCE.md](CORPUS-PROVENANCE.md).
 
 Errors ride the SSE stream rather than the HTTP status code — a rate-limited
 request returns HTTP 200 with a `rate_limited` error event. This surprises people
