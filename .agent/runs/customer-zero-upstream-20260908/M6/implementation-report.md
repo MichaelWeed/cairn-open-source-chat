@@ -10,6 +10,7 @@ READY_FOR_REVIEW
 - Normal merge commit: `c3a5671940a5a3bb4d0de2313a720754da828517`
 - Readiness repair commit: `fc2a6661a695fdf3529a6d7d8a93a165a9fe1c8e`
 - Privacy/offline-guard repair commit: `fa170863e6330d04dd85edea3de524a7fb6de239`
+- Full-gate test-typing repair commit: `051946e`
 - Branch: `mara/KAN-47b-firestore-retrieval`
 - Push: not performed
 
@@ -140,6 +141,26 @@ denials execute. The cumulative final focused suite reports `569 passed` with on
 pre-existing Starlette warning. Ruff reports `All checks passed!`, mypy reports
 `Success: no issues found in 32 source files`, all four locked profiles sync, and
 `uv lock --check` passes before the default environment is restored.
+
+## Full-gate test-typing repair
+
+The control lane's first full `make validate` run reached backend mypy and exposed
+four test-only annotation errors in `test_retrieval_firestore.py`: one private
+module-export access and three writes through the public row field's read-only
+`Mapping` annotation. Commit `051946e` patches the public `importlib` module
+directly and narrows the known dictionary fixtures to typed `MutableMapping`
+views at the mutation sites. Production code and runtime test behavior are
+unchanged.
+
+Post-repair verification, all status 0:
+
+- full backend Ruff scope, including eval: `All checks passed!`;
+- full backend mypy scope, including eval: `Success: no issues found in 66 source files`;
+- M6 Firestore focused matrix: `300 passed`, with the pre-existing Starlette warning;
+- `git diff --check`: clean.
+
+Per control-lane instruction, the shared full and image gates were not rerun in
+this repair lane. The control lane retains ownership of that serialized rerun.
 
 ## Self-review
 
