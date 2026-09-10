@@ -41,6 +41,12 @@ class CapturingProvider(Provider):
         yield ProviderChunk(delta="ok")
 
 
+class WhitespaceLimitProvider(Provider):
+    async def stream(self, request: ProviderGenerationRequest) -> AsyncIterator[ProviderChunk]:
+        yield ProviderChunk(delta="abc")
+        yield ProviderChunk(delta="  x")
+
+
 def parse_sse(body: str) -> list[tuple[str, str]]:
     events = []
     for block in body.strip("\n").split("\n\n"):
@@ -141,6 +147,28 @@ def test_chunks_reconstruct_message(grounded_client: TestClient) -> None:
     events = parse_sse(resp.text)
     deltas = [json.loads(data)["delta"] for t, data in events if t == "chunk"]
     assert "".join(deltas) == "hello world"
+
+
+def test_output_limit_emits_whitespace_only_safe_prefix(tmp_path: Path) -> None:
+    settings = Settings(
+        database_path=tmp_path / "test.db",
+        chroma_path=tmp_path / "chroma",
+        retrieval_max_distance=1000.0,
+        max_output_chars=5,
+    )
+    app = create_app(settings, provider=WhitespaceLimitProvider())
+
+    with TestClient(app) as client:
+        _ingest(app, settings, "faq.md", b"Grounding for the provider response.")
+        response = client.post(
+            "/api/v1/chat/message",
+            json={"session_id": "s1", "message": "show the bounded answer"},
+        )
+
+    events = parse_sse(response.text)
+    chunks = [json.loads(data)["delta"] for event_type, data in events if event_type == "chunk"]
+    assert chunks == ["abc", "  "]
+    assert json.loads(events[-1][1])["finish_reason"] == "limit"
 
 
 def test_refuses_and_skips_provider_when_nothing_ingested(client: TestClient) -> None:

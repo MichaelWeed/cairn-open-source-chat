@@ -265,10 +265,10 @@ function boundedString(
   value: RawEvent,
   key: string,
   maxChars: number,
-  allowBlank = true,
+  allowEmpty = true,
 ): string {
   const field = requiredString(value, key);
-  if ((!allowBlank && field.trim() === "") || Array.from(field).length > maxChars) {
+  if ((!allowEmpty && field === "") || Array.from(field).length > maxChars) {
     throw new SseDecodeError(`The chat response contained an invalid ${key}.`);
   }
   return field;

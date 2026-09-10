@@ -67,6 +67,21 @@ function testSseDecoder(): void {
       ),
     "the invented complete finish reason is rejected",
   );
+
+  const limitedDecoder = new SseDecoder();
+  assert.deepEqual(
+    limitedDecoder.push(
+      'event: chunk\ndata: {"type":"chunk","delta":"abc"}\n\n' +
+        'event: chunk\ndata: {"type":"chunk","delta":"  "}\n\n' +
+        'event: done\ndata: {"type":"done","finish_reason":"limit"}\n\n',
+    ),
+    [
+      { type: "chunk", delta: "abc" },
+      { type: "chunk", delta: "  " },
+      { type: "done", finishReason: "limit" },
+    ],
+    "the widget accepts the endpoint's whitespace-only limit prefix",
+  );
 }
 
 function testMalformedSse(): void {
