@@ -4,7 +4,9 @@ Companion to `make eval` (DEVELOPER_README.md §6), which measures groundedness,
 citation accuracy, and refusal correctness quantitatively against a question
 set. This checklist is the qualitative counterpart: does it actually feel
 right in a browser. Run it after any change to `backend/app/static/demo/`,
-the chat SSE contract, or the retrieval/refusal pipeline.
+the chat SSE contract, or the retrieval/refusal pipeline. The production widget's
+deterministic neutral-host browser matrix is documented in [WIDGET.md](WIDGET.md)
+and runs through `widget`'s required test command.
 
 ## Setup
 
@@ -78,5 +80,8 @@ tracking.
 
 ## Known, deliberately out of scope for this checklist
 
-* Embeddable widget UX (shadow DOM, embed on a third-party page). The generic widget is built, but this checklist covers the demo page only; neutral-host browser verification is tracked separately.
+* Embeddable widget UX is covered by the automated neutral-host matrix, including
+  responsive geometry, computed contrast, safe areas, strict CSP, CORS denial,
+  keyboard/focus, reduced motion, forced colors, history, and clear behavior. This
+  manual checklist still covers the separate demo page only.
 * Adversarial/prompt-injection cases — that's the adversarial suite, task 4.4, a `make validate` gate item, not manual QA.

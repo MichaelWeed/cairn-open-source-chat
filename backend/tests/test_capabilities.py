@@ -24,7 +24,7 @@ EXPECTED_MANIFEST: dict[str, Any] = {
     "compatibility": {
         "chat_api": "1.0",
         "sse_events": "1.1",
-        "widget": "0.1.0",
+        "widget": "0.2.0",
         "local_retrieval_store": "1",
         "local_corpus": "2",
         "provider_accounting": "1.0",
@@ -51,7 +51,7 @@ EXPECTED_MANIFEST: dict[str, Any] = {
         },
         "widget": {
             "custom_element": "available",
-            "production_configuration": "planned",
+            "production_configuration": "available",
         },
         "safety": {
             "origin_allowlist": "available",

@@ -8,6 +8,14 @@ class FakeHTMLElement {
   getAttribute(): string {
     return "https://support.example.test";
   }
+
+  get isConnected(): boolean {
+    return true;
+  }
+
+  dispatchEvent(): boolean {
+    return true;
+  }
 }
 
 const registry = new Map<string, unknown>();
@@ -44,17 +52,36 @@ function assistantExchange(): Record<string, unknown> {
     status: { textContent: "" },
     text: "",
     finishReason: null,
+    citationCount: 0,
   };
 }
 
 function testWidget(): Record<string, unknown> {
   const widget = new CairnChat() as unknown as Record<string, unknown>;
   widget.controller = null;
+  widget.chatController = null;
   widget.history = [];
   widget.sessionId = "session-1";
-  widget.input = { value: "", disabled: false };
+  widget.configuration = {
+    apiBase: "https://support.example.test",
+    assistantName: "Cairn",
+    theme: "auto",
+    privacyUrl: null,
+    handoffUrl: null,
+    styleNonce: null,
+  };
+  widget.compatibleBase = "https://support.example.test";
+  widget.state = "ready";
+  widget.generation = 0;
+  widget.input = { value: "", disabled: false, setAttribute: () => undefined };
+  widget.counter = { textContent: "" };
   widget.sendButton = { disabled: false };
+  widget.clearButton = { disabled: false };
+  widget.messages = { setAttribute: () => undefined, querySelector: () => null, scrollTop: 0, scrollHeight: 0 };
+  widget.emptyState = { textContent: "", hidden: false };
   widget.clearError = () => undefined;
+  widget.hideHandoff = () => undefined;
+  widget.showHandoff = () => undefined;
   widget.appendMessage = () => undefined;
   widget.appendAssistant = assistantExchange;
   return widget;
@@ -101,6 +128,31 @@ async function testEmptyCompletionSecondRequest(): Promise<void> {
   assert.deepEqual(requests[1].history, []);
 }
 
+async function testDeclaredChatOverflowCancelsBody(): Promise<void> {
+  let canceled = false;
+  globalThis.fetch = async () => new Response(
+    new ReadableStream<Uint8Array>({ cancel: () => { canceled = true; } }),
+    { headers: { "content-length": "33554433" } },
+  );
+  const widget = testWidget();
+  const result = await (
+    widget.streamAttempt as (
+      endpoint: string,
+      payload: RequestBody,
+      controller: AbortController,
+      assistant: Record<string, unknown>,
+    ) => Promise<{ kind: string }>
+  )(
+    "https://support.example.test/api/v1/chat/message",
+    { session_id: "session-1", message: "question", history: [] },
+    new AbortController(),
+    assistantExchange(),
+  );
+  assert.equal(result.kind, "protocol");
+  assert.equal(canceled, true, "declared chat overflow cancels its unread body");
+}
+
 await testLongCompletionSecondRequest();
 await testEmptyCompletionSecondRequest();
+await testDeclaredChatOverflowCancelsBody();
 console.log("widget history integration tests passed");
