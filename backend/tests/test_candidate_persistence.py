@@ -255,6 +255,42 @@ def _mutable(value: object) -> object:
     return value
 
 
+def _exception_chain_rendered(error: BaseException) -> str:
+    pending = [error]
+    seen: set[int] = set()
+    rendered: list[str] = []
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        rendered.extend(
+            (
+                str(current),
+                repr(current),
+                repr(current.args),
+                repr(vars(current)),
+            )
+        )
+        if isinstance(current, CandidatePersistenceError):
+            rendered.append(repr(current.errors(include_input=True)))
+            rendered.append(current.json(include_input=True))
+        for nested in (current.__cause__, current.__context__):
+            if nested is not None:
+                pending.append(nested)
+    return "\n".join(rendered)
+
+
+def _assert_content_free_error(
+    error: CandidatePersistenceError, sensitive_values: tuple[str, ...]
+) -> None:
+    rendered = _exception_chain_rendered(error)
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    for value in sensitive_values:
+        assert value not in rendered
+
+
 def _leaf_paths(
     value: object, prefix: tuple[str | int, ...] = ()
 ) -> tuple[tuple[str | int, ...], ...]:
@@ -936,6 +972,7 @@ async def test_read_only_verifier_reconstructs_m7_and_rejects_resigned_path_forg
         "2026-W37-4",
         "2026W374",
         "2026-02-30",
+        "PRIVATE-DATE-CANARY",
     ],
 )
 async def test_read_only_verifier_rejects_resigned_noncanonical_reviewed_date(
@@ -966,6 +1003,7 @@ async def test_read_only_verifier_rejects_resigned_noncanonical_reviewed_date(
         )
 
     assert caught.value.code == "candidate_conflict"
+    _assert_content_free_error(caught.value, (reviewed_at,))
     assert verifier.verify_calls == 0
     assert not any(call[0] == "create_many" for call in store.calls)
 
@@ -991,6 +1029,162 @@ async def test_read_only_verifier_accepts_exact_canonical_reviewed_date_round_tr
     assert evidence.plan_sha256 == plan.plan_sha256
     assert evidence.inventory_sha256 == receipt.inventory_sha256
     assert verifier.verify_calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("surface", "expected_code"),
+    [
+        ("header", "malformed_store"),
+        ("url", "candidate_conflict"),
+        ("m7_path", "attestation_failed"),
+        ("attestation", "attestation_failed"),
+    ],
+)
+async def test_durable_parse_failures_retain_no_record_or_canary_chain(
+    surface: str, expected_code: str
+) -> None:
+    plan = _plan()
+    store = MemoryStore()
+    await _service(store).persist_and_attest_candidate(
+        CandidatePersistenceRequest(contract_version="1.0", plan=plan)
+    )
+    key = candidate_store_key(plan.corpus)
+    document_identity = next(identity for identity in store.records if identity[0] == "document")
+    chunk_identity = next(identity for identity in store.records if identity[0] == "chunk")
+    document = store.records[document_identity]
+    chunk = store.records[chunk_identity]
+    canary = f"PRIVATE-{surface.upper()}-PARSE-CANARY"
+    if surface == "header":
+        header = store.records[("candidate", key)]
+        store.records[("candidate", key)] = CandidateStoreRecord(
+            kind="candidate",
+            key=key,
+            value={**dict(header.value), canary: canary},
+        )
+    elif surface == "url":
+        document_value = cast(dict[str, object], _mutable(document.value))
+        provenance = cast(dict[str, object], document_value["provenance"])
+        invalid_url = f"https://docs.example.test:{canary}/guide"
+        provenance["url"] = invalid_url
+        store.records[document_identity] = CandidateStoreRecord(
+            kind="document", key=document.key, value=cast(Any, document_value)
+        )
+        chunk_value = dict(chunk.value)
+        chunk_value["citation_url"] = invalid_url
+        store.records[chunk_identity] = CandidateStoreRecord(
+            kind="chunk", key=chunk.key, value=chunk_value
+        )
+    elif surface == "m7_path":
+        forged_path = f"{canary}.md"
+        store.records[document_identity] = CandidateStoreRecord(
+            kind="document",
+            key=document.key,
+            value={**dict(document.value), "relative_path": forged_path},
+        )
+        store.records[chunk_identity] = CandidateStoreRecord(
+            kind="chunk",
+            key=chunk.key,
+            value={**dict(chunk.value), "source": forged_path},
+        )
+    else:
+        attestation = store.records[("attestation", key)]
+        store.records[("attestation", key)] = CandidateStoreRecord(
+            kind="attestation",
+            key=key,
+            value={**dict(attestation.value), "signature_b64url": canary + "!"},
+        )
+    if surface != "attestation":
+        _resign_store_attestation(store, plan.corpus)
+    verifier = FixtureSigner()
+    store.calls.clear()
+
+    with pytest.raises(CandidatePersistenceError) as caught:
+        await _verification(store).verify_attested_candidate(
+            plan.corpus,
+            AttestationIdentity(algorithm_id="cairn-test-sha256-v1", key_id="fixture-key-1"),
+            verifier,
+        )
+
+    assert caught.value.code == expected_code
+    _assert_content_free_error(
+        caught.value,
+        (
+            canary,
+            plan.plan_sha256,
+            plan.semantic_manifest_sha256,
+            document.key,
+            chunk.key,
+            plan.documents[0].provenance.source_sha256,
+            "Public guide",
+        ),
+    )
+    assert verifier.verify_calls == 0
+    assert not any(call[0] == "create_many" for call in store.calls)
+
+
+def test_public_corpus_and_canonical_json_failures_have_no_sensitive_chain() -> None:
+    corpus_canary = "PRIVATE-CORPUS-CANARY bad"
+    bypass_corpus = ExactCorpusReference.model_construct(
+        kind="exact",
+        corpus_id="public-docs",
+        corpus_version=corpus_canary,
+    )
+    attestation_canary = "PRIVATE-ATTESTATION-CORPUS-CANARY bad"
+    unicode_canary = "PRIVATE-UNICODE-CANARY"
+    surfaces: tuple[tuple[Callable[[], object], str], ...] = (
+        (lambda: candidate_store_key(bypass_corpus), corpus_canary),
+        (
+            lambda: CandidatePersistenceReceipt(
+                contract_version="1.0",
+                corpus=bypass_corpus,
+                plan_sha256="0" * 64,
+                disposition="created",
+                document_count=1,
+                chunk_count=1,
+                inventory_sha256="1" * 64,
+                attestation_payload_sha256="2" * 64,
+            ),
+            corpus_canary,
+        ),
+        (
+            lambda: AttestationCorpus(
+                kind="exact",
+                corpus_id="public-docs",
+                corpus_version=attestation_canary,
+            ),
+            attestation_canary,
+        ),
+        (lambda: canonical_json_bytes({"x": unicode_canary + "\ud800"}), unicode_canary),
+    )
+
+    for surface, canary in surfaces:
+        with pytest.raises(CandidatePersistenceError) as caught:
+            surface()
+        assert caught.value.code == "invalid_plan"
+        _assert_content_free_error(caught.value, (canary,))
+
+
+@pytest.mark.asyncio
+async def test_invalid_corpus_verifier_failure_has_no_chain_or_store_work() -> None:
+    canary = "PRIVATE-VERIFIER-CORPUS-CANARY bad"
+    corpus = ExactCorpusReference.model_construct(
+        kind="exact",
+        corpus_id="public-docs",
+        corpus_version=canary,
+    )
+    store = MemoryStore()
+
+    with pytest.raises(CandidatePersistenceError) as caught:
+        await _verification(store).verify_attested_candidate(
+            corpus,
+            AttestationIdentity(algorithm_id="cairn-test-sha256-v1", key_id="fixture-key-1"),
+            FixtureSigner(),
+        )
+
+    assert caught.value.code == "invalid_plan"
+    _assert_content_free_error(caught.value, (canary,))
+    assert store.calls == []
 
 
 @pytest.mark.asyncio

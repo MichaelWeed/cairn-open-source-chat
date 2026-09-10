@@ -9,7 +9,8 @@
 - Accepted ancestors: M5 `2b0d0d5`, M6 `e59f2a9`, M7 `35b3677`
 - Rejected implementation commit: `f4eeb4087f54f99f74b542eccb29f7b48476b03d`
 - Rejected first repair commit: `8a0445b4fdbc437ad11e1578d40f7ec9a3dd2ec3`
-- Final second repair commit: the follow-up repair commit containing this report; its exact
+- Rejected second repair commit: `969e85c005b69c83aa6a44a9cb04a5e793cc2211`
+- Final privacy repair commit: the follow-up repair commit containing this report; its exact
   object ID is returned to the control lane after handoff.
 
 The accepted M5 source snapshot, M6 bounded chunk-key and embedding contracts, and
@@ -98,6 +99,18 @@ after a valid re-sign. Firestore snapshot existence is likewise strict: only exa
 presence, and every other completed SDK value is fixed `malformed_store` before
 retry, signing, verification, or write work.
 
+The privacy repair ensures parsing and validation failures cross the public M8
+boundary only as the fixed `CandidatePersistenceError` taxonomy with no reachable
+raw exception. It clears cause, context, and prior traceback retention after the
+caught frame has exited, and applies the same content-free conversion to canonical
+JSON encoding, strict model construction/copy/revalidation, candidate corpus keys,
+durable header/page/record/date/URL/path reconstruction, store encoding, retry
+delay, and create classification. Public persistence and signer-free verification
+entry points provide a final cancellation-preserving sanitization boundary. Direct
+recursive probes inspect the complete reachable exception graph, arguments,
+instance state, structured errors, JSON, string, and representation for raw record,
+provenance, hash, key, and canary retention.
+
 ## Public Surface and Privacy
 
 The capability manifest now reports `corpus.immutable_versions` as
@@ -147,12 +160,17 @@ Red-first evidence:
   snapshot-existence values, and the service-level false-absence path failed as
   expected; canonical-date, invalid-date, and literal-false controls passed. The
   same matrix passed 12 tests after the two narrow source edits.
+- The privacy-repair slice initially produced 10 failures and 1 pass. Raw parser,
+  Pydantic, M7 reconstruction, URL, corpus, receipt, and Unicode encoder exceptions
+  were reachable through `__context__`. After moving error construction outside
+  caught frames and sealing both public service boundaries, all 11 direct recursive
+  exception-graph probes passed.
 
 Focused evidence:
 
-- M8 persistence and Firestore component tests: 85 passed, exit 0.
-- Firestore-profile focused matrix: 322 passed, one upstream warning, exit 0.
-- Combined Firestore/Gemini focused matrix: 490 passed, one upstream warning,
+- M8 candidate persistence component tests after privacy repair: 77 passed, exit 0.
+- Firestore-profile focused matrix: 329 passed, one upstream warning, exit 0.
+- Combined Firestore/Gemini focused matrix: 497 passed, one upstream warning,
   exit 0.
 - Linear-count probes: 401 records required exactly 401 record encodes and split
   into 400 plus 1; 65,536 records required exactly 65,536 record encodes and split
@@ -177,7 +195,7 @@ Final mandatory repository evidence:
 - `make gemini-image-check`: exit 0.
 - `make firestore-image-check`: exit 0, including default, Firestore, Gemini, and
   combined profiles with default restoration.
-- Final `make validate`: exit 0; 905 backend tests passed plus all widget protocol,
+- Final `make validate`: exit 0; 912 backend tests passed plus all widget protocol,
   history, layout, browser, type, build, size, distribution, supply-chain, and image
   gates. One upstream Starlette deprecation warning was reported.
 

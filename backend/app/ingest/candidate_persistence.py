@@ -156,18 +156,48 @@ class CandidatePersistenceError(Exception):
         )
 
 
+def _sanitized_candidate_error(
+    error: CandidatePersistenceError,
+) -> CandidatePersistenceError:
+    error.__cause__ = None
+    error.__context__ = None
+    error.__traceback__ = None
+    return error
+
+
+def _content_free_call[Result](
+    code: CandidatePersistenceErrorCode,
+    operation: Callable[[], Result],
+    *,
+    preserve_candidate_error: bool = False,
+) -> Result:
+    result: object = _MISSING
+    candidate_error: CandidatePersistenceError | None = None
+    try:
+        result = operation()
+    except CandidatePersistenceError as error:
+        candidate_error = error
+    except Exception:
+        pass
+    if candidate_error is not None and preserve_candidate_error:
+        raise _sanitized_candidate_error(candidate_error) from None
+    if result is _MISSING:
+        raise CandidatePersistenceError(code) from None
+    return cast(Result, result)
+
+
 def canonical_json_bytes(value: object) -> bytes:
     """Encode attestation material with the contract's canonical JSON rules."""
-    try:
-        return json.dumps(
+    return _content_free_call(
+        "invalid_plan",
+        lambda: json.dumps(
             value,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
             allow_nan=False,
-        ).encode("utf-8", errors="strict")
-    except (TypeError, ValueError, UnicodeError):
-        raise CandidatePersistenceError("invalid_plan") from None
+        ).encode("utf-8", errors="strict"),
+    )
 
 
 class CandidateStoreFailure(Exception):
@@ -198,18 +228,16 @@ def _content_free_validation(
     value: Any,
     handler: Callable[[Any], Any],
 ) -> Any:
-    result: Any = _MISSING
-    try:
+    def validate() -> Any:
         if isinstance(value, Mapping) and any(key not in model.model_fields for key in value):
             raise ValueError
-        result = handler(value)
-    except CandidatePersistenceError:
-        raise
-    except Exception:
-        pass
-    if result is _MISSING:
-        raise CandidatePersistenceError("invalid_plan") from None
-    return result
+        return handler(value)
+
+    return _content_free_call(
+        "invalid_plan",
+        validate,
+        preserve_candidate_error=True,
+    )
 
 
 class CandidatePersistenceModel(BaseModel):
@@ -234,20 +262,17 @@ class CandidatePersistenceModel(BaseModel):
 
     @classmethod
     def _validated(cls, values: Any) -> Self:
-        try:
-            return cls.model_validate(values)
-        except CandidatePersistenceError:
-            raise
-        except Exception:
-            raise CandidatePersistenceError("invalid_plan") from None
+        return _content_free_call(
+            "invalid_plan",
+            lambda: cls.model_validate(values),
+            preserve_candidate_error=True,
+        )
 
     @classmethod
     def model_construct(cls, _fields_set: set[str] | None = None, **values: Any) -> Self:
         if _fields_set is not None:
-            try:
-                if not set(_fields_set).issubset(cls.model_fields):
-                    raise ValueError
-            except Exception:
+            fields_set = _content_free_call("invalid_plan", lambda: set(_fields_set))
+            if not fields_set.issubset(cls.model_fields):
                 raise CandidatePersistenceError("invalid_plan") from None
         result = cls._validated(values)
         if _fields_set is not None:
@@ -259,15 +284,18 @@ class CandidatePersistenceModel(BaseModel):
         return cls.model_construct(_fields_set=_fields_set, **values)
 
     def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
-        try:
-            source = super().model_copy(deep=deep)
+        base_copy = super().model_copy
+
+        def prepare() -> tuple[dict[str, Any], set[str]]:
+            source = base_copy(deep=deep)
             values = {name: getattr(source, name) for name in type(self).model_fields}
             fields_set = set(source.model_fields_set)
             if update is not None:
                 values.update(update)
                 fields_set.update(update)
-        except Exception:
-            raise CandidatePersistenceError("invalid_plan") from None
+            return values, fields_set
+
+        values, fields_set = _content_free_call("invalid_plan", prepare)
         result = type(self)._validated(values)
         object.__setattr__(result, "__pydantic_fields_set__", fields_set)
         return result
@@ -282,12 +310,14 @@ class CandidatePersistenceModel(BaseModel):
     ) -> Self:
         if include is None and exclude is None and update is None:
             return self.model_copy(deep=deep)
-        try:
+
+        def prepare() -> dict[str, Any]:
             values = self.model_dump(include=include, exclude=exclude, round_trip=True)
             if update is not None:
                 values.update(update)
-        except Exception:
-            raise CandidatePersistenceError("invalid_plan") from None
+            return values
+
+        values = _content_free_call("invalid_plan", prepare)
         return type(self)._validated(values)
 
     def __replace__(self, **changes: Any) -> Self:
@@ -297,20 +327,22 @@ class CandidatePersistenceModel(BaseModel):
 def _revalidate_nested_model(
     value: object, model: type[CandidatePersistenceModel]
 ) -> CandidatePersistenceModel:
-    try:
+    def validate() -> CandidatePersistenceModel:
         if type(value) is model:
             if object.__getattribute__(value, "__pydantic_extra__"):
                 raise ValueError
-            value = {name: getattr(value, name) for name in model.model_fields}
+            copied: object = {name: getattr(value, name) for name in model.model_fields}
         elif isinstance(value, Mapping):
-            value = dict(value)
+            copied = dict(value)
         else:
             raise TypeError
-        return model.model_validate(value)
-    except CandidatePersistenceError:
-        raise
-    except Exception:
-        raise CandidatePersistenceError("invalid_plan") from None
+        return model.model_validate(copied)
+
+    return _content_free_call(
+        "invalid_plan",
+        validate,
+        preserve_candidate_error=True,
+    )
 
 
 def _freeze_store_value(value: object) -> StrictStoreValue:
@@ -353,37 +385,41 @@ def _json_arrays_to_tuples(value: object) -> object:
 def _revalidate_plan(
     value: object, *, validation_mode: Literal["python", "json"] = "python"
 ) -> CandidateIngestionPlan:
-    try:
+    def validate() -> CandidateIngestionPlan:
         if type(value) is CandidateIngestionPlan:
             if object.__getattribute__(value, "__pydantic_extra__"):
                 raise ValueError
-            value = {name: getattr(value, name) for name in CandidateIngestionPlan.model_fields}
+            copied: object = {
+                name: getattr(value, name) for name in CandidateIngestionPlan.model_fields
+            }
         elif isinstance(value, Mapping):
-            value = dict(value)
+            copied = dict(value)
         else:
             raise TypeError
         if validation_mode == "json":
             return CandidateIngestionPlan.model_validate_json(
-                json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+                json.dumps(copied, ensure_ascii=False, separators=(",", ":"))
             )
-        return CandidateIngestionPlan.model_validate(value)
-    except Exception:
-        raise CandidatePersistenceError("invalid_plan") from None
+        return CandidateIngestionPlan.model_validate(copied)
+
+    return _content_free_call("invalid_plan", validate)
 
 
 def _revalidate_corpus(value: object) -> ExactCorpusReference:
-    try:
+    def validate() -> ExactCorpusReference:
         if type(value) is ExactCorpusReference:
             if object.__getattribute__(value, "__pydantic_extra__"):
                 raise ValueError
-            value = {name: getattr(value, name) for name in ExactCorpusReference.model_fields}
+            copied: object = {
+                name: getattr(value, name) for name in ExactCorpusReference.model_fields
+            }
         elif isinstance(value, Mapping):
-            value = dict(value)
+            copied = dict(value)
         else:
             raise TypeError
-        return ExactCorpusReference.model_validate(value)
-    except Exception:
-        raise CandidatePersistenceError("invalid_plan") from None
+        return ExactCorpusReference.model_validate(copied)
+
+    return _content_free_call("invalid_plan", validate)
 
 
 class CandidatePersistenceRequest(CandidatePersistenceModel):
@@ -461,22 +497,25 @@ class CandidateStorePage(CandidatePersistenceModel):
     def validate_records(
         cls, value: object, info: ValidationInfo
     ) -> tuple[CandidateStoreRecord, ...]:
-        try:
+        def validate() -> tuple[CandidateStoreRecord, ...]:
+            copied = value
             if type(value) is list and info.mode == "json":
-                value = tuple(value)
-            if type(value) is not tuple:
+                copied = tuple(value)
+            if type(copied) is not tuple:
                 raise TypeError
             return tuple(
                 cast(
                     CandidateStoreRecord,
                     _revalidate_nested_model(item, CandidateStoreRecord),
                 )
-                for item in value
+                for item in copied
             )
-        except CandidatePersistenceError:
-            raise
-        except Exception:
-            raise CandidatePersistenceError("invalid_plan") from None
+
+        return _content_free_call(
+            "invalid_plan",
+            validate,
+            preserve_candidate_error=True,
+        )
 
     @field_validator("next_after_key")
     @classmethod
@@ -501,10 +540,10 @@ class AttestationCorpus(CandidatePersistenceModel):
             "corpus_id": value if info.field_name == "corpus_id" else "placeholder",
             "corpus_version": value if info.field_name == "corpus_version" else "1",
         }
-        try:
-            exact = ExactCorpusReference.model_validate(values)
-        except Exception:
-            raise CandidatePersistenceError("invalid_plan") from None
+        exact = _content_free_call(
+            "invalid_plan",
+            lambda: ExactCorpusReference.model_validate(values),
+        )
         return cast(str, getattr(exact, info.field_name))
 
 
@@ -1058,7 +1097,7 @@ def _attestation_record(
 
 
 def _validated_record(value: object) -> CandidateStoreRecord:
-    try:
+    def validate() -> CandidateStoreRecord:
         if type(value) is not CandidateStoreRecord:
             raise TypeError
         if object.__getattribute__(value, "__pydantic_extra__"):
@@ -1066,8 +1105,8 @@ def _validated_record(value: object) -> CandidateStoreRecord:
         return CandidateStoreRecord.model_validate(
             {name: getattr(value, name) for name in CandidateStoreRecord.model_fields}
         )
-    except Exception:
-        raise CandidatePersistenceError("malformed_store") from None
+
+    return _content_free_call("malformed_store", validate)
 
 
 async def _read_with_policy(
@@ -1138,14 +1177,14 @@ async def _list_exact_records(
                 timeout_seconds=timeout_seconds,
             )
         )
-        try:
-            if type(raw) is not CandidateStorePage:
+        def validate_page(page_value: object = raw) -> CandidateStorePage:
+            if type(page_value) is not CandidateStorePage:
                 raise TypeError
-            page = CandidateStorePage.model_validate(
-                {name: getattr(raw, name) for name in CandidateStorePage.model_fields}
+            return CandidateStorePage.model_validate(
+                {name: getattr(page_value, name) for name in CandidateStorePage.model_fields}
             )
-        except Exception:
-            raise CandidatePersistenceError("malformed_store") from None
+
+        page = _content_free_call("malformed_store", validate_page)
         records = tuple(_validated_record(item) for item in page.records)
         keys = tuple(record.key for record in records)
         if (
@@ -1241,7 +1280,7 @@ async def _verify_attestation_record(
 def _parse_durable_header(
     raw: object, corpus: ExactCorpusReference
 ) -> tuple[CandidateStoreRecord, _DurableCandidateHeader]:
-    try:
+    def parse() -> tuple[CandidateStoreRecord, _DurableCandidateHeader]:
         record = _validated_record(raw)
         if record.kind != "candidate" or record.key != candidate_store_key(corpus):
             raise ValueError
@@ -1249,8 +1288,8 @@ def _parse_durable_header(
         if header.corpus_id != corpus.corpus_id or header.corpus_version != corpus.corpus_version:
             raise ValueError
         return record, header
-    except Exception:
-        raise CandidatePersistenceError("malformed_store") from None
+
+    return _content_free_call("malformed_store", parse)
 
 
 def _valid_sha256(value: object) -> bool:
@@ -1309,6 +1348,7 @@ def _validate_durable_records(
     }
     document_values: dict[str, Mapping[str, StrictStoreValue]] = {}
     expected_chunk_total = 0
+    failed = False
     try:
         for record in documents:
             value = record.value
@@ -1408,6 +1448,8 @@ def _validate_durable_records(
         ):
             raise ValueError
     except Exception:
+        failed = True
+    if failed:
         raise CandidatePersistenceError("candidate_conflict") from None
 
 
@@ -1417,6 +1459,7 @@ def _reconstruct_durable_plan(
     documents: tuple[CandidateStoreRecord, ...],
     chunks: tuple[CandidateStoreRecord, ...],
 ) -> CandidateIngestionPlan:
+    reconstructed: CandidateIngestionPlan | None = None
     try:
         chunks_by_document: dict[str, list[CandidateStoreRecord]] = {
             cast(str, record.value["document_id"]): [] for record in documents
@@ -1473,7 +1516,7 @@ def _reconstruct_durable_plan(
                 key=lambda document: document.relative_path.encode("utf-8"),
             )
         )
-        return CandidateIngestionPlan(
+        reconstructed = CandidateIngestionPlan(
             contract_version="1.0",
             corpus=corpus,
             embedding=EmbeddingSpecification(
@@ -1489,7 +1532,10 @@ def _reconstruct_durable_plan(
     except asyncio.CancelledError:
         raise
     except Exception:
+        pass
+    if reconstructed is None:
         raise CandidatePersistenceError("attestation_failed") from None
+    return reconstructed
 
 
 def _payload_from_durable_header(
@@ -1570,6 +1616,23 @@ class CandidateAttestationVerificationService:
             return await operation()
 
     async def verify_attested_candidate(
+        self,
+        corpus: ExactCorpusReference,
+        identity: AttestationIdentity,
+        verifier: AttestationVerifier,
+    ) -> VerifiedCandidateEvidence:
+        failure: CandidatePersistenceError | None = None
+        try:
+            return await self._verify_attested_candidate(corpus, identity, verifier)
+        except asyncio.CancelledError:
+            raise
+        except CandidatePersistenceError as error:
+            failure = error
+        if failure is not None:
+            raise _sanitized_candidate_error(failure) from None
+        raise AssertionError("unreachable")
+
+    async def _verify_attested_candidate(
         self,
         corpus: ExactCorpusReference,
         identity: AttestationIdentity,
@@ -1716,17 +1779,16 @@ class CandidatePersistenceService:
     def _validate_request(self, request: object) -> CandidateIngestionPlan:
         if self._closed:
             raise CandidatePersistenceError("store_unavailable") from None
-        try:
+
+        def validate_request() -> CandidatePersistenceRequest:
             if type(request) is not CandidatePersistenceRequest:
                 raise TypeError
-            request = CandidatePersistenceRequest.model_validate(
+            return CandidatePersistenceRequest.model_validate(
                 {name: getattr(request, name) for name in CandidatePersistenceRequest.model_fields}
             )
-        except CandidatePersistenceError:
-            raise
-        except Exception:
-            raise CandidatePersistenceError("invalid_plan") from None
-        plan = _revalidate_plan(request.plan)
+
+        validated_request = _content_free_call("invalid_plan", validate_request)
+        plan = _revalidate_plan(validated_request.plan)
         if (
             plan.embedding.dimensions > 2048
             or plan.embedding.identity != self._expected_embedding_identity
@@ -1750,7 +1812,7 @@ class CandidatePersistenceService:
         )
 
     def _linear_store(self) -> _LinearCandidateStore | None:
-        try:
+        def inspect() -> _LinearCandidateStore | None:
             if all(
                 callable(getattr(self._store, name, None))
                 for name in (
@@ -1760,22 +1822,20 @@ class CandidatePersistenceService:
                 )
             ):
                 return cast(_LinearCandidateStore, self._store)
-        except Exception:
-            raise CandidatePersistenceError("malformed_store") from None
-        return None
+            return None
+
+        return _content_free_call("malformed_store", inspect)
 
     def _encoded_create_base_size(self, kind: CandidateRecordKind) -> int:
-        try:
+        def encode() -> object:
             linear_store = self._linear_store()
-            size = (
+            return (
                 linear_store.encoded_create_base_size(kind)
                 if linear_store is not None
                 else self._store.encoded_create_size(kind, ())
             )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            raise CandidatePersistenceError("malformed_store") from None
+
+        size = _content_free_call("malformed_store", encode)
         if type(size) is not int or size < 0:
             raise CandidatePersistenceError("malformed_store") from None
         return size
@@ -1783,22 +1843,19 @@ class CandidatePersistenceService:
     def _encoded_record_sizes(
         self, record: CandidateStoreRecord, *, base_size: int
     ) -> tuple[int, int, str]:
-        try:
+        def encode() -> object:
             linear_store = self._linear_store()
             if linear_store is not None:
-                sizes = linear_store.encoded_record_sizes(record)
-            else:
-                document_size = self._store.encoded_document_size(record)
-                singleton_size = self._store.encoded_create_size(record.kind, (record,))
-                sizes = (
-                    document_size,
-                    singleton_size - base_size,
-                    candidate_inventory_sha256((record,)),
-                )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            raise CandidatePersistenceError("malformed_store") from None
+                return linear_store.encoded_record_sizes(record)
+            document_size = self._store.encoded_document_size(record)
+            singleton_size = self._store.encoded_create_size(record.kind, (record,))
+            return (
+                document_size,
+                singleton_size - base_size,
+                candidate_inventory_sha256((record,)),
+            )
+
+        sizes = _content_free_call("malformed_store", encode)
         if (
             type(sizes) is not tuple
             or len(sizes) != 3
@@ -1812,11 +1869,14 @@ class CandidatePersistenceService:
         return document_size, contribution, write_sha256
 
     async def _delay(self) -> None:
+        failed = False
         try:
             await self._sleep(0.1)
         except asyncio.CancelledError:
             raise
         except Exception:
+            failed = True
+        if failed:
             raise CandidatePersistenceError("store_unavailable") from None
 
     def _plan_batches(
@@ -1905,6 +1965,7 @@ class CandidatePersistenceService:
     async def _create_once(self, kind: CandidateRecordKind, batch: _CandidateWriteBatch) -> bool:
         if batch.encoded_size > CANDIDATE_WRITE_BATCH_MAX_BYTES:
             raise CandidatePersistenceError("store_bounds_exceeded") from None
+        failure_code: CandidatePersistenceErrorCode | None = None
         try:
             linear_store = self._linear_store()
             if linear_store is not None:
@@ -1933,13 +1994,17 @@ class CandidatePersistenceService:
         except TimeoutError:
             return False
         except _CandidateStoreMalformed:
-            raise CandidatePersistenceError("malformed_store") from None
+            failure_code = "malformed_store"
         except CandidateStoreFailure as error:
             if error.code == "permanent":
-                raise CandidatePersistenceError("store_unavailable") from None
-            return False
+                failure_code = "store_unavailable"
+            else:
+                return False
         except Exception:
-            raise CandidatePersistenceError("store_unavailable") from None
+            failure_code = "store_unavailable"
+        if failure_code is not None:
+            raise CandidatePersistenceError(failure_code) from None
+        raise AssertionError("unreachable")
 
     async def _create_with_resolution(
         self, kind: CandidateRecordKind, batch: _CandidateWriteBatch
@@ -2075,6 +2140,20 @@ class CandidatePersistenceService:
         )
 
     async def persist_and_attest_candidate(
+        self, request: CandidatePersistenceRequest
+    ) -> CandidatePersistenceReceipt:
+        failure: CandidatePersistenceError | None = None
+        try:
+            return await self._persist_and_attest_candidate(request)
+        except asyncio.CancelledError:
+            raise
+        except CandidatePersistenceError as error:
+            failure = error
+        if failure is not None:
+            raise _sanitized_candidate_error(failure) from None
+        raise AssertionError("unreachable")
+
+    async def _persist_and_attest_candidate(
         self, request: CandidatePersistenceRequest
     ) -> CandidatePersistenceReceipt:
         plan = self._validate_request(request)
