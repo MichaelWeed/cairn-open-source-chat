@@ -12,7 +12,7 @@ validation.
 <!-- capabilities-manifest:start -->
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "release": {
     "stage": "developer-preview",
     "version": "0.0.0"
@@ -22,7 +22,8 @@ validation.
     "sse_events": "1.1",
     "widget": "0.1.0",
     "local_retrieval_store": "1",
-    "local_corpus": "2"
+    "local_corpus": "2",
+    "provider_accounting": "1.0"
   },
   "capabilities": {
     "providers": {
@@ -57,7 +58,8 @@ validation.
       "liveness": "available",
       "local_readiness": "available",
       "capability_discovery": "available",
-      "hosted_readiness": "planned"
+      "hosted_readiness": "planned",
+      "provider_usage_cost": "available"
     }
   }
 }
@@ -94,6 +96,13 @@ provider selection, and a server-side key. `operations.hosted_readiness` remains
 `development_only`: the optional Firestore adapter can perform bounded exact-scope
 reads in development and tests, while production selection and lifecycle promotion
 remain unavailable. The chat and SSE compatibility versions are unchanged.
+
+Provider accounting compatibility 1.0 adds an internal discriminated provider
+event stream and pure cost helpers. Usage records identify their provider, model,
+attempt, and optional service tier; token fields remain nullable when a provider
+does not report them. Cost calculation requires an operator-supplied immutable
+price snapshot with a canonical SHA-256 identity. Cairn does not ship a live price
+catalog, persist accounting records, enforce budgets, or expose usage over SSE.
 
 ## Internal retrieval contract 1.0
 

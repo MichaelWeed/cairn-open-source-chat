@@ -19,7 +19,7 @@ MANIFEST_PATH = REPOSITORY_ROOT / "backend" / "app" / "capabilities.json"
 COMPATIBILITY_DOC = REPOSITORY_ROOT / "docs" / "COMPATIBILITY.md"
 
 EXPECTED_MANIFEST: dict[str, Any] = {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "release": {"stage": "developer-preview", "version": "0.0.0"},
     "compatibility": {
         "chat_api": "1.0",
@@ -27,6 +27,7 @@ EXPECTED_MANIFEST: dict[str, Any] = {
         "widget": "0.1.0",
         "local_retrieval_store": "1",
         "local_corpus": "2",
+        "provider_accounting": "1.0",
     },
     "capabilities": {
         "providers": {
@@ -62,6 +63,7 @@ EXPECTED_MANIFEST: dict[str, Any] = {
             "local_readiness": "available",
             "capability_discovery": "available",
             "hosted_readiness": "planned",
+            "provider_usage_cost": "available",
         },
     },
 }

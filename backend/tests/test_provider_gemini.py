@@ -9,6 +9,11 @@ import httpx
 import pytest
 
 from app.api.contracts import ChatTurn, ProviderGenerationRequest
+from app.providers.contracts import (
+    ProviderStreamEvent,
+    ProviderTextChunk,
+    ProviderUsageChunk,
+)
 from app.providers.gemini import (
     GeminiProvider,
     GeminiProviderError,
@@ -169,7 +174,12 @@ def _provider(models: _Models, **changes: object) -> GeminiProvider:
 
 
 async def _collect(provider: GeminiProvider) -> list[str]:
-    return [chunk.delta async for chunk in provider.stream(_request())]
+    events = [event async for event in provider.stream(_request())]
+    return [event.delta for event in events if isinstance(event, ProviderTextChunk)]
+
+
+async def _collect_events(provider: GeminiProvider) -> list[ProviderStreamEvent]:
+    return [event async for event in provider.stream(_request())]
 
 
 async def test_request_shape_uses_frozen_sdk_configuration_and_context_as_data() -> None:
@@ -233,15 +243,148 @@ async def test_textless_or_all_whitespace_completion_is_nonretryable(items: list
     assert len(models.calls) == 1
 
 
-async def test_usage_only_item_is_observed_but_not_emitted_or_retried() -> None:
+async def test_usage_only_item_is_emitted_then_textless_failure_is_not_retried() -> None:
     models = _Models([_Stream([_Item(usage_metadata=SimpleNamespace(total_token_count=12))])])
     provider = _provider(models)
+    iterator = provider.stream(_request())
+
+    usage = await anext(iterator)
+    assert isinstance(usage, ProviderUsageChunk)
+    assert usage.usage.total_tokens == 12
 
     with pytest.raises(GeminiProviderError) as caught:
-        await _collect(provider)
+        await anext(iterator)
 
     assert caught.value.code == "provider_unavailable"
     assert caught.value.retryable is False
+    assert len(models.calls) == 1
+
+
+async def test_usage_after_pre_item_retry_identifies_second_attempt() -> None:
+    async def no_delay(_: float) -> None:
+        return None
+
+    models = _Models(
+        [
+            _StatusError(503, "retryable-sentinel"),
+            _Stream(
+                [
+                    _Item(
+                        text="answer",
+                        usage_metadata=SimpleNamespace(prompt_token_count=4),
+                    )
+                ]
+            ),
+        ]
+    )
+
+    events = await _collect_events(_provider(models, sleep=no_delay))
+
+    usage = next(event for event in events if isinstance(event, ProviderUsageChunk))
+    assert usage.provider_attempt == 2
+    assert len(models.calls) == 2
+
+
+async def test_usage_is_self_identifying_cumulative_and_precedes_same_item_text() -> None:
+    first = SimpleNamespace(
+        prompt_token_count=10,
+        cached_content_token_count=2,
+        candidates_token_count=3,
+        thoughts_token_count=None,
+        total_token_count=None,
+        traffic_type=None,
+    )
+    final = SimpleNamespace(
+        prompt_token_count=10,
+        cached_content_token_count=2,
+        candidates_token_count=4,
+        thoughts_token_count=1,
+        total_token_count=15,
+        traffic_type="priority",
+    )
+    provider = _provider(
+        _Models(
+            [
+                _Stream(
+                    [
+                        _Item(usage_metadata=first),
+                        _Item(text="answer", usage_metadata=final),
+                    ]
+                )
+            ]
+        )
+    )
+
+    events = await _collect_events(provider)
+
+    assert [event.kind for event in events] == ["usage", "usage", "text"]
+    usage = events[1]
+    assert isinstance(usage, ProviderUsageChunk)
+    assert usage.provider == "gemini"
+    assert usage.model == "gemini-3.8-flash"
+    assert usage.provider_attempt == 1
+    assert usage.service_tier == "priority"
+    assert usage.usage.model_dump() == {
+        "input_tokens": 10,
+        "cached_input_tokens": 2,
+        "output_tokens": 4,
+        "thinking_tokens": 1,
+        "total_tokens": 15,
+    }
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        SimpleNamespace(prompt_token_count=True),
+        SimpleNamespace(prompt_token_count=-1),
+        SimpleNamespace(prompt_token_count=1, cached_content_token_count=2),
+        SimpleNamespace(
+            prompt_token_count=2,
+            candidates_token_count=1,
+            thoughts_token_count=0,
+            total_token_count=4,
+        ),
+        SimpleNamespace(prompt_token_count=1, traffic_type=" padded "),
+        SimpleNamespace(prompt_token_count=1, traffic_type=SimpleNamespace(name="PRIORITY")),
+    ],
+)
+async def test_malformed_usage_is_content_free_nonretryable(metadata: object) -> None:
+    models = _Models([_Stream([_Item(text="must-not-escape", usage_metadata=metadata)])])
+
+    with pytest.raises(GeminiProviderError) as caught:
+        await _collect_events(_provider(models))
+
+    assert caught.value.code == "provider_unavailable"
+    assert caught.value.retryable is False
+    assert caught.value.attempt_count == 1
+    assert "must-not-escape" not in str(caught.value)
+    assert len(models.calls) == 1
+
+
+async def test_regressive_usage_is_rejected_before_same_item_text() -> None:
+    models = _Models(
+        [
+            _Stream(
+                [
+                    _Item(
+                        usage_metadata=SimpleNamespace(prompt_token_count=10),
+                    ),
+                    _Item(
+                        text="must-not-escape",
+                        usage_metadata=SimpleNamespace(prompt_token_count=9),
+                    ),
+                ]
+            )
+        ]
+    )
+
+    with pytest.raises(GeminiProviderError) as caught:
+        await _collect_events(_provider(models))
+
+    assert caught.value.code == "provider_unavailable"
+    assert caught.value.retryable is False
+    assert "must-not-escape" not in str(caught.value)
     assert len(models.calls) == 1
 
 
@@ -323,6 +466,99 @@ async def test_safety_block_is_normalized_and_not_retried() -> None:
     assert len(models.calls) == 1
 
 
+async def test_safety_block_yields_returned_usage_before_content_free_failure() -> None:
+    stream = _Stream(
+        [
+            _Item(
+                text="must-not-escape",
+                prompt_feedback=SimpleNamespace(block_reason="SAFETY"),
+                candidates=[],
+                usage_metadata=SimpleNamespace(
+                    prompt_token_count=17,
+                    candidates_token_count=3,
+                    thoughts_token_count=1,
+                    total_token_count=21,
+                ),
+            )
+        ]
+    )
+    models = _Models([stream, _Stream([_Item(text="wrong-retry")])])
+    iterator = _provider(models).stream(_request())
+
+    usage = await anext(iterator)
+    assert isinstance(usage, ProviderUsageChunk)
+    assert usage.provider == "gemini"
+    assert usage.model == "gemini-3.8-flash"
+    assert usage.provider_attempt == 1
+    assert usage.usage.input_tokens == 17
+    assert usage.usage.output_tokens == 3
+    assert usage.usage.thinking_tokens == 1
+    assert usage.usage.total_tokens == 21
+
+    with pytest.raises(GeminiProviderError) as caught:
+        await anext(iterator)
+
+    assert caught.value.code == "guardrail_block"
+    assert caught.value.retryable is False
+    assert caught.value.attempt_count == 1
+    assert "must-not-escape" not in str(caught.value)
+    assert len(models.calls) == 1
+    assert stream.closed is True
+
+
+async def test_malformed_safety_usage_precedes_guardrail_without_text_or_retry() -> None:
+    stream = _Stream(
+        [
+            _Item(
+                text="must-not-escape",
+                prompt_feedback=SimpleNamespace(block_reason="SAFETY"),
+                candidates=[],
+                usage_metadata=SimpleNamespace(prompt_token_count=True),
+            )
+        ]
+    )
+    models = _Models([stream, _Stream([_Item(text="wrong-retry")])])
+
+    with pytest.raises(GeminiProviderError) as caught:
+        await _collect_events(_provider(models))
+
+    assert caught.value.code == "provider_unavailable"
+    assert caught.value.retryable is False
+    assert caught.value.attempt_count == 1
+    assert "must-not-escape" not in str(caught.value)
+    assert len(models.calls) == 1
+    assert stream.closed is True
+
+
+async def test_regressive_safety_usage_fails_after_prior_usage_without_text_or_retry() -> None:
+    stream = _Stream(
+        [
+            _Item(usage_metadata=SimpleNamespace(prompt_token_count=10)),
+            _Item(
+                text="must-not-escape",
+                prompt_feedback=SimpleNamespace(block_reason="SAFETY"),
+                candidates=[],
+                usage_metadata=SimpleNamespace(prompt_token_count=9),
+            ),
+        ]
+    )
+    models = _Models([stream, _Stream([_Item(text="wrong-retry")])])
+    iterator = _provider(models).stream(_request())
+
+    first = await anext(iterator)
+    assert isinstance(first, ProviderUsageChunk)
+    assert first.usage.input_tokens == 10
+    with pytest.raises(GeminiProviderError) as caught:
+        await anext(iterator)
+
+    assert caught.value.code == "provider_unavailable"
+    assert caught.value.retryable is False
+    assert caught.value.attempt_count == 1
+    assert "must-not-escape" not in str(caught.value)
+    assert len(models.calls) == 1
+    assert stream.closed is True
+
+
 async def test_stream_closes_on_normal_completion_and_cancellation() -> None:
     stream = _Stream([_Item(text="ok")])
     provider = _provider(_Models([stream]))
@@ -352,7 +588,9 @@ async def test_throwing_close_is_normalized_after_successful_completion() -> Non
     stream = _ThrowingCloseStream([_Item(text="ok")])
     iterator = _provider(_Models([stream]), max_retries=0).stream(_request())
 
-    assert (await anext(iterator)).delta == "ok"
+    event = await anext(iterator)
+    assert isinstance(event, ProviderTextChunk)
+    assert event.delta == "ok"
     with pytest.raises(GeminiProviderError) as caught:
         await anext(iterator)
 
@@ -395,7 +633,9 @@ async def test_throwing_close_preserves_generation_failure_and_timeout() -> None
 async def test_throwing_close_does_not_replace_early_close_or_cancellation() -> None:
     early_stream = _ThrowingCloseStream([_Item(text="first"), _Item(text="second")])
     iterator = _provider(_Models([early_stream]), max_retries=0).stream(_request())
-    assert (await anext(iterator)).delta == "first"
+    event = await anext(iterator)
+    assert isinstance(event, ProviderTextChunk)
+    assert event.delta == "first"
     await cast(Any, iterator).aclose()
     assert early_stream.close_calls == 1
 
@@ -463,7 +703,9 @@ async def test_internally_raised_close_cancellation_obeys_failure_precedence() -
 
     completed_stream = _InternallyCancelledCloseStream([_Item(text="ok")])
     iterator = _provider(_Models([completed_stream]), max_retries=0).stream(_request())
-    assert (await anext(iterator)).delta == "ok"
+    event = await anext(iterator)
+    assert isinstance(event, ProviderTextChunk)
+    assert event.delta == "ok"
     with pytest.raises(GeminiProviderError) as caught:
         await anext(iterator)
     assert caught.value.code == "provider_unavailable"

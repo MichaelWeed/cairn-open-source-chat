@@ -10,10 +10,15 @@ from app.api.contracts import (
     RETRIEVED_CONTEXT_MAX_CHARS,
     ChatEvent,
     ChatMessageRequest,
-    ProviderChunk,
     ProviderGenerationRequest,
 )
 from app.providers.base import Provider
+from app.providers.contracts import (
+    ProviderStreamEvent,
+    ProviderTextChunk,
+    ProviderUsage,
+    ProviderUsageChunk,
+)
 from app.providers.gemini import GeminiProviderError
 from app.retrieval import DEFAULT_MAX_DISTANCE, LocalRetrievalAdapter, build_context_block
 from app.retrieval_contracts import (
@@ -50,32 +55,54 @@ class _LifecycleProvider(Provider):
         self.closed = False
         self.never_finishes = asyncio.Event()
 
-    async def stream(self, request: ProviderGenerationRequest) -> AsyncIterator[ProviderChunk]:
+    async def stream(
+        self, request: ProviderGenerationRequest
+    ) -> AsyncIterator[ProviderStreamEvent]:
         try:
-            yield ProviderChunk(delta=self.delta)
+            yield ProviderTextChunk(delta=self.delta)
             await self.never_finishes.wait()
         finally:
             self.closed = True
 
 
 class _SensitiveInvalidProvider(Provider):
-    async def stream(self, request: ProviderGenerationRequest) -> AsyncIterator[ProviderChunk]:
-        yield ProviderChunk(delta="provider-response-sentinel\x00")
+    async def stream(
+        self, request: ProviderGenerationRequest
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        yield ProviderTextChunk(delta="provider-response-sentinel\x00")
 
 
 class _NormalizedGeminiFailureProvider(Provider):
-    async def stream(self, request: ProviderGenerationRequest) -> AsyncIterator[ProviderChunk]:
+    async def stream(
+        self, request: ProviderGenerationRequest
+    ) -> AsyncIterator[ProviderStreamEvent]:
         if False:
-            yield ProviderChunk(delta="unreachable")
+            yield ProviderTextChunk(delta="unreachable")
         raise GeminiProviderError(
             code="rate_limited", retryable=True, attempt_count=2
         )
 
 
-async def _slow_source() -> AsyncIterator[ProviderChunk]:
-    yield ProviderChunk(delta="fast")
+class _UsageThenGuardrailProvider(Provider):
+    async def stream(
+        self, request: ProviderGenerationRequest
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        del request
+        yield ProviderUsageChunk(
+            provider="gemini",
+            model="gemini-3.8-flash",
+            provider_attempt=1,
+            usage=ProviderUsage(input_tokens=17, total_tokens=17),
+        )
+        raise GeminiProviderError(
+            code="guardrail_block", retryable=False, attempt_count=1
+        )
+
+
+async def _slow_source() -> AsyncIterator[ProviderStreamEvent]:
+    yield ProviderTextChunk(delta="fast")
     await asyncio.sleep(0.05)
-    yield ProviderChunk(delta="after a pause")
+    yield ProviderTextChunk(delta="after a pause")
 
 
 async def test_ping_interleaved_on_quiet_source() -> None:
@@ -86,9 +113,9 @@ async def test_ping_interleaved_on_quiet_source() -> None:
     assert types[-1] == "chunk"
 
 
-async def _fast_source() -> AsyncIterator[ProviderChunk]:
-    yield ProviderChunk(delta="a")
-    yield ProviderChunk(delta="b")
+async def _fast_source() -> AsyncIterator[ProviderStreamEvent]:
+    yield ProviderTextChunk(delta="a")
+    yield ProviderTextChunk(delta="b")
 
 
 async def test_no_pings_when_source_is_fast() -> None:
@@ -96,15 +123,99 @@ async def test_no_pings_when_source_is_fast() -> None:
     assert [event.type for event in events] == ["chunk", "chunk"]
 
 
+async def test_usage_events_are_consumed_without_public_output_or_budget() -> None:
+    closed = False
+
+    async def source() -> AsyncIterator[ProviderStreamEvent]:
+        nonlocal closed
+        try:
+            yield ProviderUsageChunk(
+                provider="gemini",
+                model="gemini-3.8-flash",
+                provider_attempt=1,
+                usage=ProviderUsage(input_tokens=10),
+            )
+            yield ProviderTextChunk(delta="abc")
+            yield ProviderUsageChunk(
+                provider="gemini",
+                model="gemini-3.8-flash",
+                provider_attempt=1,
+                usage=ProviderUsage(input_tokens=10, output_tokens=2),
+            )
+            yield ProviderTextChunk(delta="def")
+            yield ProviderUsageChunk(
+                provider="gemini",
+                model="gemini-3.8-flash",
+                provider_attempt=1,
+                usage=ProviderUsage(input_tokens=10, output_tokens=3),
+            )
+        finally:
+            closed = True
+
+    events = [event async for event in stream_with_pings(source(), max_output_chars=6)]
+
+    assert [(event.type, getattr(event, "delta", None)) for event in events] == [
+        ("chunk", "abc"),
+        ("chunk", "def"),
+    ]
+    assert closed is True
+
+
+async def test_hidden_usage_does_not_reset_public_ping_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = asyncio.get_running_loop()
+    current_time = 0.0
+    wait_count = 0
+    observed_timeouts: list[float | None] = []
+
+    async def deterministic_wait(
+        tasks: set[asyncio.Task[ProviderStreamEvent]],
+        timeout: float | None = None,
+    ) -> tuple[
+        set[asyncio.Task[ProviderStreamEvent]],
+        set[asyncio.Task[ProviderStreamEvent]],
+    ]:
+        nonlocal current_time, wait_count
+        wait_count += 1
+        observed_timeouts.append(timeout)
+        await asyncio.sleep(0)
+        task = next(iter(tasks))
+        assert task.done()
+        if wait_count == 1:
+            current_time = 0.9
+        elif wait_count == 2:
+            current_time = 1.1
+        return {task}, set()
+
+    async def source() -> AsyncIterator[ProviderStreamEvent]:
+        yield ProviderUsageChunk(
+            provider="gemini",
+            model="gemini-3.8-flash",
+            provider_attempt=1,
+            usage=ProviderUsage(input_tokens=10),
+        )
+        yield ProviderTextChunk(delta="visible")
+
+    monkeypatch.setattr(loop, "time", lambda: current_time)
+    monkeypatch.setattr(asyncio, "wait", deterministic_wait)
+
+    events = [event async for event in stream_with_pings(source(), ping_interval=1.0)]
+
+    assert [event.type for event in events] == ["ping", "chunk"]
+    assert observed_timeouts[0] == pytest.approx(1.0)
+    assert observed_timeouts[1] == pytest.approx(0.1)
+
+
 async def test_output_stops_at_exact_character_budget_and_closes_source() -> None:
     closed = False
 
-    async def source() -> AsyncIterator[ProviderChunk]:
+    async def source() -> AsyncIterator[ProviderStreamEvent]:
         nonlocal closed
         try:
-            yield ProviderChunk(delta="abc")
-            yield ProviderChunk(delta="def")
-            yield ProviderChunk(delta="must not be consumed")
+            yield ProviderTextChunk(delta="abc")
+            yield ProviderTextChunk(delta="def")
+            yield ProviderTextChunk(delta="must not be consumed")
         finally:
             closed = True
 
@@ -123,12 +234,12 @@ async def test_closing_stream_cancels_pending_provider_read_and_closes_source() 
     closed = False
     never_finishes = asyncio.Event()
 
-    async def source() -> AsyncIterator[ProviderChunk]:
+    async def source() -> AsyncIterator[ProviderStreamEvent]:
         nonlocal closed
         try:
-            yield ProviderChunk(delta="first")
+            yield ProviderTextChunk(delta="first")
             await never_finishes.wait()
-            yield ProviderChunk(delta="unreachable")
+            yield ProviderTextChunk(delta="unreachable")
         finally:
             closed = True
 
@@ -265,6 +376,30 @@ async def test_provider_failure_log_excludes_provider_content(
     assert "provider-response-sentinel" not in caplog.text
 
 
+async def test_guardrail_usage_is_hidden_before_public_content_free_error() -> None:
+    events = [
+        event
+        async for event in chat_event_stream(
+            _UsageThenGuardrailProvider(),
+            ChatMessageRequest(session_id="s1", message="hi"),
+            _grounded_adapter(),
+        )
+    ]
+
+    assert [event.type for event in events] == [
+        "status",
+        "citations",
+        "status",
+        "error",
+    ]
+    assert events[-1].model_dump() == {
+        "type": "error",
+        "code": "guardrail_block",
+        "message": "The model response was blocked by safety controls.",
+        "retryable": False,
+    }
+
+
 class _StaticAdapter:
     def __init__(self, result: RetrievalResult) -> None:
         self.result = result
@@ -288,10 +423,32 @@ class _CountingProvider(Provider):
         self.calls = 0
         self.last_request: ProviderGenerationRequest | None = None
 
-    async def stream(self, request: ProviderGenerationRequest) -> AsyncIterator[ProviderChunk]:
+    async def stream(
+        self, request: ProviderGenerationRequest
+    ) -> AsyncIterator[ProviderStreamEvent]:
         self.calls += 1
         self.last_request = request
-        yield ProviderChunk(delta="ok")
+        yield ProviderTextChunk(delta="ok")
+
+
+class _UsageAccountingProbeProvider(Provider):
+    def __init__(self) -> None:
+        self.calls = 0
+        self.usage_events = 0
+
+    async def stream(
+        self, request: ProviderGenerationRequest
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        del request
+        self.calls += 1
+        self.usage_events += 1
+        yield ProviderUsageChunk(
+            provider="gemini",
+            model="gemini-3.8-flash",
+            provider_attempt=1,
+            usage=ProviderUsage(input_tokens=10, output_tokens=2),
+        )
+        yield ProviderTextChunk(delta="ok")
 
 
 def _result_with_context_length(target: int) -> RetrievalResult:
@@ -320,6 +477,80 @@ def _result_with_context_length(target: int) -> RetrievalResult:
         max_distance=DEFAULT_MAX_DISTANCE,
         chunks=tuple(expanded),
     )
+
+
+async def test_retrieval_refusal_skips_provider_and_internal_usage_accounting() -> None:
+    provider = _UsageAccountingProbeProvider()
+
+    events = [
+        event
+        async for event in chat_event_stream(
+            provider,
+            ChatMessageRequest(session_id="s1", message="hi"),
+            _StaticAdapter(
+                _result_with_context_length(RETRIEVED_CONTEXT_MAX_CHARS + 1)
+            ),
+        )
+    ]
+
+    assert [event.type for event in events] == ["status", "status", "chunk", "done"]
+    assert events[-1].finish_reason == "refused"  # type: ignore[union-attr]
+    assert provider.calls == 0
+    assert provider.usage_events == 0
+
+
+async def test_grounded_stream_hides_usage_without_shifting_absolute_ping_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = asyncio.get_running_loop()
+    current_time = 0.0
+    wait_count = 0
+    observed_timeouts: list[float | None] = []
+
+    async def deterministic_wait(
+        tasks: set[asyncio.Task[ProviderStreamEvent]],
+        timeout: float | None = None,
+    ) -> tuple[
+        set[asyncio.Task[ProviderStreamEvent]],
+        set[asyncio.Task[ProviderStreamEvent]],
+    ]:
+        nonlocal current_time, wait_count
+        wait_count += 1
+        observed_timeouts.append(timeout)
+        await asyncio.sleep(0)
+        task = next(iter(tasks))
+        assert task.done()
+        if wait_count == 1:
+            current_time = 0.9
+        elif wait_count == 2:
+            current_time = 1.1
+        return {task}, set()
+
+    monkeypatch.setattr(loop, "time", lambda: current_time)
+    monkeypatch.setattr(asyncio, "wait", deterministic_wait)
+    provider = _UsageAccountingProbeProvider()
+
+    events = [
+        event
+        async for event in chat_event_stream(
+            provider,
+            ChatMessageRequest(session_id="s1", message="hi"),
+            _grounded_adapter(),
+            ping_interval=1.0,
+        )
+    ]
+
+    assert [event.type for event in events] == [
+        "status",
+        "citations",
+        "status",
+        "ping",
+        "chunk",
+        "done",
+    ]
+    assert provider.calls == 1
+    assert provider.usage_events == 1
+    assert observed_timeouts[:2] == pytest.approx([1.0, 0.1])
 
 
 async def test_context_at_exact_limit_reaches_provider_after_citations() -> None:

@@ -18,6 +18,9 @@ handoff, order-status deep links, an admin experience, the guardrail pipeline, a
 any author-hosted service are planned, not available behavior. An optional Gemini
 generation adapter is available for explicit opt-in use; it is excluded from the
 local default install and does not establish production or hosted readiness.
+Provider adapters normalize bounded, content-free token usage in memory. Cairn
+also provides pure cost-accounting helpers for an operator-supplied immutable
+price snapshot; no prices, budget enforcement, or accounting sink are bundled.
 
 It is for CTOs and support leaders evaluating a grounded, self-hosted alternative
 to an opaque support bot. The problem is practical: an unsupported answer can

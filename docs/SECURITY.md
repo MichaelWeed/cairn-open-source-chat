@@ -27,6 +27,12 @@ this stage.
   `extra="forbid"` (`backend/app/api/contracts.py`) — unexpected fields are rejected outright, not
   silently ignored. `message` is capped at 500 characters and `history` at 5 turns at the contract
   level, before any handler code runs.
+* **Fail-closed provider accounting.** Internal usage events and price snapshots are
+  frozen strict models with explicit size and numeric bounds. Usage contains no
+  prompts, completions, retrieved content, session IDs, or client identifiers.
+  Snapshot source URLs reject credentials, query strings, and fragments. Errors do
+  not echo raw provider metadata, rates, or content, and this component has no
+  authority to enforce budgets or persist records.
 * **Prompt-injection defense around retrieved content.** The retrieval pipeline (`app/retrieval.py`,
   task 2.4) wraps retrieved document chunks in an explicit `<retrieved-context>` block with a system
   prompt instructing the model to treat that block as untrusted data, not instructions, and to

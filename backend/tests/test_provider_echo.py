@@ -1,4 +1,5 @@
 from app.api.contracts import ProviderGenerationRequest
+from app.providers.contracts import ProviderTextChunk
 from app.providers.echo import EchoProvider
 
 
@@ -15,31 +16,30 @@ def request(message: str = "hello there world", **changes: object) -> ProviderGe
     return ProviderGenerationRequest.model_validate(data)
 
 
+async def _collect_text(request_value: ProviderGenerationRequest) -> list[ProviderTextChunk]:
+    events = [event async for event in EchoProvider().stream(request_value)]
+    assert all(isinstance(event, ProviderTextChunk) for event in events)
+    return [event for event in events if isinstance(event, ProviderTextChunk)]
+
+
 async def test_echo_reconstructs_message() -> None:
-    provider = EchoProvider()
-    chunks = [chunk async for chunk in provider.stream(request())]
+    chunks = await _collect_text(request())
     assert "".join(chunk.delta for chunk in chunks) == "hello there world"
 
 
 async def test_echo_accepts_validated_generation_request() -> None:
-    provider = EchoProvider()
-    chunks = [chunk async for chunk in provider.stream(request("same input"))]
+    chunks = await _collect_text(request("same input"))
     assert "".join(chunk.delta for chunk in chunks) == "same input"
 
 
 async def test_echo_is_deterministic() -> None:
-    provider = EchoProvider()
-    first = [chunk async for chunk in provider.stream(request("same input"))]
-    second = [chunk async for chunk in provider.stream(request("same input"))]
+    first = await _collect_text(request("same input"))
+    second = await _collect_text(request("same input"))
     assert first == second
 
 
 async def test_echo_ignores_context() -> None:
-    provider = EchoProvider()
-    chunks = [
-        chunk
-        async for chunk in provider.stream(
-            request("hello world", retrieved_context="irrelevant")
-        )
-    ]
+    chunks = await _collect_text(
+        request("hello world", retrieved_context="irrelevant")
+    )
     assert "".join(chunk.delta for chunk in chunks) == "hello world"
