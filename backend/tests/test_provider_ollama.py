@@ -4,6 +4,11 @@ import httpx
 import pytest
 
 from app.api.contracts import ChatTurn, ProviderGenerationRequest
+from app.providers.contracts import (
+    ProviderStreamEvent,
+    ProviderTextChunk,
+    ProviderUsageChunk,
+)
 from app.providers.ollama import OllamaProvider
 
 
@@ -31,6 +36,18 @@ def _ndjson_transport(
     return httpx.MockTransport(handler)
 
 
+async def _collect_events(provider: OllamaProvider) -> list[ProviderStreamEvent]:
+    return [event async for event in provider.stream(request())]
+
+
+async def _collect_text(
+    provider: OllamaProvider,
+    request_value: ProviderGenerationRequest | None = None,
+) -> list[ProviderTextChunk]:
+    events = [event async for event in provider.stream(request_value or request())]
+    return [event for event in events if isinstance(event, ProviderTextChunk)]
+
+
 async def test_ollama_streams_content_chunks() -> None:
     transport = _ndjson_transport(
         [
@@ -42,7 +59,7 @@ async def test_ollama_streams_content_chunks() -> None:
     client = httpx.AsyncClient(transport=transport)
     provider = OllamaProvider(base_url="http://ollama:11434", model="test-model", client=client)
 
-    chunks = [c async for c in provider.stream(request())]
+    chunks = await _collect_text(provider)
     assert [chunk.delta for chunk in chunks] == ["Hello", " there"]
 
 
@@ -56,7 +73,7 @@ async def test_ollama_stops_at_done() -> None:
     client = httpx.AsyncClient(transport=transport)
     provider = OllamaProvider(base_url="http://ollama:11434", model="test-model", client=client)
 
-    chunks = [c async for c in provider.stream(request())]
+    chunks = await _collect_text(provider)
     assert [chunk.delta for chunk in chunks] == ["partial"]
 
 
@@ -82,7 +99,7 @@ async def test_ollama_sends_expected_request_body() -> None:
     provider = OllamaProvider(base_url="http://ollama:11434/", model="test-model", client=client)
 
     history = [ChatTurn(role="user", content="prior")]
-    chunks = [c async for c in provider.stream(request(history=history))]
+    chunks = await _collect_text(provider, request(history=history))
     assert [chunk.delta for chunk in chunks] == ["ok"]
     assert captured["json"] == {
         "model": "test-model",
@@ -104,12 +121,10 @@ async def test_ollama_prepends_context_as_system_message() -> None:
     provider = OllamaProvider(base_url="http://ollama:11434", model="test-model", client=client)
 
     context = "<retrieved-context>30 day returns</retrieved-context>"
-    chunks = [
-        c
-        async for c in provider.stream(
-            request(system_instruction="Be concise.", retrieved_context=context)
-        )
-    ]
+    chunks = await _collect_text(
+        provider,
+        request(system_instruction="Be concise.", retrieved_context=context),
+    )
     assert [chunk.delta for chunk in chunks] == ["ok"]
     assert captured["json"] == {
         "model": "test-model",
@@ -128,7 +143,7 @@ async def test_ollama_splits_large_provider_deltas_to_contract_size() -> None:
     client = httpx.AsyncClient(transport=transport)
     provider = OllamaProvider(base_url="http://ollama:11434", model="test-model", client=client)
 
-    chunks = [chunk async for chunk in provider.stream(request())]
+    chunks = await _collect_text(provider)
 
     assert [len(chunk.delta) for chunk in chunks] == [1000, 1]
 
@@ -144,7 +159,7 @@ async def test_ollama_coalesces_whitespace_only_frames_without_losing_content() 
     client = httpx.AsyncClient(transport=transport)
     provider = OllamaProvider(base_url="http://ollama:11434", model="test-model", client=client)
 
-    chunks = [chunk async for chunk in provider.stream(request())]
+    chunks = await _collect_text(provider)
 
     assert "".join(chunk.delta for chunk in chunks) == "Hello \nworld"
     assert all(chunk.delta.strip() for chunk in chunks)
@@ -161,7 +176,7 @@ async def test_ollama_preserves_trailing_whitespace_in_non_blank_chunk() -> None
     client = httpx.AsyncClient(transport=transport)
     provider = OllamaProvider(base_url="http://ollama:11434", model="test-model", client=client)
 
-    chunks = [chunk async for chunk in provider.stream(request())]
+    chunks = await _collect_text(provider)
 
     assert "".join(chunk.delta for chunk in chunks) == "answer \n"
     assert all(chunk.delta.strip() for chunk in chunks)
@@ -179,7 +194,7 @@ async def test_ollama_preserves_whitespace_at_chunk_split_boundary() -> None:
     client = httpx.AsyncClient(transport=transport)
     provider = OllamaProvider(base_url="http://ollama:11434", model="test-model", client=client)
 
-    chunks = [chunk async for chunk in provider.stream(request())]
+    chunks = await _collect_text(provider)
 
     assert "".join(chunk.delta for chunk in chunks) == expected
     assert all(chunk.delta.strip() for chunk in chunks)
@@ -202,8 +217,104 @@ async def test_ollama_preserves_trailing_whitespace_at_exact_chunk_boundary(
         base_url="http://ollama:11434", model="test-model", client=client
     )
 
-    chunks = [chunk async for chunk in provider.stream(request())]
+    chunks = await _collect_text(provider)
 
     assert "".join(chunk.delta for chunk in chunks) == expected
     assert all(chunk.delta.strip() for chunk in chunks)
     assert all(len(chunk.delta) <= 1000 for chunk in chunks)
+
+
+async def test_ollama_emits_self_identifying_usage_before_same_item_text() -> None:
+    transport = _ndjson_transport(
+        [
+            {
+                "message": {"content": "answer"},
+                "done": True,
+                "prompt_eval_count": 12,
+                "eval_count": 5,
+            }
+        ]
+    )
+    provider = OllamaProvider(
+        base_url="http://ollama:11434",
+        model="test-model",
+        client=httpx.AsyncClient(transport=transport),
+    )
+
+    events = await _collect_events(provider)
+
+    assert [event.kind for event in events] == ["usage", "text"]
+    usage = events[0]
+    assert isinstance(usage, ProviderUsageChunk)
+    assert usage.provider == "ollama"
+    assert usage.model == "test-model"
+    assert usage.provider_attempt == 1
+    assert usage.service_tier is None
+    assert usage.usage.input_tokens == 12
+    assert usage.usage.output_tokens == 5
+    assert usage.usage.total_tokens == 17
+    assert usage.usage.cached_input_tokens is None
+    assert usage.usage.thinking_tokens is None
+
+
+async def test_ollama_retains_partial_usage_as_missing_not_zero() -> None:
+    transport = _ndjson_transport(
+        [{"message": {"content": "answer"}, "done": True, "eval_count": 5}]
+    )
+    provider = OllamaProvider(
+        base_url="http://ollama:11434",
+        model="test-model",
+        client=httpx.AsyncClient(transport=transport),
+    )
+
+    events = await _collect_events(provider)
+    usage = events[0]
+    assert isinstance(usage, ProviderUsageChunk)
+    assert usage.usage.input_tokens is None
+    assert usage.usage.output_tokens == 5
+    assert usage.usage.total_tokens is None
+
+
+async def test_ollama_emits_usage_from_textless_terminal_object() -> None:
+    transport = _ndjson_transport(
+        [
+            {"message": {"content": "answer"}, "done": False},
+            {"done": True, "prompt_eval_count": 8, "eval_count": 2},
+        ]
+    )
+    provider = OllamaProvider(
+        base_url="http://ollama:11434",
+        model="test-model",
+        client=httpx.AsyncClient(transport=transport),
+    )
+
+    events = await _collect_events(provider)
+
+    assert [event.kind for event in events] == ["usage", "text"]
+    usage = events[0]
+    assert isinstance(usage, ProviderUsageChunk)
+    assert usage.usage.total_tokens == 10
+
+
+@pytest.mark.parametrize("bad", [True, -1, "5"])
+async def test_ollama_rejects_malformed_usage_before_same_item_text(bad: object) -> None:
+    transport = _ndjson_transport(
+        [
+            {
+                "message": {"content": "must-not-escape"},
+                "done": True,
+                "prompt_eval_count": bad,
+                "eval_count": 1,
+            }
+        ]
+    )
+    provider = OllamaProvider(
+        base_url="http://ollama:11434",
+        model="test-model",
+        client=httpx.AsyncClient(transport=transport),
+    )
+
+    with pytest.raises(ValueError) as caught:
+        await _collect_events(provider)
+
+    assert "must-not-escape" not in str(caught.value)

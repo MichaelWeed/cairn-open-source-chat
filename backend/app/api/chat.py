@@ -20,11 +20,11 @@ from app.api.contracts import (
     DoneEvent,
     ErrorEvent,
     PingEvent,
-    ProviderChunk,
     ProviderGenerationRequest,
     StatusEvent,
 )
 from app.providers.base import Provider
+from app.providers.contracts import ProviderStreamEvent
 from app.providers.gemini import GeminiProviderError
 from app.retrieval import (
     DEFAULT_MAX_DISTANCE,
@@ -49,7 +49,7 @@ def format_sse(event: ChatEvent) -> str:
 
 
 async def stream_with_pings(
-    source: AsyncIterator[ProviderChunk],
+    source: AsyncIterator[ProviderStreamEvent],
     ping_interval: float = PING_INTERVAL_SECONDS,
     max_output_chars: int | None = None,
 ) -> AsyncIterator[ChatEvent]:
@@ -72,9 +72,13 @@ async def stream_with_pings(
                 yield PingEvent()
                 continue
             try:
-                chunk = next_item.result()
+                provider_event = next_item.result()
             except StopAsyncIteration:
                 return
+            if provider_event.kind == "usage":
+                next_item = asyncio.ensure_future(iterator.__anext__())
+                continue
+            chunk = provider_event
             remaining = (
                 len(chunk.delta)
                 if max_output_chars is None

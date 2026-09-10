@@ -9,10 +9,15 @@ from app.api.chat import _sse_response, chat_event_stream, stream_with_pings
 from app.api.contracts import (
     ChatEvent,
     ChatMessageRequest,
-    ProviderChunk,
     ProviderGenerationRequest,
 )
 from app.providers.base import Provider
+from app.providers.contracts import (
+    ProviderStreamEvent,
+    ProviderTextChunk,
+    ProviderUsage,
+    ProviderUsageChunk,
+)
 from app.providers.gemini import GeminiProviderError
 from app.vectorstore import DocumentCollection
 
@@ -35,32 +40,38 @@ class _LifecycleProvider(Provider):
         self.closed = False
         self.never_finishes = asyncio.Event()
 
-    async def stream(self, request: ProviderGenerationRequest) -> AsyncIterator[ProviderChunk]:
+    async def stream(
+        self, request: ProviderGenerationRequest
+    ) -> AsyncIterator[ProviderStreamEvent]:
         try:
-            yield ProviderChunk(delta=self.delta)
+            yield ProviderTextChunk(delta=self.delta)
             await self.never_finishes.wait()
         finally:
             self.closed = True
 
 
 class _SensitiveInvalidProvider(Provider):
-    async def stream(self, request: ProviderGenerationRequest) -> AsyncIterator[ProviderChunk]:
-        yield ProviderChunk(delta="provider-response-sentinel\x00")
+    async def stream(
+        self, request: ProviderGenerationRequest
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        yield ProviderTextChunk(delta="provider-response-sentinel\x00")
 
 
 class _NormalizedGeminiFailureProvider(Provider):
-    async def stream(self, request: ProviderGenerationRequest) -> AsyncIterator[ProviderChunk]:
+    async def stream(
+        self, request: ProviderGenerationRequest
+    ) -> AsyncIterator[ProviderStreamEvent]:
         if False:
-            yield ProviderChunk(delta="unreachable")
+            yield ProviderTextChunk(delta="unreachable")
         raise GeminiProviderError(
             code="rate_limited", retryable=True, attempt_count=2
         )
 
 
-async def _slow_source() -> AsyncIterator[ProviderChunk]:
-    yield ProviderChunk(delta="fast")
+async def _slow_source() -> AsyncIterator[ProviderStreamEvent]:
+    yield ProviderTextChunk(delta="fast")
     await asyncio.sleep(0.05)
-    yield ProviderChunk(delta="after a pause")
+    yield ProviderTextChunk(delta="after a pause")
 
 
 async def test_ping_interleaved_on_quiet_source() -> None:
@@ -71,9 +82,9 @@ async def test_ping_interleaved_on_quiet_source() -> None:
     assert types[-1] == "chunk"
 
 
-async def _fast_source() -> AsyncIterator[ProviderChunk]:
-    yield ProviderChunk(delta="a")
-    yield ProviderChunk(delta="b")
+async def _fast_source() -> AsyncIterator[ProviderStreamEvent]:
+    yield ProviderTextChunk(delta="a")
+    yield ProviderTextChunk(delta="b")
 
 
 async def test_no_pings_when_source_is_fast() -> None:
@@ -81,15 +92,53 @@ async def test_no_pings_when_source_is_fast() -> None:
     assert [event.type for event in events] == ["chunk", "chunk"]
 
 
+async def test_usage_events_are_consumed_without_public_output_or_budget() -> None:
+    closed = False
+
+    async def source() -> AsyncIterator[ProviderStreamEvent]:
+        nonlocal closed
+        try:
+            yield ProviderUsageChunk(
+                provider="gemini",
+                model="gemini-3.8-flash",
+                provider_attempt=1,
+                usage=ProviderUsage(input_tokens=10),
+            )
+            yield ProviderTextChunk(delta="abc")
+            yield ProviderUsageChunk(
+                provider="gemini",
+                model="gemini-3.8-flash",
+                provider_attempt=1,
+                usage=ProviderUsage(input_tokens=10, output_tokens=2),
+            )
+            yield ProviderTextChunk(delta="def")
+            yield ProviderUsageChunk(
+                provider="gemini",
+                model="gemini-3.8-flash",
+                provider_attempt=1,
+                usage=ProviderUsage(input_tokens=10, output_tokens=3),
+            )
+        finally:
+            closed = True
+
+    events = [event async for event in stream_with_pings(source(), max_output_chars=6)]
+
+    assert [(event.type, getattr(event, "delta", None)) for event in events] == [
+        ("chunk", "abc"),
+        ("chunk", "def"),
+    ]
+    assert closed is True
+
+
 async def test_output_stops_at_exact_character_budget_and_closes_source() -> None:
     closed = False
 
-    async def source() -> AsyncIterator[ProviderChunk]:
+    async def source() -> AsyncIterator[ProviderStreamEvent]:
         nonlocal closed
         try:
-            yield ProviderChunk(delta="abc")
-            yield ProviderChunk(delta="def")
-            yield ProviderChunk(delta="must not be consumed")
+            yield ProviderTextChunk(delta="abc")
+            yield ProviderTextChunk(delta="def")
+            yield ProviderTextChunk(delta="must not be consumed")
         finally:
             closed = True
 
@@ -108,12 +157,12 @@ async def test_closing_stream_cancels_pending_provider_read_and_closes_source() 
     closed = False
     never_finishes = asyncio.Event()
 
-    async def source() -> AsyncIterator[ProviderChunk]:
+    async def source() -> AsyncIterator[ProviderStreamEvent]:
         nonlocal closed
         try:
-            yield ProviderChunk(delta="first")
+            yield ProviderTextChunk(delta="first")
             await never_finishes.wait()
-            yield ProviderChunk(delta="unreachable")
+            yield ProviderTextChunk(delta="unreachable")
         finally:
             closed = True
 

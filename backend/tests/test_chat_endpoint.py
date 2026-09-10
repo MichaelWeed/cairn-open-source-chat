@@ -7,12 +7,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.types import Message, Receive, Scope, Send
 
-from app.api.contracts import ProviderChunk, ProviderGenerationRequest
+from app.api.contracts import ProviderGenerationRequest
 from app.config import Settings
 from app.db import bootstrap
 from app.ingest.pipeline import ingest_upload
 from app.main import ChatRequestBodyLimitMiddleware, create_app
 from app.providers.base import Provider
+from app.providers.contracts import ProviderStreamEvent, ProviderTextChunk
 from app.providers.echo import EchoProvider
 
 
@@ -22,7 +23,9 @@ def fake_embeddings(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class FailingProvider(Provider):
-    async def stream(self, request: ProviderGenerationRequest) -> AsyncIterator[ProviderChunk]:
+    async def stream(
+        self, request: ProviderGenerationRequest
+    ) -> AsyncIterator[ProviderStreamEvent]:
         raise ConnectionError("simulated provider outage")
         yield  # pragma: no cover - unreachable, satisfies the generator type
 
@@ -36,15 +39,19 @@ class CapturingProvider(Provider):
     def __init__(self) -> None:
         self.last_request: ProviderGenerationRequest | None = None
 
-    async def stream(self, request: ProviderGenerationRequest) -> AsyncIterator[ProviderChunk]:
+    async def stream(
+        self, request: ProviderGenerationRequest
+    ) -> AsyncIterator[ProviderStreamEvent]:
         self.last_request = request
-        yield ProviderChunk(delta="ok")
+        yield ProviderTextChunk(delta="ok")
 
 
 class WhitespaceLimitProvider(Provider):
-    async def stream(self, request: ProviderGenerationRequest) -> AsyncIterator[ProviderChunk]:
-        yield ProviderChunk(delta="abc")
-        yield ProviderChunk(delta="  x")
+    async def stream(
+        self, request: ProviderGenerationRequest
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        yield ProviderTextChunk(delta="abc")
+        yield ProviderTextChunk(delta="  x")
 
 
 def parse_sse(body: str) -> list[tuple[str, str]]:

@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 
-from app.api.contracts import ProviderChunk, ProviderGenerationRequest
+from app.api.contracts import ProviderGenerationRequest
+from app.providers.contracts import ProviderStreamEvent
 
 
 class Provider(ABC):
@@ -18,4 +19,4 @@ class Provider(ABC):
     """
 
     @abstractmethod
-    def stream(self, request: ProviderGenerationRequest) -> AsyncIterator[ProviderChunk]: ...
+    def stream(self, request: ProviderGenerationRequest) -> AsyncIterator[ProviderStreamEvent]: ...

@@ -17,10 +17,17 @@ import httpx
 from app.api.contracts import (
     CHUNK_MAX_CHARS,
     ErrorCode,
-    ProviderChunk,
     ProviderGenerationRequest,
 )
 from app.providers.base import Provider
+from app.providers.contracts import (
+    ProviderStreamEvent,
+    ProviderTextChunk,
+    ProviderUsage,
+    ProviderUsageChunk,
+    ProviderUsageValidationError,
+    merge_cumulative_usage,
+)
 
 _RETRY_DELAY_SECONDS = 0.1
 _SAFETY_REASONS = {"SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"}
@@ -84,15 +91,15 @@ class _NormalizedFailure(Exception):
         self.retryable = retryable
 
 
-def _provider_chunk(delta: str) -> ProviderChunk:
+def _provider_chunk(delta: str) -> ProviderTextChunk:
     try:
-        return ProviderChunk(delta=delta)
+        return ProviderTextChunk(delta=delta)
     except ValueError:
         raise _NormalizedFailure("provider_unavailable", False) from None
 
 
-def _split_complete_chunks(content: str) -> tuple[list[ProviderChunk], str]:
-    chunks: list[ProviderChunk] = []
+def _split_complete_chunks(content: str) -> tuple[list[ProviderTextChunk], str]:
+    chunks: list[ProviderTextChunk] = []
     while len(content) > CHUNK_MAX_CHARS:
         split_at = CHUNK_MAX_CHARS
         if not content[CHUNK_MAX_CHARS:].strip():
@@ -103,6 +110,40 @@ def _split_complete_chunks(content: str) -> tuple[list[ProviderChunk], str]:
         chunks.append(_provider_chunk(delta))
         content = content[split_at:]
     return chunks, content
+
+
+def _usage_chunk(
+    item: object,
+    *,
+    model: str,
+    provider_attempt: int,
+    current: ProviderUsageChunk | None,
+) -> ProviderUsageChunk | None:
+    metadata = getattr(item, "usage_metadata", None)
+    if metadata is None:
+        return None
+    tier = getattr(metadata, "traffic_type", None)
+    if tier is not None and not isinstance(tier, str):
+        raise _NormalizedFailure("provider_unavailable", False)
+    try:
+        update = ProviderUsageChunk(
+            provider="gemini",
+            model=model,
+            provider_attempt=provider_attempt,
+            service_tier=tier,
+            usage=ProviderUsage(
+                input_tokens=getattr(metadata, "prompt_token_count", None),
+                cached_input_tokens=getattr(
+                    metadata, "cached_content_token_count", None
+                ),
+                output_tokens=getattr(metadata, "candidates_token_count", None),
+                thinking_tokens=getattr(metadata, "thoughts_token_count", None),
+                total_tokens=getattr(metadata, "total_token_count", None),
+            ),
+        )
+        return merge_cumulative_usage(current, update)
+    except (ValueError, ProviderUsageValidationError):
+        raise _NormalizedFailure("provider_unavailable", False) from None
 
 
 def _enum_name(value: object) -> str:
@@ -213,9 +254,12 @@ class GeminiProvider(Provider):
             http_options=self._types.HttpOptions(timeout=self._timeout_milliseconds),
         )
 
-    async def stream(self, request: ProviderGenerationRequest) -> AsyncIterator[ProviderChunk]:
+    async def stream(
+        self, request: ProviderGenerationRequest
+    ) -> AsyncIterator[ProviderStreamEvent]:
         for attempt_count in range(1, self._max_retries + 2):
             observed_item = False
+            cumulative_usage: ProviderUsageChunk | None = None
             iterator: object | None = None
             failure: _NormalizedFailure | None = None
             caller_exit = False
@@ -231,6 +275,15 @@ class GeminiProvider(Provider):
                         observed_item = True
                         if _is_safety_block(item):
                             raise _NormalizedFailure("guardrail_block", False)
+                        usage = _usage_chunk(
+                            item,
+                            model=self._model,
+                            provider_attempt=attempt_count,
+                            current=cumulative_usage,
+                        )
+                        if usage is not None:
+                            cumulative_usage = usage
+                            yield usage
                         content = getattr(item, "text", None)
                         if content is not None and not isinstance(content, str):
                             raise _NormalizedFailure("provider_unavailable", False)
