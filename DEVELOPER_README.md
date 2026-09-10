@@ -83,7 +83,13 @@ ORIGIN_ALLOWLIST=http://localhost:4173 \
 make live
 ```
 
-The corpus directory must contain a non-empty Markdown or PDF file. `make live`
+The corpus directory must contain a non-empty Markdown or PDF file and a version 1
+`provenance.json` covering every supported document. The manifest verifies the exact
+mounted bytes and carries the reviewed public title and canonical HTTP(S) URL into
+the existing citation response. See
+[Startup corpus provenance](docs/CORPUS-PROVENANCE.md) for the strict schema,
+hash workflow, symlink rejection, failure behavior, migration from local corpus
+compatibility 1, and direct-ingestion fallback. `make live`
 honors a non-empty `COMPOSE_CMD` override, otherwise prefers a working
 `podman compose` and falls back to `docker compose`. It starts the Compose Ollama
 service first, checks the configured `OLLAMA_MODEL` and `EMBEDDING_MODEL` inside

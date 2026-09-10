@@ -10,6 +10,7 @@ from pathlib import Path
 
 from app.ingest.parsers import SUPPORTED_EXTENSIONS
 from app.ingest.pipeline import _chunk_ids, ingest_upload
+from app.ingest.provenance import CorpusProvenanceError, load_provenance_manifest
 from app.vectorstore import DocumentCollection
 
 
@@ -28,11 +29,18 @@ def corpus_paths(corpus_path: Path) -> list[Path]:
     if not corpus_path.is_dir():
         raise CorpusStartupError(f"configured corpus directory {corpus_path} does not exist")
 
-    paths = sorted(
+    candidates = sorted(
         path
         for path in corpus_path.rglob("*")
-        if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS
+        if path.suffix.lower() in SUPPORTED_EXTENSIONS
     )
+    for path in candidates:
+        if path.is_symlink():
+            relative_path = path.relative_to(corpus_path).as_posix()
+            raise CorpusStartupError(
+                f"configured corpus document must not be a symbolic link: {relative_path}"
+            )
+    paths = [path for path in candidates if path.is_file()]
     if not paths:
         raise CorpusStartupError(
             f"configured corpus directory {corpus_path} contains no Markdown or PDF files"
@@ -45,14 +53,21 @@ def ingest_corpus(
 ) -> CorpusIngestSummary:
     """Ingest a non-empty mounted corpus through the application's own handles."""
     paths = corpus_paths(corpus_path)
+    documents = {
+        path.relative_to(corpus_path).as_posix(): path.read_bytes() for path in paths
+    }
+    try:
+        provenance = load_provenance_manifest(corpus_path, documents)
+    except CorpusProvenanceError as error:
+        raise CorpusStartupError(str(error)) from error
+
     current_paths: set[str] = set()
     results = []
-    for path in paths:
-        content = path.read_bytes()
+    for relative_path, content in documents.items():
         if not content.strip():
             continue
-        relative_path = path.relative_to(corpus_path).as_posix()
         current_paths.add(relative_path)
+        source = provenance[relative_path]
         results.append(
             ingest_upload(
                 db=db,
@@ -60,6 +75,8 @@ def ingest_corpus(
                 document_id=f"corpus:{relative_path}",
                 filename=relative_path,
                 content=content,
+                citation_title=source.title,
+                citation_url=source.url,
             )
         )
 

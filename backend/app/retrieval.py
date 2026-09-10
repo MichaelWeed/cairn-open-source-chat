@@ -49,6 +49,8 @@ class RetrievedChunk:
     chunk_index: int
     text: str
     distance: float
+    citation_title: str | None = None
+    citation_url: str | None = None
 
 
 def retrieve_chunks(
@@ -75,6 +77,16 @@ def retrieve_chunks(
             chunk_index=int(metadata["chunk_index"]),
             text=text,
             distance=float(distance),
+            citation_title=(
+                str(metadata["citation_title"])
+                if isinstance(metadata.get("citation_title"), str)
+                else None
+            ),
+            citation_url=(
+                str(metadata["citation_url"])
+                if isinstance(metadata.get("citation_url"), str)
+                else None
+            ),
         )
         for text, metadata, distance in zip(documents, metadatas, distances, strict=True)
     ]
@@ -97,10 +109,8 @@ def should_refuse(chunks: list[RetrievedChunk], max_distance: float = DEFAULT_MA
 def build_citations(chunks: list[RetrievedChunk]) -> list[CitationSource]:
     """One citation per distinct source document, in first-seen order.
 
-    Uploaded documents (task 2.2) have no hosted URL yet — `url` is an
-    internal document reference until scrape ingestion (task 2.3) and the
-    admin content surface (task 5.3) give citations something real to link
-    to.
+    A validated startup provenance manifest supplies public titles and URLs.
+    Direct programmatic ingestion retains an internal document reference.
     """
     seen: dict[str, CitationSource] = {}
     for chunk in chunks:
@@ -108,8 +118,8 @@ def build_citations(chunks: list[RetrievedChunk]) -> list[CitationSource]:
             continue
         seen[chunk.document_id] = CitationSource(
             id=chunk.document_id,
-            title=chunk.source,
-            url=f"document://{chunk.document_id}",
+            title=chunk.citation_title or chunk.source,
+            url=chunk.citation_url or f"document://{chunk.document_id}",
         )
     return list(seen.values())
 
