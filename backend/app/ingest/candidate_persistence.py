@@ -1355,7 +1355,10 @@ def _validate_durable_records(
                 or any(character.isspace() for character in cast(str, provenance["url"]))
             ):
                 raise ValueError
-            date.fromisoformat(cast(str, provenance["reviewed_at"]))
+            reviewed_at = cast(str, provenance["reviewed_at"])
+            parsed_reviewed_at = date.fromisoformat(reviewed_at)
+            if parsed_reviewed_at.isoformat() != reviewed_at:
+                raise ValueError
             document_values[document_id] = value
             expected_chunk_total += chunk_count
         if expected_chunk_total != header.chunk_count:

@@ -12,10 +12,14 @@ from app.ingest.candidate_firestore import (
 from app.ingest.candidate_persistence import (
     CANDIDATE_COLLECTION,
     CANDIDATE_READ_PAGE_SIZE,
+    AttestationIdentity,
+    CandidateAttestationVerificationService,
+    CandidatePersistenceError,
     CandidateRecordKind,
     CandidateStoreFailure,
     CandidateStoreRecord,
     _CandidateStoreMalformed,
+    candidate_store_key,
 )
 from app.retrieval_contracts import ExactCorpusReference
 from app.retrieval_firestore import FIRESTORE_CHUNKS_COLLECTION
@@ -440,6 +444,92 @@ async def test_malformed_sdk_snapshots_have_distinct_fixed_classification() -> N
     with pytest.raises(_CandidateStoreMalformed) as caught:
         await store.get("candidate", header.key, timeout_seconds=3)
     assert repr(caught.value.__cause__) == "None"
+
+
+@pytest.mark.parametrize(
+    "exists",
+    [
+        pytest.param(None, id="none"),
+        pytest.param(0, id="zero"),
+        pytest.param(1, id="one"),
+        pytest.param("true", id="string"),
+        pytest.param(object(), id="object"),
+    ],
+)
+def test_snapshot_exists_requires_an_exact_boolean(exists: object) -> None:
+    store = _store(Client())
+    snapshot = Snapshot(_header().key, None)
+    cast(Any, snapshot).exists = exists
+
+    with pytest.raises(_CandidateStoreMalformed):
+        store._snapshot_record("candidate", snapshot)
+
+
+def test_snapshot_exists_literal_false_is_exact_absence() -> None:
+    store = _store(Client())
+    snapshot = Snapshot(_header().key, None)
+
+    assert snapshot.exists is False
+    assert store._snapshot_record("candidate", snapshot) is None
+
+
+@pytest.mark.asyncio
+async def test_malformed_snapshot_absence_stops_verification_without_retry_or_later_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Client()
+    store = _store(client)
+    corpus = ExactCorpusReference(corpus_id="public-docs", corpus_version="v1")
+    key = candidate_store_key(corpus)
+    sleeps: list[float] = []
+
+    async def malformed_get(
+        reference: Reference, *, retry: None, timeout: int
+    ) -> Snapshot:
+        client.calls.append(("get", reference.collection, reference.id, retry, timeout))
+        snapshot = Snapshot(reference.id, None)
+        cast(Any, snapshot).exists = None
+        return snapshot
+
+    async def sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    class VerifierOnly:
+        algorithm_id = "cairn-test-sha256-v1"
+        key_id = "fixture-key-1"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def verify(self, payload: bytes, signature: bytes) -> bool:
+            del payload, signature
+            self.calls += 1
+            return True
+
+    monkeypatch.setattr(Reference, "get", malformed_get)
+    verifier = VerifierOnly()
+    service = CandidateAttestationVerificationService(
+        store=store,
+        timeout_seconds=3,
+        max_retries=1,
+        sleep=sleep,
+    )
+
+    with pytest.raises(CandidatePersistenceError) as caught:
+        await service.verify_attested_candidate(
+            corpus,
+            AttestationIdentity(
+                algorithm_id="cairn-test-sha256-v1",
+                key_id="fixture-key-1",
+            ),
+            verifier,
+        )
+
+    assert caught.value.code == "malformed_store"
+    assert client.calls == [("get", CANDIDATE_COLLECTION, key, None, 3)]
+    assert client.records == {}
+    assert sleeps == []
+    assert verifier.calls == 0
 
 
 @pytest.mark.asyncio

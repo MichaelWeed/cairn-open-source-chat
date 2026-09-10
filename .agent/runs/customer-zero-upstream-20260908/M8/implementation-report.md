@@ -8,7 +8,8 @@
 - Base: `7e09b23e82ca3ae302efaab9e5a5cbf6cf326c82`
 - Accepted ancestors: M5 `2b0d0d5`, M6 `e59f2a9`, M7 `35b3677`
 - Rejected implementation commit: `f4eeb4087f54f99f74b542eccb29f7b48476b03d`
-- Final repair commit: the follow-up repair commit containing this report; its exact
+- Rejected first repair commit: `8a0445b4fdbc437ad11e1578d40f7ec9a3dd2ec3`
+- Final second repair commit: the follow-up repair commit containing this report; its exact
   object ID is returned to the control lane after handoff.
 
 The accepted M5 source snapshot, M6 bounded chunk-key and embedding contracts, and
@@ -89,6 +90,14 @@ document IDs, chunk IDs, document plan hashes, the semantic-manifest hash, and t
 plan hash. A forged path/source candidate remains rejected even if an attacker
 re-signs its internally self-consistent M8 envelope.
 
+The second repair requires durable provenance dates to parse and round-trip to the
+exact canonical `YYYY-MM-DD` representation before M7 reconstruction. Basic and ISO
+week-date spellings cannot be normalized into accepted lifecycle evidence, even
+after a valid re-sign. Firestore snapshot existence is likewise strict: only exact
+`bool` values are interpreted, literal `False` is absence, literal `True` is
+presence, and every other completed SDK value is fixed `malformed_store` before
+retry, signing, verification, or write work.
+
 ## Public Surface and Privacy
 
 The capability manifest now reports `corpus.immutable_versions` as
@@ -133,12 +142,17 @@ Red-first evidence:
   all passed after the repairs.
 - The signer exception-chain canary probe failed before exception handling moved
   outside the caught context and passed after the content-free repair.
+- The second-repair hostile matrix initially produced 9 failures and 3 passes:
+  three accepted noncanonical reviewed-date representations, five non-boolean
+  snapshot-existence values, and the service-level false-absence path failed as
+  expected; canonical-date, invalid-date, and literal-false controls passed. The
+  same matrix passed 12 tests after the two narrow source edits.
 
 Focused evidence:
 
-- M8 persistence and Firestore component tests: 73 passed, exit 0.
-- Firestore-profile focused matrix: 310 passed, one upstream warning, exit 0.
-- Combined Firestore/Gemini focused matrix: 478 passed, one upstream warning,
+- M8 persistence and Firestore component tests: 85 passed, exit 0.
+- Firestore-profile focused matrix: 322 passed, one upstream warning, exit 0.
+- Combined Firestore/Gemini focused matrix: 490 passed, one upstream warning,
   exit 0.
 - Linear-count probes: 401 records required exactly 401 record encodes and split
   into 400 plus 1; 65,536 records required exactly 65,536 record encodes and split
@@ -163,7 +177,7 @@ Final mandatory repository evidence:
 - `make gemini-image-check`: exit 0.
 - `make firestore-image-check`: exit 0, including default, Firestore, Gemini, and
   combined profiles with default restoration.
-- Final `make validate`: exit 0; 893 backend tests passed plus all widget protocol,
+- Final `make validate`: exit 0; 905 backend tests passed plus all widget protocol,
   history, layout, browser, type, build, size, distribution, supply-chain, and image
   gates. One upstream Starlette deprecation warning was reported.
 
@@ -174,6 +188,15 @@ covered application sources but omitted the changed test. This recurrence of
 without exclusions; repository-wide Ruff and mypy then passed, and the final full
 validation above is the post-repair result.
 
+Independent review process incident `BUG-20260910-1311` records that an acceptance
+lane's `uv run` synchronized cached packages despite a no-install instruction. This
+second repair used the existing `.venv/bin` executables for tests, Ruff, and mypy;
+only the read-only `uv lock --check` command used uv, and it did not synchronize or
+install packages. The subsequently required `make validate` gate performed only its
+repository-configured reproducibility syncs and container builds; no dependency was
+added, upgraded, or written to a lockfile. The bug record and index remain
+primary-worktree review evidence, not candidate files.
+
 The image scanner reported only the repository-accepted low-severity Python
 `CVE-2026-15310`, whose listed fix is the prerelease `3.15.0rc2`; the gate exited 0.
 
@@ -182,7 +205,7 @@ The image scanner reported only the repository-accepted low-severity Python
 No dependency or lockfile changed. No pre-M8 public API contract changed, and the
 repair preserves M8's original public store signatures. No files outside the
 milestone allowlist changed in this candidate branch. The primary
-worktree's untracked `bugs/` was preserved except for the explicitly requested
-append-only `BUG-20260910-0850` recurrence record; `/private/tmp/cairn-KAN-71`, all
+worktree's untracked `bugs/` was preserved as process evidence and is not included
+in this candidate; `/private/tmp/cairn-KAN-71`, all
 other worktrees, and VoiceVerdict were untouched.
 This build lane did not push, merge, deploy, or mutate any external system.

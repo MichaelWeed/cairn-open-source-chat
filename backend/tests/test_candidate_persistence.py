@@ -929,6 +929,71 @@ async def test_read_only_verifier_reconstructs_m7_and_rejects_resigned_path_forg
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reviewed_at",
+    [
+        "20260910",
+        "2026-W37-4",
+        "2026W374",
+        "2026-02-30",
+    ],
+)
+async def test_read_only_verifier_rejects_resigned_noncanonical_reviewed_date(
+    reviewed_at: str,
+) -> None:
+    plan = _plan()
+    store = MemoryStore()
+    await _service(store).persist_and_attest_candidate(
+        CandidatePersistenceRequest(contract_version="1.0", plan=plan)
+    )
+    document_identity = next(identity for identity in store.records if identity[0] == "document")
+    document = store.records[document_identity]
+    document_value = cast(dict[str, object], _mutable(document.value))
+    provenance = cast(dict[str, object], document_value["provenance"])
+    provenance["reviewed_at"] = reviewed_at
+    store.records[document_identity] = CandidateStoreRecord(
+        kind="document", key=document.key, value=cast(Any, document_value)
+    )
+    _resign_store_attestation(store, plan.corpus)
+    verifier = FixtureSigner()
+    store.calls.clear()
+
+    with pytest.raises(CandidatePersistenceError) as caught:
+        await _verification(store).verify_attested_candidate(
+            plan.corpus,
+            AttestationIdentity(algorithm_id="cairn-test-sha256-v1", key_id="fixture-key-1"),
+            verifier,
+        )
+
+    assert caught.value.code == "candidate_conflict"
+    assert verifier.verify_calls == 0
+    assert not any(call[0] == "create_many" for call in store.calls)
+
+
+@pytest.mark.asyncio
+async def test_read_only_verifier_accepts_exact_canonical_reviewed_date_round_trip() -> None:
+    plan = _plan()
+    store = MemoryStore()
+    receipt = await _service(store).persist_and_attest_candidate(
+        CandidatePersistenceRequest(contract_version="1.0", plan=plan)
+    )
+    document = next(record for (kind, _), record in store.records.items() if kind == "document")
+    provenance = cast(Mapping[str, object], document.value["provenance"])
+    assert provenance["reviewed_at"] == "2026-09-10"
+    verifier = FixtureSigner()
+
+    evidence = await _verification(store).verify_attested_candidate(
+        plan.corpus,
+        AttestationIdentity(algorithm_id="cairn-test-sha256-v1", key_id="fixture-key-1"),
+        verifier,
+    )
+
+    assert evidence.plan_sha256 == plan.plan_sha256
+    assert evidence.inventory_sha256 == receipt.inventory_sha256
+    assert verifier.verify_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_malformed_durable_header_is_classified_as_malformed_store() -> None:
     plan = _plan()
     store = MemoryStore()

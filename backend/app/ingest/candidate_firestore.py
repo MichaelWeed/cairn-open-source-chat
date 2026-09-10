@@ -152,7 +152,10 @@ class FirestoreSdkCandidateStore:
         self, kind: CandidateRecordKind, snapshot: object
     ) -> CandidateStoreRecord | None:
         try:
-            if cast(Any, snapshot).exists is not True:
+            exists = cast(Any, snapshot).exists
+            if type(exists) is not bool:
+                raise _CandidateStoreMalformed() from None
+            if not exists:
                 return None
             key = cast(Any, snapshot).id
             raw = cast(Any, snapshot).to_dict()
