@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,6 +12,7 @@ from app.embeddings.ollama import OllamaEmbeddingFunction
 from app.ingest.startup import CorpusStartupError
 from app.main import _default_provider, create_app
 from app.providers.echo import EchoProvider
+from app.providers.gemini import GeminiProvider
 from app.providers.ollama import OllamaProvider
 
 
@@ -122,6 +124,35 @@ class _ClosingProvider(EchoProvider):
         self.closed = True
 
 
+class _OwnedAsyncClient:
+    def __init__(self) -> None:
+        self.models: Any = object()
+        self.close_calls = 0
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
+
+
+class _OwnedRootClient:
+    def __init__(self) -> None:
+        self.aio = _OwnedAsyncClient()
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+def _root_owned_provider(root: _OwnedRootClient) -> GeminiProvider:
+    return GeminiProvider(
+        client=root.aio,
+        root_client=root,
+        types_module=object(),
+        model="gemini-3.8-flash",
+        timeout_seconds=1,
+        max_retries=0,
+    )
+
+
 @pytest.fixture
 def app_paths(tmp_path: Path) -> dict[str, object]:
     return {"database_path": tmp_path / "test.db", "chroma_path": tmp_path / "chroma"}
@@ -136,6 +167,22 @@ def test_application_owned_provider_is_closed_on_shutdown(
     with TestClient(app):
         assert provider.closed is False
     assert provider.closed is True
+
+
+def test_application_owned_gemini_closes_both_root_transports_once(
+    monkeypatch: pytest.MonkeyPatch, app_paths: dict[str, object]
+) -> None:
+    root = _OwnedRootClient()
+    provider = _root_owned_provider(root)
+    monkeypatch.setattr("app.main._default_provider", lambda settings: provider)
+    app = create_app(Settings.model_validate(app_paths))
+
+    with TestClient(app):
+        assert root.aio.close_calls == 0
+        assert root.close_calls == 0
+
+    assert root.aio.close_calls == 1
+    assert root.close_calls == 1
 
 
 def test_injected_provider_remains_caller_owned(app_paths: dict[str, object]) -> None:
@@ -161,3 +208,23 @@ def test_application_owned_provider_is_closed_after_startup_failure(
         with TestClient(create_app(settings)):
             pass
     assert provider.closed is True
+
+
+def test_application_owned_gemini_closes_both_transports_after_startup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    app_paths: dict[str, object],
+    tmp_path: Path,
+) -> None:
+    root = _OwnedRootClient()
+    provider = _root_owned_provider(root)
+    corpus = tmp_path / "empty-gemini-corpus"
+    corpus.mkdir()
+    monkeypatch.setattr("app.main._default_provider", lambda settings: provider)
+    settings = Settings.model_validate({**app_paths, "corpus_path": corpus})
+
+    with pytest.raises(CorpusStartupError, match="no Markdown or PDF files"):
+        with TestClient(create_app(settings)):
+            pass
+
+    assert root.aio.close_calls == 1
+    assert root.close_calls == 1

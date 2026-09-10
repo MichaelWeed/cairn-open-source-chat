@@ -46,6 +46,13 @@ class _AsyncClient(Protocol):
     async def aclose(self) -> None: ...
 
 
+class _RootClient(Protocol):
+    @property
+    def aio(self) -> _AsyncClient: ...
+
+    def close(self) -> None: ...
+
+
 @dataclass(frozen=True)
 class GeminiReadiness:
     reachable: bool
@@ -157,6 +164,7 @@ class GeminiProvider(Provider):
         self,
         *,
         client: _AsyncClient,
+        root_client: _RootClient | None = None,
         types_module: Any,
         model: str,
         timeout_seconds: float,
@@ -164,12 +172,14 @@ class GeminiProvider(Provider):
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._client = client
+        self._root_client = root_client
         self._types = types_module
         self._model = model
         self._timeout_seconds = timeout_seconds
         self._timeout_milliseconds = math.ceil(timeout_seconds * 1000)
         self._max_retries = max_retries
         self._sleep = sleep
+        self._closed = False
 
     def _contents(self, request: ProviderGenerationRequest) -> list[object]:
         contents = [
@@ -207,6 +217,8 @@ class GeminiProvider(Provider):
         for attempt_count in range(1, self._max_retries + 2):
             observed_item = False
             iterator: object | None = None
+            failure: _NormalizedFailure | None = None
+            caller_exit = False
             try:
                 async with asyncio.timeout(self._timeout_seconds):
                     iterator = await self._client.models.generate_content_stream(
@@ -249,13 +261,23 @@ class GeminiProvider(Provider):
                     if not pending_content.strip():
                         raise _NormalizedFailure("provider_unavailable", False)
                     yield _provider_chunk(pending_content)
-                return
-            except asyncio.CancelledError:
+            except (asyncio.CancelledError, GeneratorExit):
+                caller_exit = True
                 raise
             except Exception as exc:
                 failure = _normalize_exception(exc)
             finally:
-                await _close_iterator(iterator)
+                try:
+                    await _close_iterator(iterator)
+                except asyncio.CancelledError:
+                    if failure is None and not caller_exit:
+                        raise
+                except Exception:
+                    if failure is None and not caller_exit:
+                        failure = _NormalizedFailure("provider_unavailable", False)
+
+            if failure is None:
+                return
 
             if failure.retryable and not observed_item and attempt_count <= self._max_retries:
                 await self._sleep(_RETRY_DELAY_SECONDS)
@@ -284,7 +306,16 @@ class GeminiProvider(Provider):
         )
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        if self._closed:
+            return
+        self._closed = True
+        if self._root_client is None:
+            await self._client.aclose()
+            return
+        try:
+            await self._client.aclose()
+        finally:
+            self._root_client.close()
 
 
 def create_gemini_provider(
@@ -304,11 +335,18 @@ def create_gemini_provider(
             "Gemini provider requires the optional 'gemini' dependency profile"
         ) from None
     http_options = types_module.HttpOptions(
-        api_version="v1beta", timeout=math.ceil(timeout_seconds * 1000)
+        base_url="https://generativelanguage.googleapis.com/",
+        api_version="v1beta",
+        timeout=math.ceil(timeout_seconds * 1000),
     )
-    root_client = genai.Client(api_key=api_key, http_options=http_options)
+    root_client = genai.Client(
+        enterprise=False,
+        api_key=api_key,
+        http_options=http_options,
+    )
     return GeminiProvider(
         client=root_client.aio,
+        root_client=root_client,
         types_module=types_module,
         model=model,
         timeout_seconds=timeout_seconds,

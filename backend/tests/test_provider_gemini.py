@@ -3,7 +3,7 @@ import json
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -20,10 +20,12 @@ class _HttpOptions:
     def __init__(
         self,
         *,
+        base_url: str | None = None,
         api_version: str | None = None,
         timeout: int,
         retry_options: object | None = None,
     ) -> None:
+        self.base_url = base_url
         self.api_version = api_version
         self.timeout = timeout
         self.retry_options = retry_options
@@ -89,6 +91,17 @@ class _Stream(AsyncIterator[object]):
 
     async def aclose(self) -> None:
         self.closed = True
+
+
+class _ThrowingCloseStream(_Stream):
+    def __init__(self, items: Iterable[object]) -> None:
+        super().__init__(items)
+        self.close_calls = 0
+
+    async def aclose(self) -> None:
+        self.closed = True
+        self.close_calls += 1
+        raise RuntimeError("close-secret-sentinel")
 
 
 class _Models:
@@ -335,6 +348,77 @@ async def test_stream_closes_on_normal_completion_and_cancellation() -> None:
     assert blocking.closed is True
 
 
+async def test_throwing_close_is_normalized_after_successful_completion() -> None:
+    stream = _ThrowingCloseStream([_Item(text="ok")])
+    iterator = _provider(_Models([stream]), max_retries=0).stream(_request())
+
+    assert (await anext(iterator)).delta == "ok"
+    with pytest.raises(GeminiProviderError) as caught:
+        await anext(iterator)
+
+    assert caught.value.code == "provider_unavailable"
+    assert caught.value.retryable is False
+    assert caught.value.attempt_count == 1
+    assert "close-secret-sentinel" not in str(caught.value)
+    assert stream.close_calls == 1
+
+
+async def test_throwing_close_preserves_generation_failure_and_timeout() -> None:
+    failed_stream = _ThrowingCloseStream([_StatusError(503)])
+    provider = _provider(_Models([failed_stream]), max_retries=0)
+    with pytest.raises(GeminiProviderError) as caught:
+        await _collect(provider)
+    assert caught.value.code == "provider_unavailable"
+    assert caught.value.retryable is True
+    assert "close-secret-sentinel" not in str(caught.value)
+    assert failed_stream.close_calls == 1
+
+    release = asyncio.Event()
+
+    class _BlockingCloseStream(_ThrowingCloseStream):
+        async def __anext__(self) -> object:
+            await release.wait()
+            return _Item(text="late")
+
+    timed_stream = _BlockingCloseStream([])
+    provider = _provider(
+        _Models([timed_stream]), timeout_seconds=0.001, max_retries=0
+    )
+    with pytest.raises(GeminiProviderError) as caught:
+        await _collect(provider)
+    assert caught.value.code == "provider_timeout"
+    assert caught.value.retryable is True
+    assert "close-secret-sentinel" not in str(caught.value)
+    assert timed_stream.close_calls == 1
+
+
+async def test_throwing_close_does_not_replace_early_close_or_cancellation() -> None:
+    early_stream = _ThrowingCloseStream([_Item(text="first"), _Item(text="second")])
+    iterator = _provider(_Models([early_stream]), max_retries=0).stream(_request())
+    assert (await anext(iterator)).delta == "first"
+    await cast(Any, iterator).aclose()
+    assert early_stream.close_calls == 1
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class _BlockingCloseStream(_ThrowingCloseStream):
+        async def __anext__(self) -> object:
+            started.set()
+            await release.wait()
+            return _Item(text="late")
+
+    cancelled_stream = _BlockingCloseStream([])
+    task = asyncio.create_task(
+        _collect(_provider(_Models([cancelled_stream]), timeout_seconds=1))
+    )
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert cancelled_stream.close_calls == 1
+
+
 async def test_readiness_requires_exact_model_and_generation_method() -> None:
     ready_model = SimpleNamespace(
         name="models/gemini-3.8-flash",
@@ -469,10 +553,18 @@ async def test_factory_uses_explicit_v1beta_client_options_and_closes_async_clie
     captured: dict[str, object] = {}
 
     class _RootClient:
-        def __init__(self, *, api_key: str, http_options: object) -> None:
+        def __init__(
+            self, *, enterprise: bool, api_key: str, http_options: object
+        ) -> None:
+            captured["enterprise"] = enterprise
             captured["api_key"] = api_key
             captured["http_options"] = http_options
             self.aio = _Client(_Models([]))
+            self.close_calls = 0
+            captured["root"] = self
+
+        def close(self) -> None:
+            self.close_calls += 1
 
     def dynamic_import(name: str) -> object:
         if name == "google.genai":
@@ -482,6 +574,9 @@ async def test_factory_uses_explicit_v1beta_client_options_and_closes_async_clie
         raise AssertionError(name)
 
     monkeypatch.setattr("app.providers.gemini.importlib.import_module", dynamic_import)
+    monkeypatch.setenv("GOOGLE_GENAI_USE_ENTERPRISE", "true")
+    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+    monkeypatch.setenv("GOOGLE_GEMINI_BASE_URL", "https://ambient.invalid/")
     provider = create_gemini_provider(
         api_key="sentinel-api-key",
         model="gemini-3.8-flash",
@@ -489,9 +584,14 @@ async def test_factory_uses_explicit_v1beta_client_options_and_closes_async_clie
         max_retries=1,
     )
     options: Any = captured["http_options"]
+    root: Any = captured["root"]
+    assert captured["enterprise"] is False
     assert captured["api_key"] == "sentinel-api-key"
+    assert options.base_url == "https://generativelanguage.googleapis.com/"
     assert options.api_version == "v1beta"
     assert options.timeout == 30_000
     assert options.retry_options is None
     await provider.aclose()
-    assert provider._client.closed is True  # type: ignore[attr-defined]
+    await provider.aclose()
+    assert root.aio.closed is True
+    assert root.close_calls == 1
