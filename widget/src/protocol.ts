@@ -52,6 +52,8 @@ export type ChatStreamEvent =
   | { type: "error"; message: string; retryable: boolean }
   | { type: "done"; finishReason: DoneReason };
 
+export type ChatDecodedRecord = ChatStreamEvent | { type: "ping" };
+
 const ERROR_CODES = new Set([
   "invalid_request",
   "rate_limited",
@@ -133,7 +135,7 @@ export class BoundedSseDecoder {
   private copiedBytes = 0;
   private readonly decoder = new TextDecoder("utf-8", { fatal: true });
 
-  push(chunk: Uint8Array): ChatStreamEvent[] {
+  push(chunk: Uint8Array): ChatDecodedRecord[] {
     this.validCompletedRecords = 0;
     this.delimiterCount = 0;
     this.responseBytes += chunk.byteLength;
@@ -141,7 +143,7 @@ export class BoundedSseDecoder {
       throw new SseDecodeError("The chat response exceeded its safe byte limit.");
     }
     this.append(chunk);
-    const events: ChatStreamEvent[] = [];
+    const events: ChatDecodedRecord[] = [];
 
     for (;;) {
       const boundary = this.nextBoundary();
@@ -525,12 +527,13 @@ export function newChatAttemptState(): ChatAttemptState {
 }
 
 export function validateChatEventBatch(
-  events: readonly ChatStreamEvent[],
+  events: readonly ChatDecodedRecord[],
   state: ChatAttemptState,
 ): boolean {
   const next = { ...state };
   for (const event of events) {
     if (next.terminal) return false;
+    if (event.type === "ping") continue;
     next.nonPingEvents += 1;
     if (next.nonPingEvents > CHAT_NON_PING_EVENT_MAX_COUNT) return false;
     if (event.type === "status") {
@@ -623,12 +626,13 @@ function endpointFromBase(apiBase: string, suffix: string): string {
 }
 
 interface DecodedRecord {
-  readonly event: ChatStreamEvent | null;
+  readonly event: ChatDecodedRecord | null;
   readonly valid: boolean;
 }
 
 function decodeRecord(record: string): ChatStreamEvent | null {
-  return decodeRecordWithValidity(record).event;
+  const event = decodeRecordWithValidity(record).event;
+  return event?.type === "ping" ? null : event;
 }
 
 function decodeRecordWithValidity(record: string): DecodedRecord {
@@ -698,7 +702,7 @@ function decodeRecordWithValidity(record: string): DecodedRecord {
       };
     case "ping":
       return Object.keys(payload).length === 1
-        ? { event: null, valid: true }
+        ? { event: { type: "ping" }, valid: true }
         : { event: null, valid: false };
     case "done": {
       const finishReason = requiredString(payload, "finish_reason");

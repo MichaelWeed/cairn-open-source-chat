@@ -193,7 +193,7 @@ function testBoundedChatDecoding(): void {
   const decoder = new BoundedSseDecoder();
   assert.deepEqual(
     decoder.push(new TextEncoder().encode('event: ping\ndata: {"type":"ping"}\n\n')),
-    [],
+    [{ type: "ping" }],
   );
   assert.equal(decoder.delimitedRecords, 1);
   assert.equal(decoder.validRecordsCompleted, 1, "a valid complete ping keeps the stream alive");
@@ -257,7 +257,7 @@ function testBoundedChatDecoding(): void {
     {
       name: "ping",
       value: 'event: ping\ndata: {"type":"ping"}',
-      expected: [],
+      expected: [{ type: "ping" }],
     },
     {
       name: "terminal",
@@ -289,6 +289,67 @@ function testBoundedChatDecoding(): void {
       assert.equal(byteDecoder.pendingBytes, 0);
       assert.equal(byteDecoder.work.scannedBytes <= record.byteLength * 4, true);
       assert.equal(byteDecoder.work.copiedBytes <= record.byteLength * 3, true);
+    }
+  }
+
+  const orderedRecords = {
+    done: 'event: done\ndata: {"type":"done","finish_reason":"stop"}',
+    error: 'event: error\ndata: {"type":"error","code":"internal","message":"Unavailable","retryable":false}',
+    ping: 'event: ping\ndata: {"type":"ping"}',
+    status: 'event: status\ndata: {"type":"status","label":"Late"}',
+    chunk: 'event: chunk\ndata: {"type":"chunk","delta":"late"}',
+    terminal: 'event: done\ndata: {"type":"done","finish_reason":"limit"}',
+  } as const;
+  const orderingFixtures = [
+    { name: "done then ping", records: [orderedRecords.done, orderedRecords.ping], accepted: false },
+    { name: "error then ping", records: [orderedRecords.error, orderedRecords.ping], accepted: false },
+    { name: "done then status", records: [orderedRecords.done, orderedRecords.status], accepted: false },
+    { name: "done then chunk", records: [orderedRecords.done, orderedRecords.chunk], accepted: false },
+    { name: "done then terminal", records: [orderedRecords.done, orderedRecords.terminal], accepted: false },
+    { name: "ping then done", records: [orderedRecords.ping, orderedRecords.done], accepted: true },
+  ] as const;
+  for (const delimiter of delimiterFixtures) {
+    for (const fixture of orderingFixtures) {
+      const bytes = new TextEncoder().encode(
+        fixture.records.map((record) => `${record}${delimiter.value}`).join(""),
+      );
+      for (let split = 0; split <= bytes.byteLength; split += 1) {
+        const splitDecoder = new BoundedSseDecoder();
+        const splitState = newChatAttemptState();
+        let accepted = true;
+        for (const part of [bytes.subarray(0, split), bytes.subarray(split)]) {
+          const batchAccepted = validateChatEventBatch(splitDecoder.push(part), splitState);
+          accepted = batchAccepted && accepted;
+        }
+        assert.equal(
+          accepted,
+          fixture.accepted,
+          `${delimiter.name} ${fixture.name} split ${split}`,
+        );
+      }
+
+      const byteDecoder = new BoundedSseDecoder();
+      const byteState = newChatAttemptState();
+      let byteAccepted = true;
+      for (const byte of bytes) {
+        const batchAccepted = validateChatEventBatch(
+          byteDecoder.push(Uint8Array.of(byte)),
+          byteState,
+        );
+        byteAccepted = batchAccepted && byteAccepted;
+      }
+      assert.equal(byteAccepted, fixture.accepted, `${delimiter.name} ${fixture.name} byte splits`);
+
+      if (!fixture.accepted) {
+        const atomicDecoder = new BoundedSseDecoder();
+        const atomicState = newChatAttemptState();
+        assert.equal(validateChatEventBatch(atomicDecoder.push(bytes), atomicState), false);
+        assert.deepEqual(
+          atomicState,
+          newChatAttemptState(),
+          `${delimiter.name} ${fixture.name} must not partially apply state`,
+        );
+      }
     }
   }
 

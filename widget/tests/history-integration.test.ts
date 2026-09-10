@@ -537,6 +537,94 @@ async function testAllSseDelimitersAcrossTransportSplits(): Promise<void> {
   }
 }
 
+async function testTerminalOrderingIncludesPingRecords(): Promise<void> {
+  const delimiters = ["\n\n", "\n\r\n", "\r\n\n", "\r\n\r\n"];
+  const terminalRecords = [
+    'event: done\ndata: {"type":"done","finish_reason":"stop"}',
+    'event: error\ndata: {"type":"error","code":"internal","message":"Unavailable","retryable":false}',
+  ];
+  const ping = 'event: ping\ndata: {"type":"ping"}';
+
+  for (const delimiter of delimiters) {
+    for (const terminal of terminalRecords) {
+      const firstRecord = new TextEncoder().encode(`${terminal}${delimiter}`);
+      const combined = new TextEncoder().encode(`${terminal}${delimiter}${ping}${delimiter}`);
+      for (const mode of ["same chunk", "split delimiter"] as const) {
+        const widget = testWidget();
+        useClock(widget, new FakeClock());
+        const reader = new ControlledReader();
+        const assistant = assistantExchange();
+        globalThis.fetch = async () => responseWithReader(reader);
+        const attempt = streamAttempt(widget, new AbortController(), assistant);
+        await flushMicrotasks();
+        if (mode === "same chunk") {
+          reader.deliverBytes(combined);
+        } else {
+          const split = firstRecord.byteLength - 1;
+          reader.deliverBytes(combined.subarray(0, split));
+          await flushMicrotasks();
+          reader.deliverBytes(combined.subarray(split));
+        }
+        const result = await attempt;
+        assert.equal(result.kind, "protocol", `${JSON.stringify(delimiter)} ${mode}`);
+        assert.equal(assistant.finishReason, null, "an invalid batch cannot apply its terminal");
+        assert.equal((assistant.content as { textContent: string }).textContent, "");
+        assert.equal(
+          "complete" in (assistant.article as { dataset: Record<string, string> }).dataset,
+          false,
+        );
+        assert.equal(reader.cancelCount, 1);
+        assert.equal(reader.releaseCount, 1);
+      }
+    }
+
+    const validWidget = testWidget();
+    useClock(validWidget, new FakeClock());
+    const validReader = new ControlledReader();
+    globalThis.fetch = async () => responseWithReader(validReader);
+    const validAttempt = streamAttempt(
+      validWidget,
+      new AbortController(),
+      assistantExchange(),
+    );
+    await flushMicrotasks();
+    validReader.deliverText(
+      `${ping}${delimiter}event: done\ndata: {"type":"done","finish_reason":"stop"}${delimiter}`,
+    );
+    assert.deepEqual(
+      await validAttempt,
+      { kind: "done", finishReason: "stop", citationCount: 0 },
+      `${JSON.stringify(delimiter)} ping before terminal remains valid`,
+    );
+  }
+}
+
+async function testInvalidTerminalBatchCannotCommitOrComplete(): Promise<void> {
+  const body =
+    'event: chunk\ndata: {"type":"chunk","delta":"retained answer"}\n\n' +
+    'event: done\ndata: {"type":"done","finish_reason":"stop"}\n\n' +
+    'event: ping\ndata: {"type":"ping"}\n\n';
+  globalThis.fetch = async () => new Response(body, { status: 200 });
+  const widget = testWidget();
+  const assistant = assistantExchange();
+  const events: Array<{ name: string; detail: Record<string, unknown> }> = [];
+  widget.appendAssistant = () => assistant;
+  widget.showError = () => undefined;
+  widget.dispatchHostEvent = (name: string, detail: Record<string, unknown>) => {
+    events.push({ name, detail });
+    return true;
+  };
+  await send(widget, "question");
+  assert.deepEqual(widget.history, [], "invalid terminal batches cannot enter history");
+  assert.equal(assistant.text, "", "invalid terminal batches cannot apply output");
+  assert.equal(assistant.finishReason, null, "invalid terminal batches cannot apply completion");
+  assert.equal(events.some((event) => event.name === "cairn-complete"), false);
+  assert.deepEqual(events.at(-1), {
+    name: "cairn-error",
+    detail: { version: "1.0", kind: "protocol", retryable: false },
+  });
+}
+
 async function testPingResetsLiveness(): Promise<void> {
   const clock = new FakeClock();
   const widget = testWidget();
@@ -795,6 +883,8 @@ await testCapabilityHeaderAndBodyDeadlines();
 await testPartialDripDoesNotResetLiveness();
 await testInvalidRecordsDoNotResetLiveness();
 await testAllSseDelimitersAcrossTransportSplits();
+await testTerminalOrderingIncludesPingRecords();
+await testInvalidTerminalBatchCannotCommitOrComplete();
 await testPingResetsLiveness();
 await testAbsoluteStreamDeadline();
 await testTerminalAndProtocolReaderOwnership();

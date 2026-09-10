@@ -531,6 +531,7 @@ export class CairnChat extends HTMLElement {
             controller.abort();
             return { kind: "protocol" };
           }
+          if (event.type === "ping") continue;
           const result = this.applyEvent(event, assistant);
           if (result !== null) return result;
         }
