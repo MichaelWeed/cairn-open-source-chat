@@ -139,6 +139,8 @@ timeout, overflow, close, clear, disconnect, or stale configuration. Pending SSE
 bytes are scanned with a retained cursor and copied with amortized linear work,
 including when an unterminated record arrives one byte at a time. Cancellation is
 initiated without awaiting a producer-controlled cancellation promise.
+Record boundaries preserve SSE `LF+LF`, `LF+CRLF`, `CRLF+LF`, and `CRLF+CRLF`
+compatibility across arbitrary transport splits.
 Only a recognized, successfully decoded record refreshes inactivity. A ping is a
 visible no-op and refreshes inactivity only when its JSON body decodes to exactly
 one property, `type: "ping"`; blank, comment-only, data-less, unknown, malformed,

@@ -220,47 +220,89 @@ function testBoundedChatDecoding(): void {
     () => new BoundedSseDecoder().push(new Uint8Array([0xff, 10, 10])),
     /UTF-8/u,
   );
-  const exactBytes = new BoundedSseDecoder();
-  exactBytes.push(new Uint8Array(CHAT_RESPONSE_MAX_BYTES));
-  assert.equal(exactBytes.totalBytes, CHAT_RESPONSE_MAX_BYTES);
-  assert.equal(exactBytes.pendingBytes, SSE_PENDING_RECORD_MAX_BYTES);
-  assert.throws(() => exactBytes.push(new Uint8Array([0])), /byte limit/u);
-  assert.throws(() => exactBytes.finish(), /incomplete/u);
-
-  const fragmentedLength = 65_536;
+  const fragmentedLength = CHAT_RESPONSE_MAX_BYTES;
   const fragmented = new BoundedSseDecoder();
   for (let index = 0; index < fragmentedLength; index += 1) {
     fragmented.push(Uint8Array.of(97));
   }
+  assert.equal(fragmented.totalBytes, CHAT_RESPONSE_MAX_BYTES);
   assert.equal(fragmented.pendingBytes, fragmentedLength);
   assert.equal(
     fragmented.work.scannedBytes <= fragmentedLength * 4,
     true,
     `fragment scanning must be linear: ${JSON.stringify(fragmented.work)}`,
   );
+  assert.equal(fragmented.work.scannedBytes, 100_663_290);
   assert.equal(
     fragmented.work.copiedBytes <= fragmentedLength * 3,
     true,
     `fragment copying must be amortized linear: ${JSON.stringify(fragmented.work)}`,
   );
+  assert.equal(fragmented.work.copiedBytes, 67_107_840);
+  assert.throws(() => fragmented.push(Uint8Array.of(97)), /byte limit/u);
+  assert.throws(() => fragmented.finish(), /incomplete/u);
 
-  for (const separator of ["\n\n", "\r\n\r\n"]) {
-    const record = new TextEncoder().encode(
-      `event: chunk\ndata: {"type":"chunk","delta":"x"}${separator}`,
-    );
-    for (let split = 0; split <= record.byteLength; split += 1) {
-      const splitDecoder = new BoundedSseDecoder();
-      const events = [
-        ...splitDecoder.push(record.subarray(0, split)),
-        ...splitDecoder.push(record.subarray(split)),
-      ];
-      assert.deepEqual(events, [{ type: "chunk", delta: "x" }]);
-      assert.equal(splitDecoder.pendingBytes, 0);
+  const delimiterFixtures = [
+    { name: "LF+LF", value: "\n\n" },
+    { name: "LF+CRLF", value: "\n\r\n" },
+    { name: "CRLF+LF", value: "\r\n\n" },
+    { name: "CRLF+CRLF", value: "\r\n\r\n" },
+  ];
+  const recordFixtures = [
+    {
+      name: "chunk",
+      value: 'event: chunk\ndata: {"type":"chunk","delta":"x"}',
+      expected: [{ type: "chunk", delta: "x" }],
+    },
+    {
+      name: "ping",
+      value: 'event: ping\ndata: {"type":"ping"}',
+      expected: [],
+    },
+    {
+      name: "terminal",
+      value: 'event: done\ndata: {"type":"done","finish_reason":"stop"}',
+      expected: [{ type: "done", finishReason: "stop" }],
+    },
+  ];
+  for (const delimiter of delimiterFixtures) {
+    for (const fixture of recordFixtures) {
+      const record = new TextEncoder().encode(`${fixture.value}${delimiter.value}`);
+      for (let split = 0; split <= record.byteLength; split += 1) {
+        const splitDecoder = new BoundedSseDecoder();
+        const firstEvents = splitDecoder.push(record.subarray(0, split));
+        const firstDelimited = splitDecoder.delimitedRecords;
+        const firstValid = splitDecoder.validRecordsCompleted;
+        const secondEvents = splitDecoder.push(record.subarray(split));
+        const events = [...firstEvents, ...secondEvents];
+        assert.deepEqual(events, fixture.expected, `${delimiter.name} ${fixture.name} split ${split}`);
+        assert.equal(splitDecoder.pendingBytes, 0);
+        assert.equal(firstDelimited + splitDecoder.delimitedRecords, 1);
+        assert.equal(firstValid + splitDecoder.validRecordsCompleted, 1);
+        assert.equal(splitDecoder.work.scannedBytes <= record.byteLength * 4, true);
+        assert.equal(splitDecoder.work.copiedBytes <= record.byteLength * 3, true);
+      }
+      const byteDecoder = new BoundedSseDecoder();
+      const events = [];
+      for (const byte of record) events.push(...byteDecoder.push(Uint8Array.of(byte)));
+      assert.deepEqual(events, fixture.expected, `${delimiter.name} ${fixture.name} byte splits`);
+      assert.equal(byteDecoder.pendingBytes, 0);
+      assert.equal(byteDecoder.work.scannedBytes <= record.byteLength * 4, true);
+      assert.equal(byteDecoder.work.copiedBytes <= record.byteLength * 3, true);
     }
-    const byteDecoder = new BoundedSseDecoder();
-    const events = [];
-    for (const byte of record) events.push(...byteDecoder.push(Uint8Array.of(byte)));
-    assert.deepEqual(events, [{ type: "chunk", delta: "x" }]);
+  }
+
+  for (const nearPrefix of ["\r", "\n", "\n\r", "\r\n", "\r\n\r"]) {
+    const decoder = new BoundedSseDecoder();
+    const record = new TextEncoder().encode(
+      `event: ping\ndata: {"type":"ping"}${nearPrefix}`,
+    );
+    for (const byte of record) decoder.push(Uint8Array.of(byte));
+    assert.equal(decoder.delimitedRecords, 0, `near-prefix ${JSON.stringify(nearPrefix)}`);
+    assert.equal(decoder.validRecordsCompleted, 0);
+    assert.equal(decoder.pendingBytes, record.byteLength);
+    assert.equal(decoder.work.scannedBytes <= record.byteLength * 4, true);
+    assert.equal(decoder.work.copiedBytes <= record.byteLength * 3, true);
   }
 
   const state = newChatAttemptState();

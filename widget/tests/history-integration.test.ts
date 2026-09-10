@@ -413,6 +413,26 @@ async function testInvalidRecordsDoNotResetLiveness(): Promise<void> {
       name: "ping with an extra field",
       record: 'event: ping\ndata: {"type":"ping","extra":true}\n\n',
     },
+    {
+      name: "bare CR delimiter prefix",
+      record: 'event: ping\ndata: {"type":"ping"}\r',
+    },
+    {
+      name: "bare LF delimiter prefix",
+      record: 'event: ping\ndata: {"type":"ping"}\n',
+    },
+    {
+      name: "LF+CR delimiter prefix",
+      record: 'event: ping\ndata: {"type":"ping"}\n\r',
+    },
+    {
+      name: "single CRLF delimiter prefix",
+      record: 'event: ping\ndata: {"type":"ping"}\r\n',
+    },
+    {
+      name: "CRLF+CR delimiter prefix",
+      record: 'event: ping\ndata: {"type":"ping"}\r\n\r',
+    },
   ];
 
   for (const fixture of invalidRecords) {
@@ -444,6 +464,76 @@ async function testInvalidRecordsDoNotResetLiveness(): Promise<void> {
     assert.equal(result.kind, "protocol");
     assert.equal(reader.cancelCount, 1, `${fixture.name} cancels exactly once`);
     assert.equal(reader.releaseCount, 1, `${fixture.name} releases exactly once`);
+  }
+}
+
+async function testAllSseDelimitersAcrossTransportSplits(): Promise<void> {
+  const delimiters = [
+    { name: "LF+LF", value: "\n\n" },
+    { name: "LF+CRLF", value: "\n\r\n" },
+    { name: "CRLF+LF", value: "\r\n\n" },
+    { name: "CRLF+CRLF", value: "\r\n\r\n" },
+  ];
+
+  const deliverSplit = async (
+    reader: ControlledReader,
+    bytes: Uint8Array,
+    split: number,
+  ): Promise<void> => {
+    if (split > 0) {
+      reader.deliverBytes(bytes.subarray(0, split));
+      await flushMicrotasks();
+    }
+    if (split < bytes.byteLength) {
+      reader.deliverBytes(bytes.subarray(split));
+      await flushMicrotasks();
+    }
+  };
+
+  for (const delimiter of delimiters) {
+    const ping = new TextEncoder().encode(
+      `event: ping\ndata: {"type":"ping"}${delimiter.value}`,
+    );
+    const terminal = new TextEncoder().encode(
+      `event: done\ndata: {"type":"done","finish_reason":"stop"}${delimiter.value}`,
+    );
+
+    for (let split = 0; split <= ping.byteLength; split += 1) {
+      const clock = new FakeClock();
+      const widget = testWidget();
+      useClock(widget, clock);
+      const reader = new ControlledReader();
+      globalThis.fetch = async () => responseWithReader(reader);
+      const controller = new AbortController();
+      const attempt = streamAttempt(widget, controller, assistantExchange());
+      await flushMicrotasks();
+      clock.advance(44_000);
+      await deliverSplit(reader, ping, split);
+      clock.advance(44_999);
+      await flushMicrotasks();
+      assert.equal(controller.signal.aborted, false, `${delimiter.name} ping split ${split}`);
+      reader.deliverBytes(terminal);
+      const result = await attempt;
+      assert.deepEqual(result, { kind: "done", finishReason: "stop", citationCount: 0 });
+      assert.equal(reader.cancelCount, 1);
+      assert.equal(reader.releaseCount, 1);
+    }
+
+    for (let split = 0; split <= terminal.byteLength; split += 1) {
+      const widget = testWidget();
+      useClock(widget, new FakeClock());
+      const reader = new ControlledReader();
+      globalThis.fetch = async () => responseWithReader(reader);
+      const controller = new AbortController();
+      const attempt = streamAttempt(widget, controller, assistantExchange());
+      await flushMicrotasks();
+      await deliverSplit(reader, terminal, split);
+      const result = await attempt;
+      assert.deepEqual(result, { kind: "done", finishReason: "stop", citationCount: 0 });
+      assert.equal(controller.signal.aborted, false, `${delimiter.name} terminal split ${split}`);
+      assert.equal(reader.cancelCount, 1);
+      assert.equal(reader.releaseCount, 1);
+    }
   }
 }
 
@@ -704,6 +794,7 @@ await testNonSuccessChatCancellationIsBounded();
 await testCapabilityHeaderAndBodyDeadlines();
 await testPartialDripDoesNotResetLiveness();
 await testInvalidRecordsDoNotResetLiveness();
+await testAllSseDelimitersAcrossTransportSplits();
 await testPingResetsLiveness();
 await testAbsoluteStreamDeadline();
 await testTerminalAndProtocolReaderOwnership();

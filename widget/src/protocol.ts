@@ -245,17 +245,33 @@ export class BoundedSseDecoder {
   private nextBoundary(): { index: number; length: number } | null {
     for (let index = this.scan; index < this.end - 1; index += 1) {
       this.scannedBytes += 1;
-      if (this.bytes[index] === 10 && this.bytes[index + 1] === 10) {
-        return { index, length: 2 };
+      if (this.bytes[index] === 10) {
+        if (this.bytes[index + 1] === 10) {
+          return { index, length: 2 };
+        }
+        if (
+          index < this.end - 2 &&
+          this.bytes[index + 1] === 13 &&
+          this.bytes[index + 2] === 10
+        ) {
+          return { index, length: 3 };
+        }
       }
       if (
-        index < this.end - 3 &&
         this.bytes[index] === 13 &&
         this.bytes[index + 1] === 10 &&
-        this.bytes[index + 2] === 13 &&
-        this.bytes[index + 3] === 10
+        index < this.end - 2
       ) {
-        return { index, length: 4 };
+        if (this.bytes[index + 2] === 10) {
+          return { index, length: 3 };
+        }
+        if (
+          index < this.end - 3 &&
+          this.bytes[index + 2] === 13 &&
+          this.bytes[index + 3] === 10
+        ) {
+          return { index, length: 4 };
+        }
       }
     }
     // Only a delimiter's three-byte prefix can become complete after the next push.
