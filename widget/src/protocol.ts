@@ -1,4 +1,7 @@
 export const HISTORY_LIMIT = 5;
+export const HISTORY_TURN_MAX_CODE_POINTS = 500;
+export const HISTORY_AGGREGATE_MAX_CODE_POINTS = 2_000;
+const HISTORY_EDGE_WHITESPACE = /^[\p{White_Space}\u001c-\u001f\ufeff]+|[\p{White_Space}\u001c-\u001f\ufeff]+$/gu;
 
 export interface ChatTurn {
   role: "user" | "assistant";
@@ -11,12 +14,14 @@ export interface Citation {
   url: string;
 }
 
+export type DoneReason = "stop" | "refused" | "limit" | "cancelled";
+
 export type ChatStreamEvent =
   | { type: "status"; label: string }
   | { type: "chunk"; delta: string }
   | { type: "citations"; sources: Citation[] }
   | { type: "error"; message: string; retryable: boolean }
-  | { type: "done"; finishReason: "stop" | "refused" | "limit" | "cancelled" };
+  | { type: "done"; finishReason: DoneReason };
 
 const ERROR_CODES = new Set([
   "invalid_request",
@@ -79,7 +84,56 @@ export class SseDecoder {
 }
 
 export function boundedHistory(history: readonly ChatTurn[]): ChatTurn[] {
-  return history.slice(-HISTORY_LIMIT);
+  const candidates = history
+    .map((turn) => ({
+      role: turn.role,
+      content: Array.from(turn.content.replace(HISTORY_EDGE_WHITESPACE, ""))
+        .slice(0, HISTORY_TURN_MAX_CODE_POINTS)
+        .join(""),
+    }))
+    .filter((turn) => turn.content !== "")
+    .slice(-HISTORY_LIMIT);
+  const retained: ChatTurn[] = [];
+  let aggregateCodePoints = 0;
+
+  for (let index = candidates.length - 1; index >= 0; index -= 1) {
+    const turn = candidates[index];
+    const turnCodePoints = Array.from(turn.content).length;
+    if (aggregateCodePoints + turnCodePoints > HISTORY_AGGREGATE_MAX_CODE_POINTS) {
+      continue;
+    }
+    retained.unshift(turn);
+    aggregateCodePoints += turnCodePoints;
+  }
+  return retained;
+}
+
+/** Persist only complete, usable exchanges; limited answers retain their safe prefix. */
+export function completedHistory(
+  history: readonly ChatTurn[],
+  userMessage: string,
+  assistantMessage: string,
+  finishReason: DoneReason,
+): ChatTurn[] {
+  if (
+    finishReason === "cancelled" ||
+    assistantMessage.replace(HISTORY_EDGE_WHITESPACE, "") === ""
+  ) {
+    return boundedHistory(history);
+  }
+  return boundedHistory([
+    ...history,
+    { role: "user", content: userMessage },
+    { role: "assistant", content: assistantMessage },
+  ]);
+}
+
+export function chatRequestPayload(
+  sessionId: string,
+  message: string,
+  history: readonly ChatTurn[],
+): { session_id: string; message: string; history: ChatTurn[] } {
+  return { session_id: sessionId, message, history: boundedHistory(history) };
 }
 
 /** Run a stream once more only after its first explicit retryable error. */

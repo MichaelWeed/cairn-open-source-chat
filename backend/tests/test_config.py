@@ -1,7 +1,21 @@
+from pathlib import Path
+
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from app.config import Settings
+
+REPO_ROOT = Path(__file__).parents[2]
+
+
+def _dotenv_values(path: Path) -> dict[str, str]:
+    return {
+        key: value
+        for line in path.read_text().splitlines()
+        if line and not line.startswith("#")
+        for key, value in [line.split("=", maxsplit=1)]
+    }
 
 
 def test_defaults() -> None:
@@ -25,6 +39,25 @@ def test_defaults() -> None:
 def test_generation_settings_respect_contract_maxima(field: str, value: object) -> None:
     with pytest.raises(ValidationError):
         Settings.model_validate({field: value})
+
+
+def test_generation_setting_defaults_match_env_example_and_compose() -> None:
+    settings = Settings()
+    expected = {
+        "SYSTEM_INSTRUCTION": settings.system_instruction,
+        "MAX_OUTPUT_TOKENS": str(settings.max_output_tokens),
+        "MAX_OUTPUT_CHARS": str(settings.max_output_chars),
+    }
+    env_values = _dotenv_values(REPO_ROOT / ".env.example")
+    compose = yaml.safe_load((REPO_ROOT / "compose.yaml").read_text())
+    compose_environment = compose["services"]["backend"]["environment"]
+
+    assert {key: env_values[key] for key in expected} == expected
+    assert {
+        key: compose_environment[key] for key in expected
+    } == {
+        key: f"${{{key}:-{value}}}" for key, value in expected.items()
+    }
 
 
 def test_origins_splits_and_strips() -> None:

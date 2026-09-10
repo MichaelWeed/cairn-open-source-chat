@@ -184,3 +184,26 @@ async def test_ollama_preserves_whitespace_at_chunk_split_boundary() -> None:
     assert "".join(chunk.delta for chunk in chunks) == expected
     assert all(chunk.delta.strip() for chunk in chunks)
     assert all(len(chunk.delta) <= 1000 for chunk in chunks)
+
+
+@pytest.mark.parametrize("trailing", [" ", " \n"])
+async def test_ollama_preserves_trailing_whitespace_at_exact_chunk_boundary(
+    trailing: str,
+) -> None:
+    expected = "x" * 1000 + trailing
+    transport = _ndjson_transport(
+        [
+            {"message": {"content": "x" * 1000}, "done": False},
+            {"message": {"content": trailing}, "done": True},
+        ]
+    )
+    client = httpx.AsyncClient(transport=transport)
+    provider = OllamaProvider(
+        base_url="http://ollama:11434", model="test-model", client=client
+    )
+
+    chunks = [chunk async for chunk in provider.stream(request())]
+
+    assert "".join(chunk.delta for chunk in chunks) == expected
+    assert all(chunk.delta.strip() for chunk in chunks)
+    assert all(len(chunk.delta) <= 1000 for chunk in chunks)

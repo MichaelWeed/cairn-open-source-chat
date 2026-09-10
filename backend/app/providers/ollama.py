@@ -21,13 +21,16 @@ def _provider_chunk(delta: str) -> ProviderChunk:
 def _split_complete_chunks(content: str) -> tuple[list[ProviderChunk], str]:
     chunks: list[ProviderChunk] = []
     while len(content) > CHUNK_MAX_CHARS:
-        delta = content[:CHUNK_MAX_CHARS]
+        split_at = CHUNK_MAX_CHARS
+        if not content[CHUNK_MAX_CHARS:].strip():
+            # Keep one non-whitespace character with a trailing whitespace run so
+            # the remainder remains a valid, lossless provider chunk.
+            split_at = len(content[:CHUNK_MAX_CHARS].rstrip()) - 1
+        delta = content[:split_at]
         if not delta.strip():
-            raise _InvalidProviderOutput(
-                "Ollama response whitespace cannot satisfy chunk bounds"
-            )
+            break
         chunks.append(_provider_chunk(delta))
-        content = content[CHUNK_MAX_CHARS:]
+        content = content[split_at:]
     return chunks, content
 
 
@@ -83,7 +86,11 @@ class OllamaProvider(Provider):
                 if content is not None and not isinstance(content, str):
                     raise _InvalidProviderOutput("Ollama returned invalid response content")
                 if content:
-                    if content.strip() and pending_content.strip():
+                    if (
+                        content.strip()
+                        and pending_content.strip()
+                        and len(pending_content) <= CHUNK_MAX_CHARS
+                    ):
                         ready, pending_content = _split_complete_chunks(pending_content)
                         for chunk in ready:
                             yield chunk
