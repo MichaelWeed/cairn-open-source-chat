@@ -212,11 +212,83 @@ class IngestionPlanModel(BaseModel):
         )
 
     def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
-        del deep
-        values = self.model_dump()
-        if update is not None:
-            values.update(update)
-        return type(self).model_validate(values)
+        values: dict[str, Any] | None = None
+        requested_fields: set[str] | None = None
+        try:
+            source = super().model_copy(deep=deep)
+            values = {
+                field_name: getattr(source, field_name) for field_name in type(self).model_fields
+            }
+            requested_fields = set(source.model_fields_set)
+            if update is not None:
+                values.update(update)
+                requested_fields.update(update)
+        except Exception:
+            pass
+        if values is None or requested_fields is None:
+            raise IngestionPlanError("invalid_model") from None
+        validated = type(self)._validate_ingestion_model(values)
+        object.__setattr__(validated, "__pydantic_fields_set__", requested_fields)
+        return validated
+
+    @classmethod
+    def _validate_ingestion_model(cls, values: Any) -> Self:
+        validated: Self | None = None
+        try:
+            validated = cls.model_validate(values)
+        except Exception:
+            pass
+        if validated is None:
+            raise IngestionPlanError("invalid_model") from None
+        return validated
+
+    @classmethod
+    def model_construct(
+        cls,
+        _fields_set: set[str] | None = None,
+        **values: Any,
+    ) -> Self:
+        requested_fields: set[str] | None = None
+        invalid_fields = False
+        try:
+            if _fields_set is not None:
+                requested_fields = set(_fields_set)
+                invalid_fields = not requested_fields.issubset(cls.model_fields)
+        except Exception:
+            invalid_fields = True
+        if invalid_fields:
+            raise IngestionPlanError("invalid_model") from None
+
+        validated = cls._validate_ingestion_model(values)
+        if requested_fields is not None:
+            object.__setattr__(validated, "__pydantic_fields_set__", requested_fields)
+        return validated
+
+    def copy(
+        self,
+        *,
+        include: Any = None,
+        exclude: Any = None,
+        update: dict[str, Any] | None = None,
+        deep: bool = False,
+    ) -> Self:
+        if include is None and exclude is None and update is None:
+            return self.model_copy(deep=deep)
+
+        values: dict[str, Any] | None = None
+        try:
+            values = self.model_dump(
+                include=include,
+                exclude=exclude,
+                round_trip=True,
+            )
+            if update is not None:
+                values.update(update)
+        except Exception:
+            pass
+        if values is None:
+            raise IngestionPlanError("invalid_model") from None
+        return type(self)._validate_ingestion_model(values)
 
 
 def _strict_utf8(value: str) -> str:
@@ -386,8 +458,8 @@ class PlannedChunk(IngestionPlanModel):
     @field_validator("embedding", mode="before")
     @classmethod
     def validate_embedding_values(cls, value: object, info: ValidationInfo) -> object:
-        sequence_type = list if info.mode == "json" else tuple
-        if not isinstance(value, sequence_type) or any(
+        del info
+        if not isinstance(value, tuple) or any(
             type(scalar) is not float for scalar in cast(Sequence[object], value)
         ):
             raise ValueError("embedding is invalid")
@@ -488,6 +560,11 @@ class CandidateIngestionPlan(IngestionPlanModel):
         chunk_ids = [chunk.chunk_id for document in self.documents for chunk in document.chunks]
         if len(document_ids) != len(set(document_ids)) or len(chunk_ids) != len(set(chunk_ids)):
             raise ValueError("plan identities are not unique")
+        if any(
+            document.document_id != _document_id(self.corpus, document.relative_path)
+            for document in self.documents
+        ):
+            raise ValueError("document namespace is invalid")
         chunks = [chunk for document in self.documents for chunk in document.chunks]
         if any(len(chunk.embedding) != self.embedding.dimensions for chunk in chunks):
             raise ValueError("embedding dimensions are inconsistent")
@@ -597,15 +674,38 @@ def _chunk_material(chunk: PlannedChunk) -> dict[str, object]:
 
 
 def _document_material(document: PlannedDocument) -> dict[str, object]:
+    return _document_material_from_values(
+        document_id=document.document_id,
+        relative_path=document.relative_path,
+        parser_id=document.parser_id,
+        normalization_id=document.normalization_id,
+        chunking_id=document.chunking_id,
+        normalized_text_sha256=document.normalized_text_sha256,
+        provenance=document.provenance,
+        chunks=document.chunks,
+    )
+
+
+def _document_material_from_values(
+    *,
+    document_id: str,
+    relative_path: str,
+    parser_id: str,
+    normalization_id: str,
+    chunking_id: str,
+    normalized_text_sha256: str,
+    provenance: PlannedProvenance,
+    chunks: Sequence[PlannedChunk],
+) -> dict[str, object]:
     return {
-        "document_id": document.document_id,
-        "relative_path": document.relative_path,
-        "parser_id": document.parser_id,
-        "normalization_id": document.normalization_id,
-        "chunking_id": document.chunking_id,
-        "normalized_text_sha256": document.normalized_text_sha256,
-        "provenance": _provenance_material(document.provenance),
-        "chunks": [_chunk_material(chunk) for chunk in document.chunks],
+        "document_id": document_id,
+        "relative_path": relative_path,
+        "parser_id": parser_id,
+        "normalization_id": normalization_id,
+        "chunking_id": chunking_id,
+        "normalized_text_sha256": normalized_text_sha256,
+        "provenance": _provenance_material(provenance),
+        "chunks": [_chunk_material(chunk) for chunk in chunks],
     }
 
 
@@ -614,18 +714,35 @@ def _document_plan_sha256(document: PlannedDocument) -> str:
 
 
 def _plan_material(plan: CandidateIngestionPlan) -> dict[str, object]:
+    return _plan_material_from_values(
+        contract_version=plan.contract_version,
+        corpus=plan.corpus,
+        embedding=plan.embedding,
+        semantic_manifest_sha256=plan.semantic_manifest_sha256,
+        documents=plan.documents,
+    )
+
+
+def _plan_material_from_values(
+    *,
+    contract_version: str,
+    corpus: ExactCorpusReference,
+    embedding: EmbeddingSpecification,
+    semantic_manifest_sha256: str,
+    documents: Sequence[PlannedDocument],
+) -> dict[str, object]:
     return {
-        "contract_version": plan.contract_version,
-        "corpus": plan.corpus.model_dump(mode="json"),
-        "embedding": plan.embedding.model_dump(mode="json"),
-        "semantic_manifest_sha256": plan.semantic_manifest_sha256,
+        "contract_version": contract_version,
+        "corpus": corpus.model_dump(mode="json"),
+        "embedding": embedding.model_dump(mode="json"),
+        "semantic_manifest_sha256": semantic_manifest_sha256,
         "documents": [
             {
                 "document_plan_sha256": document.document_plan_sha256,
                 "chunk_ids": [chunk.chunk_id for chunk in document.chunks],
                 "embedding_sha256s": [chunk.embedding_sha256 for chunk in document.chunks],
             }
-            for document in plan.documents
+            for document in documents
         ],
     }
 
@@ -643,6 +760,19 @@ def _safe_call[T](call: Callable[[], T], code: IngestionPlanErrorCode) -> T:
     if result is _MISSING:
         raise IngestionPlanError(code) from None
     return cast(T, result)
+
+
+def _revalidate_instance[T: BaseModel](value: object, model: type[T]) -> T:
+    def validate() -> T:
+        if type(value) is not model:
+            raise TypeError
+        extras = object.__getattribute__(value, "__pydantic_extra__")
+        if extras:
+            raise ValueError
+        values = {field_name: getattr(value, field_name) for field_name in model.model_fields}
+        return model.model_validate(values)
+
+    return _safe_call(validate, "invalid_model")
 
 
 def _strict_utf8_for_plan(value: str, code: IngestionPlanErrorCode) -> None:
@@ -712,13 +842,11 @@ def plan_candidate(
     embed: CandidateEmbeddingFunction,
 ) -> CandidateIngestionPlan:
     """Return one complete deterministic plan without performing any I/O."""
-    if (
-        not isinstance(corpus, ExactCorpusReference)
-        or not isinstance(source, CandidateSourceSnapshot)
-        or not isinstance(embedding, EmbeddingSpecification)
-        or not callable(embed)
-    ):
+    if not callable(embed):
         raise IngestionPlanError("invalid_model") from None
+    corpus = _revalidate_instance(corpus, ExactCorpusReference)
+    source = _revalidate_instance(source, CandidateSourceSnapshot)
+    embedding = _revalidate_instance(embedding, EmbeddingSpecification)
 
     documents_by_path = {document.relative_path: document.content for document in source.documents}
     parsed_provenance: dict[str, SourceProvenance] = _safe_call(
@@ -837,16 +965,17 @@ def plan_candidate(
                     citation_url=provenance.url,
                 )
             )
-        temporary = PlannedDocument.model_construct(
-            document_id=document_id,
-            relative_path=prepared.relative_path,
-            parser_id=prepared.parser_id,
-            normalization_id=NORMALIZATION_ID,
-            chunking_id=CHUNKING_ID,
-            normalized_text_sha256=prepared.normalized_text_sha256,
-            provenance=provenance,
-            chunks=tuple(planned_chunks),
-            document_plan_sha256="0" * _SHA256_LENGTH,
+        document_plan_sha256 = _digest(
+            _document_material_from_values(
+                document_id=document_id,
+                relative_path=prepared.relative_path,
+                parser_id=prepared.parser_id,
+                normalization_id=NORMALIZATION_ID,
+                chunking_id=CHUNKING_ID,
+                normalized_text_sha256=prepared.normalized_text_sha256,
+                provenance=provenance,
+                chunks=planned_chunks,
+            )
         )
         planned_documents.append(
             PlannedDocument(
@@ -858,19 +987,18 @@ def plan_candidate(
                 normalized_text_sha256=prepared.normalized_text_sha256,
                 provenance=provenance,
                 chunks=tuple(planned_chunks),
-                document_plan_sha256=_document_plan_sha256(temporary),
+                document_plan_sha256=document_plan_sha256,
             )
         )
 
-    temporary_plan = CandidateIngestionPlan.model_construct(
-        contract_version=INGESTION_PLAN_CONTRACT_VERSION,
-        corpus=corpus,
-        embedding=embedding,
-        semantic_manifest_sha256=semantic_manifest_sha256,
-        documents=tuple(planned_documents),
-        document_count=len(planned_documents),
-        chunk_count=total_chunks,
-        plan_sha256="0" * _SHA256_LENGTH,
+    plan_sha256 = _digest(
+        _plan_material_from_values(
+            contract_version=INGESTION_PLAN_CONTRACT_VERSION,
+            corpus=corpus,
+            embedding=embedding,
+            semantic_manifest_sha256=semantic_manifest_sha256,
+            documents=planned_documents,
+        )
     )
     return CandidateIngestionPlan(
         contract_version=INGESTION_PLAN_CONTRACT_VERSION,
@@ -880,7 +1008,7 @@ def plan_candidate(
         documents=tuple(planned_documents),
         document_count=len(planned_documents),
         chunk_count=total_chunks,
-        plan_sha256=_plan_sha256(temporary_plan),
+        plan_sha256=plan_sha256,
     )
 
 
@@ -889,10 +1017,9 @@ def classify_candidate_plan(
     existing: ExistingCandidateDescriptor | None,
 ) -> CandidatePlanDisposition:
     """Compare a complete plan with an optional exact-candidate descriptor."""
-    if not isinstance(plan, CandidateIngestionPlan) or (
-        existing is not None and not isinstance(existing, ExistingCandidateDescriptor)
-    ):
-        raise IngestionPlanError("invalid_model") from None
+    plan = _revalidate_instance(plan, CandidateIngestionPlan)
+    if existing is not None:
+        existing = _revalidate_instance(existing, ExistingCandidateDescriptor)
     if existing is None:
         kind: Literal["new", "identical", "conflict"] = "new"
     elif existing.corpus != plan.corpus:

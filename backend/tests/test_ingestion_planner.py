@@ -7,6 +7,7 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import warnings
 from collections.abc import Callable, Sequence
 from datetime import date
 from pathlib import Path
@@ -38,6 +39,7 @@ from app.ingest.planner import (
     ExistingCandidateDescriptor,
     IngestionPlanError,
     PlannedChunk,
+    PlannedDocument,
     PlannedProvenance,
     classify_candidate_plan,
     plan_candidate,
@@ -835,6 +837,288 @@ def _all_m7_model_samples(plan: CandidateIngestionPlan) -> tuple[BaseModel, ...]
     )
 
 
+def _assert_invalid_model_is_content_free(operation: Callable[[], object], *secrets: str) -> None:
+    with pytest.raises(IngestionPlanError) as caught:
+        operation()
+    error = caught.value
+    rendered = (
+        str(error)
+        + repr(error)
+        + repr(error.args)
+        + repr(error.__dict__)
+        + repr(error.errors(include_input=True, include_context=True))
+        + error.json(include_input=True, include_context=True)
+        + repr(error.__cause__)
+        + repr(error.__context__)
+    )
+    assert error.code == "invalid_model"
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    for secret in secrets:
+        assert secret not in rendered
+
+
+@pytest.mark.parametrize(
+    "surface", ["model_construct", "construct", "model_copy", "copy", "replace"]
+)
+def test_all_m7_models_seal_public_copy_and_construct_bypasses(surface: str) -> None:
+    secret = f"{surface}-content-secret-sentinel"
+    for sample in _all_m7_model_samples(_plan()):
+        model = type(sample)
+        values = sample.model_dump(round_trip=True)
+
+        def operation(
+            model: type[BaseModel] = model,
+            values: dict[str, object] = values,
+            sample: BaseModel = sample,
+        ) -> object:
+            if surface == "model_construct":
+                return model.model_construct(**values, unknown=secret)
+            if surface == "construct":
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", DeprecationWarning)
+                    return model.construct(**values, unknown=secret)
+            if surface == "model_copy":
+                return sample.model_copy(update={"unknown": secret})
+            if surface == "replace":
+                return sample.__replace__(unknown=secret)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                return sample.copy(update={"unknown": secret})
+
+        _assert_invalid_model_is_content_free(operation, secret, "unknown")
+
+
+@pytest.mark.parametrize("surface", ["model_construct", "construct"])
+def test_all_m7_models_reject_missing_fields_and_fields_set_content(surface: str) -> None:
+    secret = f"{surface}-fields-set-content-secret"
+    for sample in _all_m7_model_samples(_plan()):
+        model = type(sample)
+        values = sample.model_dump(round_trip=True)
+        missing = next(iter(model.model_fields))
+        values.pop(missing)
+
+        def operation(
+            model: type[BaseModel] = model,
+            values: dict[str, object] = values,
+        ) -> object:
+            if surface == "model_construct":
+                return model.model_construct(**values)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                return model.construct(**values)
+
+        _assert_invalid_model_is_content_free(operation, secret)
+
+        complete_values = sample.model_dump(round_trip=True)
+
+        def fields_set_operation(
+            model: type[BaseModel] = model,
+            complete_values: dict[str, object] = complete_values,
+        ) -> object:
+            if surface == "model_construct":
+                return model.model_construct(_fields_set={secret}, **complete_values)
+            else:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", DeprecationWarning)
+                    return model.construct(_fields_set={secret}, **complete_values)
+
+        _assert_invalid_model_is_content_free(fields_set_operation, secret)
+
+
+def test_all_m7_models_preserve_valid_copy_construct_and_adapter_paths() -> None:
+    for sample in _all_m7_model_samples(_plan()):
+        model = type(sample)
+        values = sample.model_dump(round_trip=True)
+        assert model.model_construct(**values) == sample
+        first_field = next(iter(model.model_fields))
+        constructed = model.model_construct(_fields_set={first_field}, **values)
+        assert constructed == sample
+        assert constructed.model_fields_set == {first_field}
+        assert sample.model_copy() == sample
+        assert sample.model_copy(deep=True) == sample
+        assert sample.__replace__() == sample
+        valid_update = {first_field: getattr(sample, first_field)}
+        assert sample.model_copy(update=valid_update) == sample
+        assert sample.__replace__(**valid_update) == sample
+        assert TypeAdapter(model).validate_python(values) == sample
+        encoded = sample.model_dump_json()
+        assert model.model_validate_json(encoded) == sample
+        assert TypeAdapter(model).validate_json(encoded) == sample
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            assert model.construct(**values) == sample
+            assert sample.copy() == sample
+            assert sample.copy(deep=True) == sample
+            assert sample.copy(update=valid_update) == sample
+
+
+@pytest.mark.parametrize("mode", ["include", "exclude"])
+def test_deprecated_copy_cannot_create_partial_invalid_models(mode: str) -> None:
+    for sample in _all_m7_model_samples(_plan()):
+        missing = next(iter(type(sample).model_fields))
+
+        def operation(sample: BaseModel = sample, missing: str = missing) -> object:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                if mode == "include":
+                    return sample.copy(include=set())
+                return sample.copy(exclude={missing})
+
+        _assert_invalid_model_is_content_free(operation)
+
+
+def _invalid_known_update(sample: BaseModel, secret: str) -> dict[str, object]:
+    if isinstance(sample, CandidateDocumentSnapshot | PlannedDocument):
+        return {"relative_path": f"../{secret}"}
+    if isinstance(sample, CandidateSourceSnapshot):
+        return {"documents": secret}
+    if isinstance(sample, EmbeddingSpecification):
+        return {"identity": f"{secret}\n"}
+    if isinstance(sample, PlannedProvenance):
+        return {"url": f"https://user:{secret}@example.com"}
+    if isinstance(sample, PlannedChunk):
+        return {"text": f"{secret}\ud800"}
+    if isinstance(sample, CandidateIngestionPlan | ExistingCandidateDescriptor):
+        return {"contract_version": secret}
+    return {"kind": secret}
+
+
+@pytest.mark.parametrize(
+    "surface",
+    [
+        "constructor",
+        "model_validate",
+        "type_adapter",
+        "model_construct",
+        "construct",
+        "model_copy",
+        "copy",
+        "replace",
+    ],
+)
+def test_all_m7_models_reject_invalid_known_values_without_disclosure(
+    surface: str,
+) -> None:
+    secret = f"{surface}-invalid-known-content-secret"
+    for sample in _all_m7_model_samples(_plan()):
+        model = type(sample)
+        values = sample.model_dump(round_trip=True)
+        update = _invalid_known_update(sample, secret)
+        invalid_values = values | update
+
+        def operation(
+            model: type[BaseModel] = model,
+            invalid_values: dict[str, object] = invalid_values,
+            sample: BaseModel = sample,
+            update: dict[str, object] = update,
+        ) -> object:
+            if surface == "constructor":
+                return model(**invalid_values)
+            if surface == "model_validate":
+                return model.model_validate(invalid_values)
+            if surface == "type_adapter":
+                return TypeAdapter(model).validate_python(invalid_values)
+            if surface == "model_construct":
+                return model.model_construct(**invalid_values)
+            if surface == "construct":
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", DeprecationWarning)
+                    return model.construct(**invalid_values)
+            if surface == "model_copy":
+                return sample.model_copy(update=update)
+            if surface == "replace":
+                return sample.__replace__(**update)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                return sample.copy(update=update)
+
+        _assert_invalid_model_is_content_free(operation, secret)
+
+
+def _canonical_digest(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def test_plan_rejects_forged_document_namespace_with_recomputed_dependents() -> None:
+    plan = _plan()
+    document = plan.documents[0]
+    forged_document_id = "doc_" + "f" * 64
+    forged_chunks = []
+    for chunk in document.chunks:
+        chunk_values = chunk.model_dump(round_trip=True)
+        chunk_values["document_id"] = forged_document_id
+        chunk_values["chunk_id"] = "chk_" + _canonical_digest(
+            {
+                "namespace": "cairn-chunk-v1",
+                "document_id": forged_document_id,
+                "chunk_index": chunk.chunk_index,
+                "text_sha256": chunk.text_sha256,
+            }
+        )
+        forged_chunks.append(PlannedChunk.model_validate(chunk_values))
+
+    document_values = document.model_dump(round_trip=True)
+    document_values["document_id"] = forged_document_id
+    document_values["chunks"] = tuple(forged_chunks)
+    document_material = {
+        key: value for key, value in document_values.items() if key != "document_plan_sha256"
+    }
+    document_material["provenance"] = document.provenance.model_dump(mode="json")
+    document_material["chunks"] = [
+        {
+            **chunk.model_dump(mode="json", exclude={"embedding"}),
+            "embedding": [(0.0 if scalar == 0.0 else scalar).hex() for scalar in chunk.embedding],
+        }
+        for chunk in forged_chunks
+    ]
+    document_values["document_plan_sha256"] = _canonical_digest(document_material)
+    forged_document = PlannedDocument.model_validate(document_values)
+
+    plan_values = plan.model_dump(round_trip=True)
+    plan_values["documents"] = (forged_document,)
+    plan_values["plan_sha256"] = _canonical_digest(
+        {
+            "contract_version": plan.contract_version,
+            "corpus": plan.corpus.model_dump(mode="json"),
+            "embedding": plan.embedding.model_dump(mode="json"),
+            "semantic_manifest_sha256": plan.semantic_manifest_sha256,
+            "documents": [
+                {
+                    "document_plan_sha256": forged_document.document_plan_sha256,
+                    "chunk_ids": [chunk.chunk_id for chunk in forged_chunks],
+                    "embedding_sha256s": [chunk.embedding_sha256 for chunk in forged_chunks],
+                }
+            ],
+        }
+    )
+
+    _assert_invalid_model_is_content_free(
+        lambda: CandidateIngestionPlan.model_validate(plan_values),
+        forged_document_id,
+    )
+
+
+def test_plan_candidate_rejects_incomplete_instance_with_fixed_error() -> None:
+    incomplete = object.__new__(CandidateSourceSnapshot)
+    _assert_invalid_model_is_content_free(lambda: incomplete.model_copy())
+    _assert_invalid_model_is_content_free(
+        lambda: plan_candidate(
+            corpus=_corpus(),
+            source=incomplete,
+            embedding=EmbeddingSpecification(identity="fixture", dimensions=2),
+            embed=_embedding,
+        )
+    )
+
+
 def test_all_m7_models_reject_unknown_values_without_disclosure() -> None:
     secret = "all-model-entrypoint-sentinel"
     for sample in _all_m7_model_samples(_plan()):
@@ -844,12 +1128,32 @@ def test_all_m7_models_reject_unknown_values_without_disclosure() -> None:
         calls = (
             lambda model=model, values=python_values: model.model_validate(values),
             lambda model=model, values=json_values: model.model_validate_json(json.dumps(values)),
+            lambda model=model, values=python_values: model.model_validate_strings(values),
             lambda model=model, values=python_values: TypeAdapter(model).validate_python(values),
             lambda model=model, values=json_values: TypeAdapter(model).validate_json(
                 json.dumps(values)
             ),
+            lambda model=model, values=python_values: TypeAdapter(model).validate_strings(values),
             lambda model=model, values=python_values: model.model_validate(values, extra="allow"),
             lambda model=model, values=python_values: model.model_validate(values, extra="ignore"),
+            lambda model=model, values=json_values: model.model_validate_json(
+                json.dumps(values), extra="allow"
+            ),
+            lambda model=model, values=json_values: model.model_validate_json(
+                json.dumps(values), extra="ignore"
+            ),
+            lambda model=model, values=python_values: TypeAdapter(model).validate_python(
+                values, extra="allow"
+            ),
+            lambda model=model, values=python_values: TypeAdapter(model).validate_python(
+                values, extra="ignore"
+            ),
+            lambda model=model, values=json_values: TypeAdapter(model).validate_json(
+                json.dumps(values), extra="allow"
+            ),
+            lambda model=model, values=json_values: TypeAdapter(model).validate_json(
+                json.dumps(values), extra="ignore"
+            ),
         )
         for call in calls:
             with pytest.raises(IngestionPlanError) as caught:
