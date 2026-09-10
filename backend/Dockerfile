@@ -22,17 +22,27 @@ RUN pip install --no-cache-dir --upgrade pip wheel setuptools==83.0.0 \
 WORKDIR /app
 
 ARG CAIRN_INSTALL_GEMINI=false
+ARG CAIRN_INSTALL_FIRESTORE=false
 COPY pyproject.toml uv.lock ./
-RUN test "$CAIRN_INSTALL_GEMINI" = false || test "$CAIRN_INSTALL_GEMINI" = true \
-    && if [ "$CAIRN_INSTALL_GEMINI" = true ]; then \
+RUN case "$CAIRN_INSTALL_GEMINI" in false|true) ;; *) exit 1 ;; esac \
+    && case "$CAIRN_INSTALL_FIRESTORE" in false|true) ;; *) exit 1 ;; esac
+RUN if [ "$CAIRN_INSTALL_GEMINI" = true ] && [ "$CAIRN_INSTALL_FIRESTORE" = true ]; then \
+        uv sync --locked --no-install-project --no-dev --extra gemini --extra firestore; \
+    elif [ "$CAIRN_INSTALL_GEMINI" = true ]; then \
         uv sync --locked --no-install-project --no-dev --extra gemini; \
+    elif [ "$CAIRN_INSTALL_FIRESTORE" = true ]; then \
+        uv sync --locked --no-install-project --no-dev --extra firestore; \
     else \
         uv sync --locked --no-install-project --no-dev; \
     fi
 
 COPY app ./app
-RUN if [ "$CAIRN_INSTALL_GEMINI" = true ]; then \
+RUN if [ "$CAIRN_INSTALL_GEMINI" = true ] && [ "$CAIRN_INSTALL_FIRESTORE" = true ]; then \
+        uv sync --locked --no-dev --extra gemini --extra firestore; \
+    elif [ "$CAIRN_INSTALL_GEMINI" = true ]; then \
         uv sync --locked --no-dev --extra gemini; \
+    elif [ "$CAIRN_INSTALL_FIRESTORE" = true ]; then \
+        uv sync --locked --no-dev --extra firestore; \
     else \
         uv sync --locked --no-dev; \
     fi

@@ -1,19 +1,24 @@
 import math
+import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal, cast
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.api.contracts import OUTPUT_CHARS_MAX, OUTPUT_TOKENS_MAX, SYSTEM_INSTRUCTION_MAX_CHARS
 
 DEFAULT_DB_PATH = Path("data/cairn.db")
 DEFAULT_CHROMA_PATH = Path("data/chroma")
+_FIRESTORE_PROJECT_PATTERN = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env", extra="ignore", hide_input_in_errors=True
+    )
 
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b-instruct"
@@ -41,6 +46,16 @@ class Settings(BaseSettings):
     embedding_model: str = "nomic-embed-text"
     retrieval_top_k: Annotated[int, Field(ge=1, le=6)] = 4
     retrieval_max_distance: Annotated[float, Field(ge=0, allow_inf_nan=False)] = 1.2
+    retrieval_backend: Literal["local", "firestore"] = "local"
+    firestore_project_id: str = ""
+    firestore_corpus_id: str = ""
+    firestore_corpus_version: str = ""
+    firestore_embedding_identity: str = ""
+    firestore_embedding_dimensions: int | None = None
+    firestore_distance_measure: Literal["", "cosine", "euclidean"] = ""
+    firestore_max_distance: float | None = None
+    firestore_query_timeout_seconds: int | None = None
+    firestore_max_retries: Literal[0, 1] | None = None
 
     rate_limit_ip_capacity: float = 20
     rate_limit_ip_refill_per_minute: float = 20
@@ -96,8 +111,111 @@ class Settings(BaseSettings):
             return value.get_secret_value().strip()
         return value.strip() if isinstance(value, str) else value
 
+    @field_validator(
+        "firestore_embedding_dimensions",
+        "firestore_query_timeout_seconds",
+        "firestore_max_retries",
+        mode="before",
+    )
+    @classmethod
+    def validate_optional_strict_integer(cls, value: object, info: object) -> object:
+        field_name = getattr(info, "field_name", "firestore setting")
+        if value == "":
+            return None
+        if isinstance(value, bool):
+            raise ValueError(f"{field_name.upper()} must be a strict integer")
+        if isinstance(value, str):
+            if not value.isascii() or not value.isdecimal():
+                raise ValueError(f"{field_name.upper()} must be a strict integer")
+            return int(value)
+        if type(value) is not int and value is not None:
+            raise ValueError(f"{field_name.upper()} must be a strict integer")
+        return value
+
+    @field_validator("firestore_max_distance", mode="before")
+    @classmethod
+    def validate_firestore_distance_type(cls, value: object) -> object:
+        if value == "":
+            return None
+        if isinstance(value, bool):
+            raise ValueError("FIRESTORE_MAX_DISTANCE must be a finite non-negative number")
+        if isinstance(value, str):
+            try:
+                value = float(value)
+            except ValueError as error:
+                raise ValueError(
+                    "FIRESTORE_MAX_DISTANCE must be a finite non-negative number"
+                ) from error
+        if type(value) not in {int, float} and value is not None:
+            raise ValueError("FIRESTORE_MAX_DISTANCE must be a finite non-negative number")
+        if value is not None:
+            numeric = cast(int | float, value)
+            if not math.isfinite(float(numeric)) or numeric < 0:
+                raise ValueError("FIRESTORE_MAX_DISTANCE must be a finite non-negative number")
+        return value
+
     @model_validator(mode="after")
     def validate_provider_pair(self) -> "Settings":
+        hosted_values: tuple[tuple[str, object], ...] = (
+            ("FIRESTORE_PROJECT_ID", self.firestore_project_id),
+            ("FIRESTORE_CORPUS_ID", self.firestore_corpus_id),
+            ("FIRESTORE_CORPUS_VERSION", self.firestore_corpus_version),
+            ("FIRESTORE_EMBEDDING_IDENTITY", self.firestore_embedding_identity),
+            ("FIRESTORE_EMBEDDING_DIMENSIONS", self.firestore_embedding_dimensions),
+            ("FIRESTORE_DISTANCE_MEASURE", self.firestore_distance_measure),
+            ("FIRESTORE_MAX_DISTANCE", self.firestore_max_distance),
+            ("FIRESTORE_QUERY_TIMEOUT_SECONDS", self.firestore_query_timeout_seconds),
+            ("FIRESTORE_MAX_RETRIES", self.firestore_max_retries),
+        )
+        if self.retrieval_backend == "local":
+            for name, value in hosted_values:
+                if value not in (None, ""):
+                    raise ValueError(f"{name} must be blank when RETRIEVAL_BACKEND=local")
+        else:
+            if self.deployment_mode == "production":
+                raise ValueError("RETRIEVAL_BACKEND=firestore is not available in production")
+            if self.corpus_path is not None:
+                raise ValueError("CORPUS_PATH must be unset when RETRIEVAL_BACKEND=firestore")
+            if os.getenv("GOOGLE_SDK_PYTHON_LOGGING_SCOPE", "").strip():
+                raise ValueError(
+                    "GOOGLE_SDK_PYTHON_LOGGING_SCOPE must be blank when RETRIEVAL_BACKEND=firestore"
+                )
+            for name, value in hosted_values:
+                if value in (None, ""):
+                    raise ValueError(f"{name} is required when RETRIEVAL_BACKEND=firestore")
+            if _FIRESTORE_PROJECT_PATTERN.fullmatch(self.firestore_project_id) is None:
+                raise ValueError("FIRESTORE_PROJECT_ID is invalid")
+            from app.retrieval_contracts import ExactCorpusReference
+            try:
+                ExactCorpusReference(
+                    corpus_id=self.firestore_corpus_id,
+                    corpus_version="v1",
+                )
+            except ValidationError:
+                raise ValueError("FIRESTORE_CORPUS_ID is invalid") from None
+            try:
+                ExactCorpusReference(
+                    corpus_id="docs",
+                    corpus_version=self.firestore_corpus_version,
+                )
+            except ValidationError:
+                raise ValueError("FIRESTORE_CORPUS_VERSION is invalid") from None
+            identity = self.firestore_embedding_identity
+            if (
+                identity != identity.strip()
+                or not 1 <= len(identity) <= 256
+                or not identity.isascii()
+                or any(ord(char) < 32 or ord(char) > 126 for char in identity)
+            ):
+                raise ValueError("FIRESTORE_EMBEDDING_IDENTITY is invalid")
+            dimensions = self.firestore_embedding_dimensions
+            if dimensions is None or not 1 <= dimensions <= 2_048:
+                raise ValueError("FIRESTORE_EMBEDDING_DIMENSIONS is invalid")
+            if self.firestore_distance_measure not in ("cosine", "euclidean"):
+                raise ValueError("FIRESTORE_DISTANCE_MEASURE is invalid")
+            timeout = self.firestore_query_timeout_seconds
+            if timeout is None or not 1 <= timeout <= 30:
+                raise ValueError("FIRESTORE_QUERY_TIMEOUT_SECONDS is invalid")
         if self.provider == "gemini" and (
             self.gemini_api_key is None or not self.gemini_api_key.get_secret_value()
         ):

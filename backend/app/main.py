@@ -4,7 +4,7 @@ import sqlite3
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +18,7 @@ from app.api.chat import router as chat_router
 from app.api.contracts import REQUEST_BODY_MAX_BYTES
 from app.config import Settings, get_settings
 from app.db import bootstrap
+from app.embeddings import default_embedding_function
 from app.ingest.startup import ingest_corpus
 from app.logging_config import configure_logging
 from app.providers.base import Provider
@@ -25,7 +26,13 @@ from app.providers.echo import EchoProvider
 from app.providers.ollama import OllamaProvider
 from app.ratelimit import RateLimiter
 from app.retrieval import LocalRetrievalAdapter
-from app.retrieval_contracts import RetrievalAdapter
+from app.retrieval_contracts import (
+    DistanceMeasure,
+    ExactCorpusReference,
+    LocalActiveScope,
+    RetrievalAdapter,
+    RetrievalScope,
+)
 from app.vectorstore import get_document_collection, get_vector_client
 
 logger = logging.getLogger("app")
@@ -106,30 +113,97 @@ async def _close_owned_provider(provider: Provider) -> None:
         await close()
 
 
+def _firestore_policy(settings: Settings) -> tuple[ExactCorpusReference, DistanceMeasure, float]:
+    scope = ExactCorpusReference(
+        corpus_id=settings.firestore_corpus_id,
+        corpus_version=settings.firestore_corpus_version,
+    )
+    measure = cast(DistanceMeasure, settings.firestore_distance_measure)
+    maximum = settings.firestore_max_distance
+    if maximum is None:
+        raise RuntimeError("FIRESTORE_MAX_DISTANCE is required")
+    return scope, measure, maximum
+
+
+def _default_firestore_adapter(settings: Settings) -> RetrievalAdapter:
+    from app.retrieval_firestore import (
+        FirestoreRetrievalAdapter,
+        create_firestore_vector_client,
+    )
+
+    scope, measure, _ = _firestore_policy(settings)
+    dimensions = settings.firestore_embedding_dimensions
+    timeout = settings.firestore_query_timeout_seconds
+    retries = settings.firestore_max_retries
+    if dimensions is None or timeout is None or retries is None:
+        raise RuntimeError("Firestore retrieval configuration is incomplete")
+    embedding_function = default_embedding_function(settings)
+    client = create_firestore_vector_client(settings.firestore_project_id)
+    return FirestoreRetrievalAdapter(
+        client=client,
+        embedding_function=embedding_function,
+        scope=scope,
+        embedding_identity=settings.firestore_embedding_identity,
+        embedding_dimensions=dimensions,
+        distance_measure=cast("Literal['cosine', 'euclidean']", measure),
+        timeout_seconds=timeout,
+        max_retries=retries,
+        owns_client=True,
+    )
+
+
+async def _close_owned_retrieval(adapter: RetrievalAdapter) -> None:
+    close = getattr(adapter, "aclose", None)
+    if close is not None:
+        await close()
+
+
 def create_app(
     settings: Settings | None = None,
     provider: Provider | None = None,
     retrieval_adapter: RetrievalAdapter | None = None,
+    retrieval_scope: RetrievalScope | None = None,
+    retrieval_distance_measure: DistanceMeasure | None = None,
+    retrieval_max_distance: float | None = None,
 ) -> FastAPI:
     configure_logging()
     settings = settings or get_settings()
     owns_provider = provider is None
     selected_provider = _default_provider(settings) if provider is None else provider
+    selected_scope: RetrievalScope
+    selected_measure: DistanceMeasure
+    selected_max_distance: float
+    if retrieval_adapter is None and settings.retrieval_backend == "firestore":
+        selected_scope, selected_measure, selected_max_distance = _firestore_policy(settings)
+    else:
+        selected_scope = retrieval_scope or LocalActiveScope()
+        selected_measure = retrieval_distance_measure or "squared_l2"
+        selected_max_distance = (
+            settings.retrieval_max_distance
+            if retrieval_max_distance is None
+            else retrieval_max_distance
+        )
+    owns_retrieval = retrieval_adapter is None and settings.retrieval_backend == "firestore"
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.corpus_ready = False
         db: sqlite3.Connection | None = None
         vector_client = None
+        selected_retrieval: RetrievalAdapter | None = retrieval_adapter
         try:
             db = bootstrap(settings.database_path)
             app.state.db = db
             vector_client = get_vector_client(settings)
             app.state.vector_client = vector_client
             app.state.document_collection = get_document_collection(vector_client, settings)
-            app.state.retrieval_adapter = retrieval_adapter or LocalRetrievalAdapter(
-                app.state.document_collection
-            )
+            if selected_retrieval is None:
+                selected_retrieval = (
+                    _default_firestore_adapter(settings)
+                    if settings.retrieval_backend == "firestore"
+                    else LocalRetrievalAdapter(app.state.document_collection)
+                )
+            app.state.retrieval_adapter = selected_retrieval
             if settings.corpus_path is not None:
                 summary = ingest_corpus(
                     db=app.state.db,
@@ -147,15 +221,19 @@ def create_app(
             app.state.corpus_ready = True
         except Exception:
             try:
-                if vector_client is not None:
-                    vector_client.close()
+                if owns_retrieval and selected_retrieval is not None:
+                    await _close_owned_retrieval(selected_retrieval)
             finally:
                 try:
-                    if db is not None:
-                        db.close()
+                    if vector_client is not None:
+                        vector_client.close()
                 finally:
-                    if owns_provider:
-                        await _close_owned_provider(selected_provider)
+                    try:
+                        if db is not None:
+                            db.close()
+                    finally:
+                        if owns_provider:
+                            await _close_owned_provider(selected_provider)
             raise
         logger.info(
             "app started",
@@ -168,17 +246,24 @@ def create_app(
             yield
         finally:
             try:
-                vector_client.close()
+                if owns_retrieval and selected_retrieval is not None:
+                    await _close_owned_retrieval(selected_retrieval)
             finally:
                 try:
-                    app.state.db.close()
+                    vector_client.close()
                 finally:
-                    if owns_provider:
-                        await _close_owned_provider(selected_provider)
+                    try:
+                        app.state.db.close()
+                    finally:
+                        if owns_provider:
+                            await _close_owned_provider(selected_provider)
 
     app = FastAPI(title="Cairn", lifespan=lifespan)
     app.state.settings = settings
     app.state.provider = selected_provider
+    app.state.retrieval_scope = selected_scope
+    app.state.retrieval_distance_measure = selected_measure
+    app.state.retrieval_max_distance = selected_max_distance
     app.state.ip_rate_limiter = RateLimiter(
         settings.rate_limit_ip_capacity, settings.rate_limit_ip_refill_per_minute
     )

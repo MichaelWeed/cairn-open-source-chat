@@ -45,6 +45,14 @@ this stage.
   fails closed unless generation is Ollama or Gemini and embeddings are Ollama.
   Retrieved support context is sent as untrusted JSON data, not as a system
   instruction, and Gemini errors and logs retain only normalized content-free fields.
+* **Optional Firestore retrieval boundary.** The SDK is absent from the default
+  install and imported only after explicit development/test selection. Configuration
+  fixes the database, collection, schema, fields, exact corpus scope, bounds,
+  timeout, and retry count. Authentication uses runtime Application Default
+  Credentials; credentials and endpoints are not Cairn settings or build arguments.
+  Nonblank `GOOGLE_SDK_PYTHON_LOGGING_SCOPE` is rejected, adapter errors are
+  content-free, and deterministic tests deny ADC, DNS, sockets, providers, and the
+  production factory. Production selection remains fail-closed.
 * **Supply chain.** `uv.lock`/`package-lock.json` with hashes; CycloneDX SBOM regenerated and
   diffed against the committed one on every `make validate` run; `osv-scanner` (lockfiles) and
   `grype` (built images) gates; container images pinned by digest; a 14-day dependency cooldown

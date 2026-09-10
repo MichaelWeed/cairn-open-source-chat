@@ -37,7 +37,7 @@ validation.
     },
     "retrieval": {
       "local_sqlite_flat": "available",
-      "hosted_durable": "planned"
+      "hosted_durable": "development_only"
     },
     "corpus": {
       "local_directory": "available",
@@ -90,15 +90,18 @@ feature is built for its documented path, `development_only` identifies determin
 development/test implementations, and `planned` means callers must not depend on it.
 Gemini availability requires the optional dependency or image profile, an explicit
 provider selection, and a server-side key. `operations.hosted_readiness` remains
-`planned`; `/readyz` does not probe Gemini. The chat and SSE compatibility versions
-are unchanged.
+`planned`; `/readyz` does not probe Gemini or Firestore. `hosted_durable` is
+`development_only`: the optional Firestore adapter can perform bounded exact-scope
+reads in development and tests, while production selection and lifecycle promotion
+remain unavailable. The chat and SSE compatibility versions are unchanged.
 
 ## Internal retrieval contract 1.0
 
 The provider-independent retrieval request and result models are versioned `1.0`.
-The built adapter accepts only `local_active` with local corpus compatibility 2 and
-squared-L2 distance. Exact corpus ID and version references are validated but remain
-unsupported by the local store; they fail before any store read. This protocol layer
+The local adapter accepts only `local_active` with local corpus compatibility 2 and
+squared-L2 distance. Exact corpus ID and version references remain unsupported by
+the local store. The optional Firestore adapter accepts only one configured exact
+reference in development/test and does not alter the public request or event shape. This protocol layer
 requires no data migration for local retrieval store schema 1 or local corpus
 compatibility 2. It does not rename or reinterpret the existing SQLite index, ingestion
 metadata, public chat request, SSE events, or capability manifest.

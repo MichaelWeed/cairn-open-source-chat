@@ -34,11 +34,13 @@ from app.retrieval import (
     build_context_block,
 )
 from app.retrieval_contracts import (
+    DistanceMeasure,
     LocalActiveScope,
     RetrievalAdapter,
     RetrievalError,
     RetrievalRequest,
     RetrievalResult,
+    RetrievalScope,
 )
 
 logger = logging.getLogger("app")
@@ -109,6 +111,8 @@ async def chat_event_stream(
     retrieval_adapter: RetrievalAdapter,
     top_k: int = DEFAULT_TOP_K,
     max_distance: float = DEFAULT_MAX_DISTANCE,
+    retrieval_scope: RetrievalScope | None = None,
+    retrieval_distance_measure: DistanceMeasure = "squared_l2",
     ping_interval: float = PING_INTERVAL_SECONDS,
     system_instruction: str = "",
     max_output_tokens: int = 1500,
@@ -117,11 +121,11 @@ async def chat_event_stream(
     yield StatusEvent(state="retrieving", label="Searching the knowledge base")
     try:
         retrieval_request = RetrievalRequest(
-            scope=LocalActiveScope(),
+            scope=retrieval_scope or LocalActiveScope(),
             query=body.message,
             max_results=top_k,
             max_distance=max_distance,
-            distance_measure="squared_l2",
+            distance_measure=retrieval_distance_measure,
         )
     except ValidationError:
         logger.warning("retrieval failed", extra={"retrieval_error_code": "invalid_request"})
@@ -291,7 +295,9 @@ async def chat_message(request: Request, body: ChatMessageRequest) -> StreamingR
             body,
             retrieval_adapter,
             top_k=settings.retrieval_top_k,
-            max_distance=settings.retrieval_max_distance,
+            max_distance=request.app.state.retrieval_max_distance,
+            retrieval_scope=request.app.state.retrieval_scope,
+            retrieval_distance_measure=request.app.state.retrieval_distance_measure,
             system_instruction=settings.system_instruction,
             max_output_tokens=settings.max_output_tokens,
             max_output_chars=settings.max_output_chars,

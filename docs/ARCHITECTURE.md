@@ -55,7 +55,7 @@ Three properties of this diagram carry most of the design weight:
 | Provider adapters | `backend/app/providers/` | Built: echo, Ollama, optional Gemini generation |
 | Embeddings | `backend/app/embeddings/` | Built: fake, Ollama |
 | Vector store | `backend/app/vectorstore.py` | Built. SQLite flat index, version 1, see [ADR-0007](adr/0007-sqlite-flat-vector-index.md) |
-| Retrieval protocol + local adapter + refusal | `backend/app/retrieval_contracts.py`, `backend/app/retrieval.py` | Built. Contract 1.0; `local_active` SQLite only |
+| Retrieval protocol + adapters + refusal | `backend/app/retrieval_contracts.py`, `backend/app/retrieval.py`, `backend/app/retrieval_firestore.py` | Built. Contract 1.0; default `local_active` SQLite plus optional development-only exact-scope Firestore reads |
 | Ingestion pipeline | `backend/app/ingest/` | Built; mounted startup requires a versioned provenance manifest, while direct callable ingestion retains internal citations |
 | Rate limiting | `backend/app/ratelimit.py` | Built. In-process, single-instance |
 | Metadata store | `backend/app/db/` | Built. SQLite, WAL |
@@ -125,11 +125,15 @@ not a bug fix.
 * **The server holds no conversation state.** History travels with the request from
   the client. Consequence: the backend is horizontally scalable in principle, and
   chat text never needs to touch disk. See [ADR-0004](adr/0004-stateless-conversation.md).
-* **The vector index is local and versioned.** Every ingestion path writes through
+* **The default vector index is local and versioned.** Every ingestion path writes through
   the lifespan-owned collection handle. The SQLite flat index is stored at
   `CHROMA_PATH/cairn-vectors-v1.sqlite3`; legacy Chroma files are not read or
   changed, and corpus re-ingestion is explicit. See
-  [ADR-0007](adr/0007-sqlite-flat-vector-index.md).
+  [ADR-0007](adr/0007-sqlite-flat-vector-index.md). The optional Firestore adapter
+  is a read-only development/test boundary: it applies four exact equality filters,
+  a fixed projection and vector field, a K + 1 query, and deterministic
+  `(distance, chunk_id)` ordering. It neither writes nor promotes corpus versions;
+  candidate persistence belongs to KAN-49b and promotion/readiness to KAN-45.
 * **Contracts change only with their consumers.** The wire format is a frozen
   Pydantic model; changing it requires updating widget, tests, and documentation in
   the same change. See [ADR-0002](adr/0002-frozen-wire-contracts.md).

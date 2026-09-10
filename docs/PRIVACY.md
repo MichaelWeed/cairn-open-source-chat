@@ -44,6 +44,13 @@ message is never added to the retrievable corpus.
   context leave the operator's infrastructure for Google. Public widget context,
   session IDs, client IPs, and database paths are not included in that provider
   request. Cairn still does not persist chat transcripts or Gemini usage metadata.
+* **Firestore retrieval (optional, development/test only).** The current question is
+  embedded by the selected embedding provider and the query vector is sent to the
+  configured Google Cloud project through Application Default Credentials. The
+  bounded result can contain corpus chunk text and citation metadata. Cairn does
+  not send conversation history, session IDs, client IPs, or credentials to the
+  Firestore query, and the adapter neither writes nor logs query/result content.
+  No live Firestore call is part of validation.
 
 ## Backups
 
