@@ -3,23 +3,31 @@ from collections.abc import AsyncIterator
 
 import httpx
 
-from app.api.contracts import CHUNK_MAX_CHARS, ProviderChunk, ProviderGenerationRequest
+from app.api.contracts import CHUNK_MAX_CHARS, ProviderGenerationRequest
 from app.providers.base import Provider
+from app.providers.contracts import (
+    ProviderStreamEvent,
+    ProviderTextChunk,
+    ProviderUsage,
+    ProviderUsageChunk,
+    ProviderUsageValidationError,
+    merge_cumulative_usage,
+)
 
 
 class _InvalidProviderOutput(ValueError):
     """Content-free failure for output that cannot satisfy the provider seam."""
 
 
-def _provider_chunk(delta: str) -> ProviderChunk:
+def _provider_chunk(delta: str) -> ProviderTextChunk:
     try:
-        return ProviderChunk(delta=delta)
+        return ProviderTextChunk(delta=delta)
     except ValueError:
         raise _InvalidProviderOutput("Ollama returned invalid response content") from None
 
 
-def _split_complete_chunks(content: str) -> tuple[list[ProviderChunk], str]:
-    chunks: list[ProviderChunk] = []
+def _split_complete_chunks(content: str) -> tuple[list[ProviderTextChunk], str]:
+    chunks: list[ProviderTextChunk] = []
     while len(content) > CHUNK_MAX_CHARS:
         split_at = CHUNK_MAX_CHARS
         if not content[CHUNK_MAX_CHARS:].strip():
@@ -32,6 +40,44 @@ def _split_complete_chunks(content: str) -> tuple[list[ProviderChunk], str]:
         chunks.append(_provider_chunk(delta))
         content = content[split_at:]
     return chunks, content
+
+
+def _usage_chunk(
+    data: dict[str, object],
+    *,
+    model: str,
+    current: ProviderUsageChunk | None,
+) -> ProviderUsageChunk | None:
+    if "prompt_eval_count" not in data and "eval_count" not in data:
+        return None
+
+    def optional_count(value: object) -> int | None:
+        if value is None:
+            return None
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise _InvalidProviderOutput("Ollama returned invalid usage metadata")
+        return value
+
+    input_tokens = optional_count(data.get("prompt_eval_count"))
+    output_tokens = optional_count(data.get("eval_count"))
+    total_tokens: int | None = None
+    if input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
+    try:
+        update = ProviderUsageChunk(
+            provider="ollama",
+            model=model,
+            provider_attempt=1,
+            service_tier=None,
+            usage=ProviderUsage(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+            ),
+        )
+        return merge_cumulative_usage(current, update)
+    except (ValueError, ProviderUsageValidationError):
+        raise _InvalidProviderOutput("Ollama returned invalid usage metadata") from None
 
 
 class OllamaProvider(Provider):
@@ -57,7 +103,9 @@ class OllamaProvider(Provider):
         self._model = model
         self._client = client or httpx.AsyncClient(timeout=self._DEFAULT_TIMEOUT)
 
-    async def stream(self, request: ProviderGenerationRequest) -> AsyncIterator[ProviderChunk]:
+    async def stream(
+        self, request: ProviderGenerationRequest
+    ) -> AsyncIterator[ProviderStreamEvent]:
         messages: list[dict[str, str]] = []
         if request.system_instruction:
             messages.append({"role": "system", "content": request.system_instruction})
@@ -78,10 +126,22 @@ class OllamaProvider(Provider):
         ) as response:
             response.raise_for_status()
             pending_content = ""
+            cumulative_usage: ProviderUsageChunk | None = None
             async for line in response.aiter_lines():
                 if not line:
                     continue
                 data = json.loads(line)
+                if not isinstance(data, dict):
+                    raise _InvalidProviderOutput("Ollama returned invalid response content")
+                if data.get("done"):
+                    usage = _usage_chunk(
+                        data,
+                        model=self._model,
+                        current=cumulative_usage,
+                    )
+                    if usage is not None:
+                        cumulative_usage = usage
+                        yield usage
                 content = data.get("message", {}).get("content")
                 if content is not None and not isinstance(content, str):
                     raise _InvalidProviderOutput("Ollama returned invalid response content")

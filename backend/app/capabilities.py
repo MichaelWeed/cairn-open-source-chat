@@ -23,6 +23,7 @@ class Compatibility(CapabilityModel):
     widget: Literal["0.1.0"]
     local_retrieval_store: Literal["1"]
     local_corpus: Literal["2"]
+    provider_accounting: Literal["1.0"]
 
 
 class Providers(CapabilityModel):
@@ -64,6 +65,7 @@ class Operations(CapabilityModel):
     local_readiness: CapabilityState
     capability_discovery: CapabilityState
     hosted_readiness: CapabilityState
+    provider_usage_cost: CapabilityState
 
 
 class Capabilities(CapabilityModel):
@@ -77,7 +79,7 @@ class Capabilities(CapabilityModel):
 
 
 class CapabilityManifest(CapabilityModel):
-    schema_version: Literal["1.0"]
+    schema_version: Literal["1.1"]
     release: Release
     compatibility: Compatibility
     capabilities: Capabilities

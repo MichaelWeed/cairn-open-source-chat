@@ -121,7 +121,11 @@ The Gemini adapter imports its SDK only after explicit selection. It maps histor
 roles, keeps retrieved context and the current visitor question as separate JSON
 data in the final user turn, applies bounded token and wall-clock limits, and
 propagates task cancellation so disconnects stop work. It emits only current text
-chunks; usage metadata is neither exposed nor persisted in M3.
+chunks to the public stream. Provider adapters also emit bounded, self-identifying
+usage records internally. The chat endpoint consumes and filters those records so
+the frozen SSE payload is unchanged; usage is not persisted. Pure cost helpers can
+apply an operator-supplied, hash-identified price snapshot without owning a price
+catalog, budget policy, or sink.
 
 Errors ride the SSE stream rather than the HTTP status code — a rate-limited
 request returns HTTP 200 with a `rate_limited` error event. This surprises people
