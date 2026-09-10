@@ -6,7 +6,7 @@ import re
 from collections.abc import Sequence
 from datetime import date
 from decimal import Context, Decimal, localcontext
-from typing import Annotated, Any, Literal, Self
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -37,11 +37,14 @@ _CURRENCY_PATTERN = re.compile(r"^[A-Z]{3}$")
 _DECIMAL_CONTEXT = Context(prec=80)
 
 
-class ProviderAccountingError(ValueError):
+class ProviderAccountingError(Exception):
     """Content-free invalid accounting input."""
 
     def __init__(self) -> None:
         super().__init__("Provider accounting input is invalid.")
+
+    def __repr__(self) -> str:
+        return "ProviderAccountingError()"
 
     def errors(
         self,
@@ -78,22 +81,57 @@ class ProviderAccountingError(ValueError):
         )
 
 
-class _ContentFreeAccountingMetaclass(type(BaseModel)):  # type: ignore[misc]
-    def __call__(cls, *args: Any, **kwargs: Any) -> Any:
-        result: Any = None
+class _ContentFreeAccountingValidator:
+    def __init__(self, validator: Any) -> None:
+        self._validator = validator
+
+    def _validate(
+        self,
+        method_name: Literal["validate_python", "validate_json", "validate_strings"],
+        value: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        kwargs["extra"] = "forbid"
+        validated: Any = None
+        failed = False
         try:
-            result = super().__call__(*args, **kwargs)
+            validated = getattr(self._validator, method_name)(
+                value,
+                *args,
+                **kwargs,
+            )
         except ValidationError:
-            pass
-        if result is None:
+            failed = True
+        if failed:
             raise ProviderAccountingError from None
-        return result
+        return validated
+
+    def validate_python(self, value: Any, *args: Any, **kwargs: Any) -> Any:
+        return self._validate("validate_python", value, *args, **kwargs)
+
+    def validate_json(self, value: Any, *args: Any, **kwargs: Any) -> Any:
+        return self._validate("validate_json", value, *args, **kwargs)
+
+    def validate_strings(self, value: Any, *args: Any, **kwargs: Any) -> Any:
+        return self._validate("validate_strings", value, *args, **kwargs)
+
+    def validate_assignment(self, *args: Any, **kwargs: Any) -> Any:
+        validated: Any = None
+        failed = False
+        try:
+            validated = self._validator.validate_assignment(*args, **kwargs)
+        except ValidationError:
+            failed = True
+        if failed:
+            raise ProviderAccountingError from None
+        return validated
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._validator, name)
 
 
-class ProviderAccountingModel(
-    BaseModel,
-    metaclass=_ContentFreeAccountingMetaclass,
-):
+class ProviderAccountingModel(BaseModel):
     model_config = ConfigDict(
         frozen=True,
         extra="forbid",
@@ -102,87 +140,19 @@ class ProviderAccountingModel(
     )
 
     @classmethod
-    def model_validate(
-        cls,
-        obj: Any,
-        *,
-        strict: bool | None = None,
-        extra: Literal["allow", "ignore", "forbid"] | None = None,
-        from_attributes: bool | None = None,
-        context: Any | None = None,
-        by_alias: bool | None = None,
-        by_name: bool | None = None,
-    ) -> Self:
-        validated: Self | None = None
-        try:
-            validated = super().model_validate(
-                obj,
-                strict=strict,
-                extra=extra,
-                from_attributes=from_attributes,
-                context=context,
-                by_alias=by_alias,
-                by_name=by_name,
-            )
-        except ValidationError:
-            pass
-        if validated is None:
-            raise ProviderAccountingError from None
-        return validated
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        validator = cls.__pydantic_validator__
+        if not isinstance(validator, _ContentFreeAccountingValidator):
+            cls.__pydantic_validator__ = _ContentFreeAccountingValidator(validator)  # type: ignore[assignment]
 
-    @classmethod
-    def model_validate_json(
-        cls,
-        json_data: str | bytes | bytearray,
-        *,
-        strict: bool | None = None,
-        extra: Literal["allow", "ignore", "forbid"] | None = None,
-        context: Any | None = None,
-        by_alias: bool | None = None,
-        by_name: bool | None = None,
-    ) -> Self:
-        validated: Self | None = None
-        try:
-            validated = super().model_validate_json(
-                json_data,
-                strict=strict,
-                extra=extra,
-                context=context,
-                by_alias=by_alias,
-                by_name=by_name,
-            )
-        except ValidationError:
-            pass
-        if validated is None:
-            raise ProviderAccountingError from None
-        return validated
+    def __setattr__(self, name: str, value: Any) -> None:
+        del name, value
+        raise ProviderAccountingError from None
 
-    @classmethod
-    def model_validate_strings(
-        cls,
-        obj: Any,
-        *,
-        strict: bool | None = None,
-        extra: Literal["allow", "ignore", "forbid"] | None = None,
-        context: Any | None = None,
-        by_alias: bool | None = None,
-        by_name: bool | None = None,
-    ) -> Self:
-        validated: Self | None = None
-        try:
-            validated = super().model_validate_strings(
-                obj,
-                strict=strict,
-                extra=extra,
-                context=context,
-                by_alias=by_alias,
-                by_name=by_name,
-            )
-        except ValidationError:
-            pass
-        if validated is None:
-            raise ProviderAccountingError from None
-        return validated
+    def __delattr__(self, name: str) -> None:
+        del name
+        raise ProviderAccountingError from None
 
 
 def _canonical_decimal(value: Decimal) -> str:
@@ -331,7 +301,7 @@ def compute_price_snapshot_id(
     return hashlib.sha256(material).hexdigest()
 
 
-class ProviderPriceSnapshot(ProviderAccountingModel):  # type: ignore[metaclass]
+class ProviderPriceSnapshot(ProviderAccountingModel):
     schema_version: Literal["1.0"] = "1.0"
     snapshot_id: str
     provider: str
@@ -431,7 +401,7 @@ class ProviderPriceSnapshot(ProviderAccountingModel):  # type: ignore[metaclass]
         return _canonical_decimal(value)
 
 
-class ProviderAttemptAccountingInput(ProviderAccountingModel):  # type: ignore[metaclass]
+class ProviderAttemptAccountingInput(ProviderAccountingModel):
     schema_version: Literal["1.0"] = "1.0"
     provider: str
     model: str
@@ -467,7 +437,7 @@ class ProviderAttemptAccountingInput(ProviderAccountingModel):  # type: ignore[m
         return self
 
 
-class ProviderAttemptCostRecord(ProviderAccountingModel):  # type: ignore[metaclass]
+class ProviderAttemptCostRecord(ProviderAccountingModel):
     schema_version: Literal["1.0"] = "1.0"
     provider: str
     model: str
@@ -665,7 +635,7 @@ def price_provider_attempt(
     )
 
 
-class ProviderCostAggregate(ProviderAccountingModel):  # type: ignore[metaclass]
+class ProviderCostAggregate(ProviderAccountingModel):
     schema_version: Literal["1.0"] = "1.0"
     target_attempt_count: Annotated[
         StrictInt, Field(ge=1, le=MAX_SAFE_TOKEN_COUNT)

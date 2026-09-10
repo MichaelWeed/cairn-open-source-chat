@@ -1,7 +1,7 @@
 import json
 from datetime import date
 from decimal import Decimal
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -258,8 +258,10 @@ def test_snapshot_identity_covers_every_economic_and_provenance_field(
 def test_snapshot_is_frozen_and_round_trips_exact_json() -> None:
     snapshot = _snapshot()
 
-    with pytest.raises(ValidationError):
-        snapshot.currency = "EUR"
+    secret = "assignment-secret-sentinel"
+    with pytest.raises(ProviderAccountingError) as caught:
+        snapshot.currency = secret
+    _assert_content_free_error(caught.value, secret, "currency")
     assert ProviderPriceSnapshot.model_validate_json(snapshot.model_dump_json()) == snapshot
 
 
@@ -436,6 +438,43 @@ def test_accounting_models_reject_content_and_serialize_no_forbidden_fields() ->
         assert forbidden not in serialized
 
 
+def _content_free_error_rendering(error: ProviderAccountingError) -> str:
+    return (
+        str(error)
+        + repr(error)
+        + json.dumps(error.errors(include_input=True, include_context=True))
+        + error.json(include_input=True, include_context=True)
+        + repr(error.args)
+        + repr(error.__dict__)
+    )
+
+
+def _assert_content_free_error(
+    error: ProviderAccountingError,
+    *secrets: str,
+) -> None:
+    expected = [
+        {
+            "type": "provider_accounting_invalid",
+            "loc": (),
+            "msg": "Provider accounting input is invalid.",
+        }
+    ]
+    assert str(error) == "Provider accounting input is invalid."
+    assert repr(error) == "ProviderAccountingError()"
+    assert error.errors(include_input=True, include_context=True) == expected
+    assert json.loads(error.json(include_input=True, include_context=True)) == [
+        {**expected[0], "loc": []}
+    ]
+    assert error.args == ("Provider accounting input is invalid.",)
+    assert error.__dict__ == {}
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    rendered = _content_free_error_rendering(error)
+    for secret in secrets:
+        assert secret not in rendered
+
+
 @pytest.mark.parametrize("entrypoint", ["constructor", "python", "json", "strings"])
 def test_untrusted_accounting_validation_errors_are_content_free(
     entrypoint: str,
@@ -457,16 +496,142 @@ def test_untrusted_accounting_validation_errors_are_content_free(
                 {"message": secret}
             )
 
-    rendered = (
-        str(caught.value)
-        + json.dumps(caught.value.errors(include_input=True))
-        + caught.value.json(include_input=True)
+    _assert_content_free_error(caught.value, secret, "message")
+
+
+ValidationMode = Literal["python", "json", "strings"]
+ValidationExtra = Literal["allow", "ignore", "forbid"] | None
+
+
+def _attempt_payload_for_mode(mode: ValidationMode) -> dict[str, object]:
+    if mode == "python":
+        return _attempt().model_dump()
+    if mode == "json":
+        return cast(dict[str, object], json.loads(_attempt().model_dump_json()))
+    return {
+        "provider": "gemini",
+        "model": "gemini-3.8-flash",
+        "provider_attempt": "1",
+        "attempt_date": "2026-01-01",
+        "completion_state": "completed",
+        "answer_outcome": "grounded",
+    }
+
+
+def _validate_attempt_payload(
+    *,
+    surface: Literal["model", "type_adapter"],
+    mode: ValidationMode,
+    payload: dict[str, object],
+    extra: ValidationExtra,
+) -> ProviderAttemptAccountingInput:
+    if surface == "model":
+        if mode == "python":
+            return ProviderAttemptAccountingInput.model_validate(payload, extra=extra)
+        if mode == "json":
+            return ProviderAttemptAccountingInput.model_validate_json(
+                json.dumps(payload), extra=extra
+            )
+        return ProviderAttemptAccountingInput.model_validate_strings(
+            payload, extra=extra
+        )
+
+    adapter = TypeAdapter(ProviderAttemptAccountingInput)
+    if mode == "python":
+        return adapter.validate_python(payload, extra=extra)
+    if mode == "json":
+        return adapter.validate_json(json.dumps(payload), extra=extra)
+    return adapter.validate_strings(payload, extra=extra)
+
+
+@pytest.mark.parametrize("surface", ["model", "type_adapter"])
+@pytest.mark.parametrize("mode", ["python", "json", "strings"])
+@pytest.mark.parametrize("extra", [None, "allow", "ignore", "forbid"])
+def test_every_accounting_validation_surface_rejects_content_without_leakage(
+    surface: Literal["model", "type_adapter"],
+    mode: ValidationMode,
+    extra: ValidationExtra,
+) -> None:
+    secret = f"{surface}-{mode}-{extra}-secret-sentinel"
+    payload = {**_attempt_payload_for_mode(mode), "message": secret}
+
+    with pytest.raises(ProviderAccountingError) as caught:
+        _validate_attempt_payload(
+            surface=surface,
+            mode=mode,
+            payload=payload,
+            extra=extra,
+        )
+
+    _assert_content_free_error(caught.value, secret, "message")
+
+
+def test_type_adapter_extra_override_cannot_retain_content_on_any_accounting_model() -> None:
+    record = price_provider_attempt(_attempt())
+    aggregate = aggregate_provider_costs((record,), target_attempt_count=1)
+    accepted_models = (_snapshot(), _attempt(), record, aggregate)
+    secret = "retained-extra-secret-sentinel"
+
+    for accepted in accepted_models:
+        payload = {**accepted.model_dump(), "message": secret}
+        adapter: TypeAdapter[object] = TypeAdapter(type(accepted))
+        with pytest.raises(ProviderAccountingError) as caught:
+            adapter.validate_python(payload, extra="allow")
+        _assert_content_free_error(caught.value, secret, "message")
+
+
+@pytest.mark.parametrize("surface", ["model", "type_adapter"])
+@pytest.mark.parametrize("extra", ["allow", "ignore"])
+def test_nested_extra_override_is_also_forbidden_and_content_free(
+    surface: Literal["model", "type_adapter"],
+    extra: Literal["allow", "ignore"],
+) -> None:
+    payload = _attempt().model_dump()
+    nested = cast(dict[str, object], payload["price_snapshot"])
+    secret = f"nested-{surface}-{extra}-secret-sentinel"
+    nested["message"] = secret
+
+    with pytest.raises(ProviderAccountingError) as caught:
+        _validate_attempt_payload(
+            surface=surface,
+            mode="python",
+            payload=payload,
+            extra=extra,
+        )
+
+    _assert_content_free_error(caught.value, secret, "message")
+
+
+@pytest.mark.parametrize("surface", ["model", "type_adapter"])
+def test_malformed_json_is_sanitized_before_raw_parser_errors_escape(
+    surface: Literal["model", "type_adapter"],
+) -> None:
+    secret = f"malformed-{surface}-secret-sentinel"
+    encoded = f'{{"message":"{secret}"'
+
+    with pytest.raises(ProviderAccountingError) as caught:
+        if surface == "model":
+            ProviderAttemptAccountingInput.model_validate_json(encoded)
+        else:
+            TypeAdapter(ProviderAttemptAccountingInput).validate_json(encoded)
+
+    _assert_content_free_error(caught.value, secret, "message")
+
+
+def test_all_validation_surfaces_preserve_valid_accounting_models() -> None:
+    native = _attempt_payload_for_mode("python")
+    encoded = json.dumps(_attempt_payload_for_mode("json"))
+    strings = _attempt_payload_for_mode("strings")
+
+    assert ProviderAttemptAccountingInput.model_validate(native) == _attempt()
+    assert TypeAdapter(ProviderAttemptAccountingInput).validate_python(native) == _attempt()
+    assert ProviderAttemptAccountingInput.model_validate_json(encoded) == _attempt()
+    assert TypeAdapter(ProviderAttemptAccountingInput).validate_json(encoded) == _attempt()
+    expected_strings = _attempt(
+        attempt_date=date(2026, 1, 1), usage=None, price_snapshot=None
     )
-    assert rendered.count("Provider accounting input is invalid.") == 3
-    assert secret not in rendered
-    assert "message" not in rendered
-    assert caught.value.__cause__ is None
-    assert caught.value.__context__ is None
+    assert ProviderAttemptAccountingInput.model_validate_strings(strings) == expected_strings
+    assert TypeAdapter(ProviderAttemptAccountingInput).validate_strings(strings) == expected_strings
 
 
 def test_sensitive_snapshot_values_do_not_survive_structured_validation_error() -> None:
@@ -479,14 +644,10 @@ def test_sensitive_snapshot_values_do_not_survive_structured_validation_error() 
     with pytest.raises(ProviderAccountingError) as caught:
         ProviderPriceSnapshot.model_validate(payload)
 
-    rendered = (
-        str(caught.value)
-        + json.dumps(caught.value.errors(include_input=True))
-        + caught.value.json(include_input=True)
+    _assert_content_free_error(
+        caught.value,
+        source_secret,
+        str(rate_secret),
+        "source_url",
+        "output_rate_per_million",
     )
-    assert source_secret not in rendered
-    assert str(rate_secret) not in rendered
-    assert "source_url" not in rendered
-    assert "output_rate_per_million" not in rendered
-    assert caught.value.__cause__ is None
-    assert caught.value.__context__ is None
