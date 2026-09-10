@@ -7,6 +7,8 @@ import {
   MESSAGE_MAX_CODE_POINTS,
   boundedHistory,
   capabilityEndpoint,
+  cancelAndReleaseReader,
+  cancelUnreadBody,
   chatEndpoint,
   chatRequestPayload,
   codePointLength,
@@ -53,6 +55,25 @@ type AttemptResult =
   | { kind: "protocol" }
   | { kind: "aborted" };
 
+interface TransportClock {
+  now: () => number;
+  setTimeout: (callback: () => void, milliseconds: number) => ReturnType<typeof setTimeout>;
+  clearTimeout: (handle: ReturnType<typeof setTimeout>) => void;
+}
+
+type DeadlineResult<T> =
+  | { kind: "value"; value: T }
+  | { kind: "timeout" }
+  | { kind: "aborted" };
+
+const browserTransportClock: TransportClock = {
+  now: () => performance.now(),
+  setTimeout: (callback, milliseconds) => setTimeout(callback, milliseconds),
+  clearTimeout: (handle) => clearTimeout(handle),
+};
+
+const nativeNonce = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "nonce");
+
 let widgetCount = 0;
 
 export class CairnChat extends HTMLElement {
@@ -73,6 +94,7 @@ export class CairnChat extends HTMLElement {
   private currentHandoffReason: "refused" | "error" | null = null;
   private styleElement: HTMLStyleElement | null = null;
   private suppressNonceAttributeChange = false;
+  private transportClock: TransportClock = browserTransportClock;
   private launcher!: HTMLButtonElement;
   private panel!: HTMLElement;
   private heading!: HTMLElement;
@@ -87,6 +109,22 @@ export class CairnChat extends HTMLElement {
   private error!: HTMLElement;
   private privacyLink!: HTMLAnchorElement;
   private handoffLink!: HTMLAnchorElement;
+
+  get nonce(): string {
+    return nativeNonce?.get?.call(this) as string | undefined ?? this.getAttribute("nonce") ?? "";
+  }
+
+  set nonce(value: string) {
+    const normalized = String(value);
+    this.suppressNonceAttributeChange = true;
+    try {
+      if (nativeNonce?.set !== undefined) nativeNonce.set.call(this, normalized);
+      else this.setAttribute("nonce", normalized);
+    } finally {
+      this.suppressNonceAttributeChange = false;
+    }
+    if (this.initialized) this.syncConfiguration(normalized);
+  }
 
   static get observedAttributes(): string[] {
     return ["api-url", "assistant-name", "theme", "privacy-url", "handoff-url", "nonce"];
@@ -105,10 +143,18 @@ export class CairnChat extends HTMLElement {
     this.generation += 1;
   }
 
-  attributeChangedCallback(name: string, _oldValue: string | null, newValue: string | null): void {
-    if (this.initialized && !this.suppressNonceAttributeChange) {
-      this.syncConfiguration(name === "nonce" ? newValue ?? "" : undefined);
+  attributeChangedCallback(name: string, _oldValue: string | null, _newValue: string | null): void {
+    if (!this.initialized || this.suppressNonceAttributeChange) return;
+    if (name !== "nonce") {
+      this.syncConfiguration();
+      return;
     }
+    // Browsers update the nonce IDL property after the reflected-attribute callback.
+    queueMicrotask(() => {
+      if (this.initialized && !this.suppressNonceAttributeChange) {
+        this.syncConfiguration(this.nonce ?? "");
+      }
+    });
   }
 
   private render(): void {
@@ -121,7 +167,6 @@ export class CairnChat extends HTMLElement {
         <div class="tail"><form id="form"><label for="${this.instanceId}-input">Message</label><textarea id="${this.instanceId}-input" rows="2" aria-describedby="${this.instanceId}-counter" placeholder="Ask a question about your docs"></textarea><div class="composer-meta"><span class="hint">Enter to send · Shift+Enter for a new line</span><span class="counter" id="${this.instanceId}-counter" role="status" aria-live="polite">0 / 500</span></div><div class="actions"><button class="clear" id="clear" type="button">Clear chat</button><button class="send" id="send" type="submit">Send</button></div></form><p class="error" id="error" role="alert" hidden></p><a class="handoff" id="handoff" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" hidden>Contact support</a><footer><p class="disclosure">Messages go to this site’s Cairn service. History stays on this page, and Cairn does not store a server transcript.</p><a class="privacy" id="privacy" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" hidden>Privacy details</a></footer></div>
       </section>`;
     this.root.append(markup.content.cloneNode(true));
-    this.updateStyleNonce((this.nonce ?? "").trim());
 
     this.launcher = this.requireElement("launcher");
     this.panel = this.requireElement(`${this.instanceId}-panel`);
@@ -176,9 +221,17 @@ export class CairnChat extends HTMLElement {
   private syncConfiguration(nonceOverride?: string): void {
     const priorConfiguration = this.configuration;
     const priorBase = priorConfiguration?.apiBase ?? null;
-    const nonceValue = nonceOverride ?? priorConfiguration?.styleNonce ?? this.nonce;
+    const visibleNonce = this.nonce ?? "";
+    const nonceValue = (
+      nonceOverride !== undefined
+        ? nonceOverride
+        : visibleNonce !== ""
+          ? visibleNonce
+          : this.styleElement?.nonce ?? ""
+    ).trim();
     const result = parseWidgetConfiguration((name) => this.getAttribute(name), nonceValue);
     if (!result.ok) {
+      if (this.styleElement === null) this.updateStyleNonce("");
       this.concealHostNonce();
       this.configuration = null;
       this.generation += 1;
@@ -204,7 +257,7 @@ export class CairnChat extends HTMLElement {
     this.launcher.querySelector(".launcher-label")!.textContent = `Ask ${next.assistantName}`;
     this.launcher.setAttribute("aria-label", `Chat with ${next.assistantName}`);
     this.setAttribute("data-theme", next.theme);
-    this.updateStyleNonce(next.styleNonce ?? "");
+    this.updateStyleNonce(nonceValue);
     this.concealHostNonce();
     this.setSafeLink(this.privacyLink, next.privacyUrl);
     if (this.currentHandoffReason !== null) this.setSafeLink(this.handoffLink, next.handoffUrl);
@@ -262,26 +315,49 @@ export class CairnChat extends HTMLElement {
     const generation = this.generation;
     const controller = new AbortController();
     this.compatibilityController = controller;
-    const timeout = setTimeout(() => controller.abort(), CAPABILITY_DEADLINE_SECONDS * 1_000);
+    const started = this.transportClock.now();
     let response: Response;
     try {
-      response = await fetch(capabilityEndpoint(config.apiBase), {
+      const fetchResult = await withDeadline(fetch(capabilityEndpoint(config.apiBase), {
         method: "GET",
         credentials: "omit",
         referrerPolicy: "no-referrer",
         cache: "no-store",
         headers: { Accept: "application/json" },
         signal: controller.signal,
-      });
+      }), CAPABILITY_DEADLINE_SECONDS * 1_000, this.transportClock, controller.signal);
+      if (fetchResult.kind === "timeout") {
+        controller.abort();
+        if (this.isCurrent(generation, config.apiBase)) this.compatibilityFailure("network");
+        if (this.compatibilityController === controller) this.compatibilityController = null;
+        return;
+      }
+      if (fetchResult.kind === "aborted") {
+        if (this.compatibilityController === controller) this.compatibilityController = null;
+        return;
+      }
+      response = fetchResult.value;
     } catch {
       if (this.isCurrent(generation, config.apiBase)) this.compatibilityFailure("network");
-      clearTimeout(timeout);
       if (this.compatibilityController === controller) this.compatibilityController = null;
       return;
     }
     try {
-      const manifest = await readBoundedJsonResponse(response);
-      if (!this.isCurrent(generation, config.apiBase)) return;
+      if (!this.isCurrent(generation, config.apiBase)) {
+        cancelUnreadBody(response.body);
+        return;
+      }
+      const manifest = await readBoundedJsonResponse(response, undefined, async (reader) => {
+        const remaining = CAPABILITY_DEADLINE_SECONDS * 1_000 -
+          (this.transportClock.now() - started);
+        const readResult = await withDeadline(
+          reader.read(), remaining, this.transportClock, controller.signal,
+        );
+        if (readResult.kind === "value") return readResult.value;
+        if (readResult.kind === "timeout") controller.abort();
+        return null;
+      });
+      if (!this.isCurrent(generation, config.apiBase) || controller.signal.aborted) return;
       if (!validateCapabilityManifest(manifest)) {
         this.compatibilityFailure("compatibility");
         return;
@@ -294,7 +370,6 @@ export class CairnChat extends HTMLElement {
       if (!this.isCurrent(generation, config.apiBase)) return;
       this.compatibilityFailure(controller.signal.aborted ? "network" : "compatibility");
     } finally {
-      clearTimeout(timeout);
       if (this.compatibilityController === controller) this.compatibilityController = null;
     }
   }
@@ -339,10 +414,11 @@ export class CairnChat extends HTMLElement {
     this.setState("sending");
 
     try {
-      let result = await this.streamAttempt(endpoint, payload, controller, assistant);
+      const isCurrent = () => this.isCurrent(generation, config.apiBase) && !controller.signal.aborted;
+      let result = await this.streamAttempt(endpoint, payload, controller, assistant, isCurrent);
       if (result.kind === "service" && result.retryable && this.isCurrent(generation, config.apiBase)) {
         this.resetAssistant(assistant);
-        result = await this.streamAttempt(endpoint, payload, controller, assistant);
+        result = await this.streamAttempt(endpoint, payload, controller, assistant, isCurrent);
       }
       if (!this.isCurrent(generation, config.apiBase)) return;
       if (result.kind === "done") {
@@ -370,12 +446,13 @@ export class CairnChat extends HTMLElement {
     payload: ReturnType<typeof chatRequestPayload>,
     controller: AbortController,
     assistant: AssistantExchange,
+    isCurrent: () => boolean = () => !controller.signal.aborted,
   ): Promise<AttemptResult> {
-    const started = Date.now();
+    const started = this.transportClock.now();
     let lastCompleteRecord = started;
     let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
     try {
-      const response = await withDeadline(fetch(endpoint, {
+      const fetchResult = await withDeadline(fetch(endpoint, {
         method: "POST",
         credentials: "omit",
         referrerPolicy: "no-referrer",
@@ -383,17 +460,29 @@ export class CairnChat extends HTMLElement {
         headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
         body: JSON.stringify(payload),
         signal: controller.signal,
-      }), streamDeadlineRemaining(started, lastCompleteRecord, Date.now()));
-      if (response === null) {
+      }), streamDeadlineRemaining(
+        started, lastCompleteRecord, this.transportClock.now(),
+      ), this.transportClock, controller.signal);
+      if (fetchResult.kind === "timeout") {
         controller.abort();
         return { kind: "protocol" };
       }
+      if (fetchResult.kind === "aborted") return { kind: "aborted" };
+      const response = fetchResult.value;
+      if (!isCurrent()) {
+        cancelUnreadBody(response.body);
+        return { kind: "aborted" };
+      }
       const declaredLength = response.headers.get("content-length");
-      if (!response.ok || response.body === null) return { kind: "network" };
+      if (!response.ok) {
+        cancelUnreadBody(response.body);
+        return { kind: "network" };
+      }
+      if (response.body === null) return { kind: "network" };
       if (declaredLength !== null) {
         const length = Number(declaredLength);
         if (!Number.isSafeInteger(length) || length < 0 || length > CHAT_RESPONSE_MAX_BYTES) {
-          await response.body.cancel();
+          cancelUnreadBody(response.body);
           return { kind: "protocol" };
         }
       }
@@ -403,24 +492,45 @@ export class CairnChat extends HTMLElement {
       const decoder = new BoundedSseDecoder();
       const streamState = newChatAttemptState();
       for (;;) {
-        const now = Date.now();
+        const now = this.transportClock.now();
         const remaining = streamDeadlineRemaining(started, lastCompleteRecord, now);
-        if (remaining <= 0) return { kind: "protocol" };
-        const read = await withDeadline(reader.read(), remaining);
-        if (read === null) return { kind: "protocol" };
+        if (remaining <= 0) {
+          controller.abort();
+          return { kind: "protocol" };
+        }
+        const readResult = await withDeadline(
+          reader.read(), remaining, this.transportClock, controller.signal,
+        );
+        if (readResult.kind === "timeout") {
+          controller.abort();
+          return { kind: "protocol" };
+        }
+        if (readResult.kind === "aborted" || !isCurrent()) return { kind: "aborted" };
+        const read = readResult.value;
         if (read.done) {
           decoder.finish();
+          if (streamDeadlineRemaining(
+            started, lastCompleteRecord, this.transportClock.now(),
+          ) <= 0) {
+            controller.abort();
+            return { kind: "protocol" };
+          }
           return streamState.terminal ? this.completedResult(assistant, streamState) : { kind: "protocol" };
         }
         const events = decoder.push(read.value);
-        if (decoder.recordsCompleted > 0) lastCompleteRecord = Date.now();
+        if (!isCurrent()) return { kind: "aborted" };
+        if (decoder.recordsCompleted > 0) lastCompleteRecord = this.transportClock.now();
         if (!validateChatEventBatch(events, streamState)) return { kind: "protocol" };
         for (const event of events) {
-          const result = this.applyEvent(event, assistant);
-          if (result !== null) {
-            await reader.cancel();
-            return result;
+          if (!isCurrent()) return { kind: "aborted" };
+          if (streamDeadlineRemaining(
+            started, lastCompleteRecord, this.transportClock.now(),
+          ) <= 0) {
+            controller.abort();
+            return { kind: "protocol" };
           }
+          const result = this.applyEvent(event, assistant);
+          if (result !== null) return result;
         }
       }
     } catch (error) {
@@ -428,12 +538,7 @@ export class CairnChat extends HTMLElement {
       return error instanceof SseDecodeError ? { kind: "protocol" } : { kind: "network" };
     } finally {
       if (reader !== null) {
-        try {
-          await reader.cancel();
-        } catch {
-          // Cancellation is best effort after terminal ownership has been released.
-        }
-        reader.releaseLock();
+        cancelAndReleaseReader(reader);
       }
       if (this.activeReader === reader) this.activeReader = null;
     }
@@ -562,7 +667,7 @@ export class CairnChat extends HTMLElement {
     this.chatController = null;
     const reader = this.activeReader;
     this.activeReader = null;
-    if (reader !== null) void reader.cancel().catch(() => undefined);
+    if (reader !== null) cancelAndReleaseReader(reader);
     if (this.initialized) this.messages.setAttribute("aria-busy", "false");
   }
 
@@ -661,13 +766,38 @@ export class CairnChat extends HTMLElement {
   }
 }
 
-async function withDeadline<T>(promise: Promise<T>, milliseconds: number): Promise<T | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([promise, new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), milliseconds); })]);
-  } finally {
-    clearTimeout(timer);
-  }
+function withDeadline<T>(
+  promise: Promise<T>,
+  milliseconds: number,
+  clock: TransportClock,
+  signal: AbortSignal,
+): Promise<DeadlineResult<T>> {
+  if (signal.aborted) return Promise.resolve({ kind: "aborted" });
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const settle = (result: DeadlineResult<T>): void => {
+      if (settled) return;
+      settled = true;
+      clock.clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      resolve(result);
+    };
+    const onAbort = (): void => settle({ kind: "aborted" });
+    const timer = clock.setTimeout(
+      () => settle({ kind: "timeout" }), Math.max(0, milliseconds),
+    );
+    signal.addEventListener("abort", onAbort, { once: true });
+    void promise.then(
+      (value) => settle({ kind: "value", value }),
+      (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        clock.clearTimeout(timer);
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 function getSessionId(): string {

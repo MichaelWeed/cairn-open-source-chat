@@ -116,7 +116,8 @@ function page(scenario) {
     ? `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${NONCE}'; style-src 'nonce-${NONCE}'; connect-src ${apiServer.origin}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">`
     : "";
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${csp}<script src="${apiServer.origin}/widget/widget.js" nonce="${NONCE}"></script></head><body><cairn-chat api-url="${apiServer.origin}" assistant-name="${scenario === "mobile" ? "客服😀".repeat(20) : "Cairn"}" theme="${theme}" privacy-url="${siteOrigin}/privacy" handoff-url="${siteOrigin}/support"${hostNonce}></cairn-chat><pre id="result"></pre><script nonce="${NONCE}">(async()=>{
-  const scenario=${JSON.stringify(scenario)},CANARY=${JSON.stringify(CANARY)},host=document.querySelector("cairn-chat"),root=host.shadowRoot,result=document.querySelector("#result"),events=[],violations=[];
+  const scenario=${JSON.stringify(scenario)},CANARY=${JSON.stringify(CANARY)},NONCE=${JSON.stringify(NONCE)},host=document.querySelector("cairn-chat"),root=host.shadowRoot,result=document.querySelector("#result"),events=[],violations=[];
+  const stateMirrors=(needle)=>{const seen=new Set(),contains=(value)=>{if(typeof value==="string")return value.includes(needle);if(value===null||typeof value!=="object"||seen.has(value))return false;const prototype=Object.getPrototypeOf(value);if(!Array.isArray(value)&&prototype!==Object.prototype&&prototype!==null)return false;seen.add(value);return Object.values(value).some(contains)};return Object.entries(host).filter(([key,value])=>key!=="styleElement"&&contains(value)).map(([key])=>key)};
   for(const name of ["cairn-open","cairn-close","cairn-complete","cairn-error","cairn-handoff","cairn-clear"])host.addEventListener(name,(event)=>events.push({name,detail:event.detail,bubbles:event.bubbles,composed:event.composed,cancelable:event.cancelable}));
   addEventListener("securitypolicyviolation",(event)=>violations.push({directive:event.violatedDirective,blocked:event.blockedURI}));
   const waitFor=async(predicate)=>{const started=performance.now();while(!predicate()){if(performance.now()-started>10000)throw new Error("fixture state timeout");await new Promise(resolve=>setTimeout(resolve,20));}};
@@ -143,13 +144,13 @@ function page(scenario) {
       }else if(scenario==="refusal"||scenario==="error"){
         await submit(CANARY);await waitFor(()=>!root.querySelector(".handoff").hidden);let canceled=false;host.addEventListener("cairn-handoff",(event)=>{event.preventDefault();canceled=true},{once:true});root.querySelector(".handoff").click();result.textContent=JSON.stringify({checking,ready,events,violations,handoff:{visible:!root.querySelector(".handoff").hidden,href:root.querySelector(".handoff").href,target:root.querySelector(".handoff").target,rel:root.querySelector(".handoff").rel,referrerPolicy:root.querySelector(".handoff").referrerPolicy,canceled},errorVisible:!root.querySelector(".error").hidden,geometry:geometry()});
       }else if(scenario==="desktop"){
-        await submit(CANARY);const firstEventCount=events.length;events.splice(0,events.length);await submit("follow-up");const citation=root.querySelector(".citation");const sessionBefore=sessionStorage.getItem("cairn-chat-session-id");root.querySelector(".clear").click();const sessionAfter=sessionStorage.getItem("cairn-chat-session-id");result.textContent=JSON.stringify({checking,ready,events,firstEventCount,citation:{text:citation?.textContent,href:citation?.href,target:citation?.target,rel:citation?.rel,referrerPolicy:citation?.referrerPolicy},cleared:root.querySelectorAll("article").length===0,sessionRotated:sessionBefore!==sessionAfter,canaryRetained:root.textContent.includes(CANARY),storageKeys:Object.keys(localStorage),geometry:geometry()});
+        await submit(CANARY);const firstEventCount=events.length;events.splice(0,events.length);await submit("follow-up");const citation=root.querySelector(".citation");const changedNonce="Q0hBTkdFRC1OT05DRQ==";host.nonce=changedNonce;await Promise.resolve();const changedStyle=root.querySelector("style"),nonceChange={style:changedStyle.nonce,configuration:JSON.stringify(host.configuration),mirrors:stateMirrors(changedNonce)};host.nonce="";await Promise.resolve();const clearedNonce={style:root.querySelector("style").nonce,configuration:JSON.stringify(host.configuration),mirrors:stateMirrors(changedNonce)};const sessionBefore=sessionStorage.getItem("cairn-chat-session-id");root.querySelector(".clear").click();const sessionAfter=sessionStorage.getItem("cairn-chat-session-id");result.textContent=JSON.stringify({checking,ready,events,firstEventCount,citation:{text:citation?.textContent,href:citation?.href,target:citation?.target,rel:citation?.rel,referrerPolicy:citation?.referrerPolicy},nonceChange,clearedNonce,cleared:root.querySelectorAll("article").length===0,sessionRotated:sessionBefore!==sessionAfter,canaryRetained:root.textContent.includes(CANARY),storageKeys:Object.keys(localStorage),geometry:geometry()});
       }else if(scenario==="keyboard"){
         const input=root.querySelector("textarea"),launcher=root.querySelector(".launcher");input.focus();input.value=CANARY;input.dispatchEvent(new Event("input",{bubbles:true}));input.dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true}));await waitFor(()=>events.some(event=>event.name==="cairn-complete"));input.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,composed:true}));await Promise.resolve();result.textContent=JSON.stringify({checking,ready,events,closed:root.querySelector(".panel").hidden,expanded:launcher.getAttribute("aria-expanded"),launcherVisibility:getComputedStyle(launcher).visibility,launcherDisplay:getComputedStyle(launcher).display,launcherFocused:root.activeElement===launcher,rootActive:root.activeElement?.className,documentActive:document.activeElement?.localName,reduced:getComputedStyle(launcher).transitionDuration,forced:getComputedStyle(root.querySelector(".send")).borderStyle,geometry:geometry()});
       }else if(scenario==="safe"){
         result.textContent=JSON.stringify({checking,ready,events,geometry:geometry(),closedLauncher});
       }else{
-        await new Promise(resolve=>setTimeout(resolve,50));const style=root.querySelector("style");result.textContent=JSON.stringify({checking,ready,events,violations,styleNonce:style.nonce,styleAttribute:style.getAttribute("nonce"),hostNonce:host.nonce,hostAttribute:host.getAttribute("nonce"),styled:getComputedStyle(root.querySelector(".launcher")).position==="static"&&getComputedStyle(root.querySelector(".launcher")).minHeight==="52px",geometry:geometry()});
+        await new Promise(resolve=>setTimeout(resolve,50));const style=root.querySelector("style"),configurationBefore=JSON.stringify(host.configuration),mirrorsBefore=stateMirrors(NONCE);host.setAttribute("privacy-url","javascript:invalid");await Promise.resolve();const invalidConfiguration=host.configuration===null;host.setAttribute("privacy-url",${JSON.stringify(siteOrigin + "/privacy")});await waitFor(()=>host.configuration!==null&&!root.querySelector("textarea").disabled);const recoveredConfiguration=JSON.stringify(host.configuration),recoveredStyleNonce=root.querySelector("style").nonce;root.querySelector(".clear").click();const afterClearConfiguration=JSON.stringify(host.configuration),mirrorsAfter=stateMirrors(NONCE);result.textContent=JSON.stringify({checking,ready,events,violations,styleNonce:style.nonce,styleAttribute:style.getAttribute("nonce"),hostNonce:host.nonce,hostAttribute:host.getAttribute("nonce"),configurationBefore,mirrorsBefore,invalidConfiguration,recoveredConfiguration,recoveredStyleNonce,afterClearConfiguration,mirrorsAfter,styled:getComputedStyle(root.querySelector(".launcher")).position==="static"&&getComputedStyle(root.querySelector(".launcher")).minHeight==="52px",geometry:geometry()});
       }
     }
   }catch(error){result.textContent=JSON.stringify({fixtureError:String(error),events,violations});}
@@ -278,6 +279,12 @@ try {
     assert.equal(desktop.value.sessionRotated, true);
     assert.equal(desktop.value.canaryRetained, false);
     assert.deepEqual(desktop.value.storageKeys, []);
+    assert.equal(desktop.value.nonceChange.style, "Q0hBTkdFRC1OT05DRQ==");
+    assert.equal(desktop.value.nonceChange.configuration.includes("Q0hBTkdFRC1OT05DRQ=="), false);
+    assert.deepEqual(desktop.value.nonceChange.mirrors, []);
+    assert.equal(desktop.value.clearedNonce.style, "");
+    assert.equal(desktop.value.clearedNonce.configuration.includes("Q0hBTkdFRC1OT05DRQ=="), false);
+    assert.deepEqual(desktop.value.clearedNonce.mirrors, []);
     assertGeometry(desktop.value.geometry);
     assert.equal(desktop.value.geometry.newestVisible, true);
     assertHostEvents(desktop.value.events);
@@ -288,6 +295,13 @@ try {
     assert.notEqual(csp.value.styleAttribute, NONCE);
     assert.equal(csp.value.hostNonce, NONCE);
     assert.equal(csp.value.hostAttribute, "");
+    assert.equal(csp.value.configurationBefore.includes(NONCE), false);
+    assert.deepEqual(csp.value.mirrorsBefore, []);
+    assert.equal(csp.value.invalidConfiguration, true);
+    assert.equal(csp.value.recoveredConfiguration.includes(NONCE), false);
+    assert.equal(csp.value.recoveredStyleNonce, NONCE);
+    assert.equal(csp.value.afterClearConfiguration.includes(NONCE), false);
+    assert.deepEqual(csp.value.mirrorsAfter, []);
     assert.equal(csp.value.styled, true);
     assertGeometry(csp.value.geometry);
     assertHostEvents(csp.value.events);

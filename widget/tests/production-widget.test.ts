@@ -40,7 +40,8 @@ function testConfiguration(): void {
   assert.equal(capabilityEndpoint(parsed.value.apiBase), "https://support.example.test/prefix//api/v1/capabilities");
   assert.equal(parsed.value.assistantName, "Support Cairn");
   assert.equal(parsed.value.theme, "dark");
-  assert.equal(parsed.value.styleNonce, "YWJjZGVmZ2hpamtsbW5vcA==");
+  assert.equal("styleNonce" in parsed.value, false);
+  assert.equal(JSON.stringify(parsed.value).includes("YWJjZGVmZ2hpamtsbW5vcA=="), false);
 
   const defaults = parseWidgetConfiguration(attributes({ "api-url": "https://support.example.test" }));
   assert.equal(defaults.ok, true);
@@ -51,7 +52,6 @@ function testConfiguration(): void {
       theme: "auto",
       privacyUrl: null,
       handoffUrl: null,
-      styleNonce: null,
     });
     assert.equal(Object.isFrozen(defaults.value), true);
   }
@@ -162,6 +162,31 @@ async function testBoundedCapabilityBody(): Promise<void> {
     /too large/u,
   );
   assert.equal(canceled, true, "declared capability overflow cancels its unread body");
+
+  let nonSuccessCanceled = 0;
+  let nonSuccessCatchObserved = 0;
+  const hostileCancellation = {
+    catch: () => {
+      nonSuccessCatchObserved += 1;
+      return hostileCancellation;
+    },
+    then: () => {
+      throw new Error("non-2xx cancellation must not be awaited");
+    },
+  };
+  const nonSuccess = {
+    ok: false,
+    body: {
+      cancel: () => {
+        nonSuccessCanceled += 1;
+        return hostileCancellation;
+      },
+    },
+    headers: { get: () => null },
+  } as unknown as Response;
+  await assert.rejects(readBoundedJsonResponse(nonSuccess), /unavailable/u);
+  assert.equal(nonSuccessCanceled, 1, "non-2xx capability bodies are canceled exactly once");
+  assert.equal(nonSuccessCatchObserved, 1, "hostile cancellation is observed without blocking");
 }
 
 function testBoundedChatDecoding(): void {
@@ -181,6 +206,42 @@ function testBoundedChatDecoding(): void {
   assert.equal(exactBytes.pendingBytes, SSE_PENDING_RECORD_MAX_BYTES);
   assert.throws(() => exactBytes.push(new Uint8Array([0])), /byte limit/u);
   assert.throws(() => exactBytes.finish(), /incomplete/u);
+
+  const fragmentedLength = 65_536;
+  const fragmented = new BoundedSseDecoder();
+  for (let index = 0; index < fragmentedLength; index += 1) {
+    fragmented.push(Uint8Array.of(97));
+  }
+  assert.equal(fragmented.pendingBytes, fragmentedLength);
+  assert.equal(
+    fragmented.work.scannedBytes <= fragmentedLength * 4,
+    true,
+    `fragment scanning must be linear: ${JSON.stringify(fragmented.work)}`,
+  );
+  assert.equal(
+    fragmented.work.copiedBytes <= fragmentedLength * 3,
+    true,
+    `fragment copying must be amortized linear: ${JSON.stringify(fragmented.work)}`,
+  );
+
+  for (const separator of ["\n\n", "\r\n\r\n"]) {
+    const record = new TextEncoder().encode(
+      `event: chunk\ndata: {"type":"chunk","delta":"x"}${separator}`,
+    );
+    for (let split = 0; split <= record.byteLength; split += 1) {
+      const splitDecoder = new BoundedSseDecoder();
+      const events = [
+        ...splitDecoder.push(record.subarray(0, split)),
+        ...splitDecoder.push(record.subarray(split)),
+      ];
+      assert.deepEqual(events, [{ type: "chunk", delta: "x" }]);
+      assert.equal(splitDecoder.pendingBytes, 0);
+    }
+    const byteDecoder = new BoundedSseDecoder();
+    const events = [];
+    for (const byte of record) events.push(...byteDecoder.push(Uint8Array.of(byte)));
+    assert.deepEqual(events, [{ type: "chunk", delta: "x" }]);
+  }
 
   const state = newChatAttemptState();
   assert.equal(validateChatEventBatch([
@@ -225,9 +286,47 @@ function testBoundedChatDecoding(): void {
   assert.equal(streamDeadlineRemaining(0, 599_999, 600_000), 0);
 }
 
+function testMaximumLegitimateProducer(): void {
+  const encoder = new TextEncoder();
+  const decoder = new BoundedSseDecoder();
+  const state = newChatAttemptState();
+  const urlPrefix = "https://example.test/";
+  const maximumUrl = `${urlPrefix}${"😀".repeat(1_048_576 - urlPrefix.length)}`;
+  const sources = Array.from({ length: CHAT_CITATIONS_MAX_COUNT }, (_, index) => ({
+    id: `${index}${"i".repeat(4_095)}`,
+    title: "😀".repeat(160),
+    url: maximumUrl,
+  }));
+  const records: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+    ["status", { type: "status", label: "😀".repeat(80) }],
+    ["citations", { type: "citations", sources }],
+    ["status", { type: "status", label: "😀".repeat(80) }],
+    ...Array.from({ length: CHAT_OUTPUT_MAX_CODE_POINTS }, () => [
+      "chunk", { type: "chunk", delta: "😀" },
+    ] as const),
+    ["done", { type: "done", finish_reason: "stop" }],
+  ];
+  let producedBytes = 0;
+  for (const [name, payload] of records) {
+    const encoded = encoder.encode(`event: ${name}\ndata: ${JSON.stringify(payload)}\n\n`);
+    producedBytes += encoded.byteLength;
+    for (let offset = 0; offset < encoded.byteLength; offset += 65_521) {
+      const events = decoder.push(encoded.subarray(offset, offset + 65_521));
+      assert.equal(validateChatEventBatch(events, state), true);
+    }
+  }
+  assert.equal(producedBytes, decoder.totalBytes);
+  assert.equal(producedBytes < CHAT_RESPONSE_MAX_BYTES, true, `${producedBytes} must fit the 32 MiB ceiling`);
+  assert.equal(state.terminal, true);
+  assert.equal(state.outputCodePoints, CHAT_OUTPUT_MAX_CODE_POINTS);
+  assert.equal(state.citationCount, CHAT_CITATIONS_MAX_COUNT);
+  assert.deepEqual(decoder.finish(), []);
+}
+
 testConfiguration();
 testCapabilitySubset();
 testFrozenSafetyConstants();
 await testBoundedCapabilityBody();
 testBoundedChatDecoding();
+testMaximumLegitimateProducer();
 console.log("widget production contract tests passed");

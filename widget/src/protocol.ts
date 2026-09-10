@@ -23,7 +23,6 @@ export interface WidgetConfiguration {
   readonly theme: WidgetTheme;
   readonly privacyUrl: string | null;
   readonly handoffUrl: string | null;
-  readonly styleNonce: string | null;
 }
 
 export type WidgetConfigurationResult =
@@ -124,8 +123,13 @@ export class SseDecoder {
 
 export class BoundedSseDecoder {
   private bytes = new Uint8Array();
+  private start = 0;
+  private end = 0;
+  private scan = 0;
   private responseBytes = 0;
   private completedRecords = 0;
+  private scannedBytes = 0;
+  private copiedBytes = 0;
   private readonly decoder = new TextDecoder("utf-8", { fatal: true });
 
   push(chunk: Uint8Array): ChatStreamEvent[] {
@@ -134,17 +138,15 @@ export class BoundedSseDecoder {
     if (this.responseBytes > CHAT_RESPONSE_MAX_BYTES) {
       throw new SseDecodeError("The chat response exceeded its safe byte limit.");
     }
-    const combined = new Uint8Array(this.bytes.byteLength + chunk.byteLength);
-    combined.set(this.bytes);
-    combined.set(chunk, this.bytes.byteLength);
-    this.bytes = combined;
+    this.append(chunk);
     const events: ChatStreamEvent[] = [];
 
     for (;;) {
-      const boundary = byteBoundary(this.bytes);
+      const boundary = this.nextBoundary();
       if (boundary === null) break;
-      const record = this.bytes.slice(0, boundary.index);
-      this.bytes = this.bytes.slice(boundary.index + boundary.length);
+      const record = this.bytes.subarray(this.start, boundary.index);
+      this.start = boundary.index + boundary.length;
+      this.scan = this.start;
       this.completedRecords += 1;
       let decoded: string;
       try {
@@ -154,17 +156,25 @@ export class BoundedSseDecoder {
       }
       const event = decodeRecord(decoded);
       if (event !== null) events.push(event);
+      if (this.start === this.end) {
+        this.start = 0;
+        this.end = 0;
+        this.scan = 0;
+      }
     }
-    if (this.bytes.byteLength > SSE_PENDING_RECORD_MAX_BYTES) {
+    if (this.pendingBytes > SSE_PENDING_RECORD_MAX_BYTES) {
       throw new SseDecodeError("The chat response record exceeded its safe byte limit.");
     }
     return events;
   }
 
   finish(): ChatStreamEvent[] {
-    if (this.bytes.byteLength === 0) return [];
-    const remaining = this.bytes;
+    if (this.pendingBytes === 0) return [];
+    const remaining = this.bytes.subarray(this.start, this.end);
     this.bytes = new Uint8Array();
+    this.start = 0;
+    this.end = 0;
+    this.scan = 0;
     let decoded: string;
     try {
       decoded = this.decoder.decode(remaining);
@@ -176,7 +186,7 @@ export class BoundedSseDecoder {
   }
 
   get pendingBytes(): number {
-    return this.bytes.byteLength;
+    return this.end - this.start;
   }
 
   get totalBytes(): number {
@@ -185,6 +195,61 @@ export class BoundedSseDecoder {
 
   get recordsCompleted(): number {
     return this.completedRecords;
+  }
+
+  get work(): Readonly<{ scannedBytes: number; copiedBytes: number }> {
+    return Object.freeze({
+      scannedBytes: this.scannedBytes,
+      copiedBytes: this.copiedBytes,
+    });
+  }
+
+  private append(chunk: Uint8Array): void {
+    if (chunk.byteLength === 0) return;
+    const pending = this.pendingBytes;
+    if (this.bytes.byteLength - this.end < chunk.byteLength) {
+      const oldStart = this.start;
+      const oldScan = this.scan;
+      if (this.bytes.byteLength >= pending + chunk.byteLength) {
+        this.bytes.copyWithin(0, this.start, this.end);
+        this.copiedBytes += pending;
+      } else {
+        let capacity = Math.max(1_024, this.bytes.byteLength * 2);
+        const required = pending + chunk.byteLength;
+        while (capacity < required) capacity *= 2;
+        const replacement = new Uint8Array(capacity);
+        replacement.set(this.bytes.subarray(this.start, this.end));
+        this.copiedBytes += pending;
+        this.bytes = replacement;
+      }
+      this.start = 0;
+      this.end = pending;
+      this.scan = Math.max(0, oldScan - oldStart);
+    }
+    this.bytes.set(chunk, this.end);
+    this.end += chunk.byteLength;
+    this.copiedBytes += chunk.byteLength;
+  }
+
+  private nextBoundary(): { index: number; length: number } | null {
+    for (let index = this.scan; index < this.end - 1; index += 1) {
+      this.scannedBytes += 1;
+      if (this.bytes[index] === 10 && this.bytes[index + 1] === 10) {
+        return { index, length: 2 };
+      }
+      if (
+        index < this.end - 3 &&
+        this.bytes[index] === 13 &&
+        this.bytes[index + 1] === 10 &&
+        this.bytes[index + 2] === 13 &&
+        this.bytes[index + 3] === 10
+      ) {
+        return { index, length: 4 };
+      }
+    }
+    // Only a delimiter's three-byte prefix can become complete after the next push.
+    this.scan = Math.max(this.start, this.end - 3);
+    return null;
   }
 }
 
@@ -297,7 +362,6 @@ export function parseWidgetConfiguration(
       theme,
       privacyUrl,
       handoffUrl,
-      styleNonce: nonceRaw === "" ? null : nonceRaw,
     }),
   };
 }
@@ -321,34 +385,47 @@ export function validateCapabilityManifest(value: unknown): boolean {
 export async function readBoundedJsonResponse(
   response: Response,
   maximumBytes = CAPABILITY_RESPONSE_MAX_BYTES,
+  readNext: (
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+  ) => Promise<ReadableStreamReadResult<Uint8Array> | null> = (reader) => reader.read(),
 ): Promise<unknown> {
-  if (!response.ok || response.body === null) {
+  if (!response.ok) {
+    cancelUnreadBody(response.body);
+    throw new Error("capability response unavailable");
+  }
+  if (response.body === null) {
     throw new Error("capability response unavailable");
   }
   const declaredLength = response.headers.get("content-length");
   if (declaredLength !== null) {
     const length = Number(declaredLength);
     if (!Number.isSafeInteger(length) || length < 0 || length > maximumBytes) {
-      await response.body.cancel();
+      cancelUnreadBody(response.body);
       throw new Error("capability response too large");
     }
   }
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
+  let complete = false;
   try {
     for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
+      const result = await readNext(reader);
+      if (result === null) throw new Error("capability response timeout");
+      const { done, value } = result;
+      if (done) {
+        complete = true;
+        break;
+      }
       total += value.byteLength;
       if (total > maximumBytes) {
-        await reader.cancel();
         throw new Error("capability response too large");
       }
       chunks.push(value);
     }
   } finally {
-    reader.releaseLock();
+    if (complete) releaseReader(reader);
+    else cancelAndReleaseReader(reader);
   }
   const bytes = new Uint8Array(total);
   let offset = 0;
@@ -366,6 +443,42 @@ export async function readBoundedJsonResponse(
     return JSON.parse(text) as unknown;
   } catch {
     throw new Error("capability response invalid");
+  }
+}
+
+const cancelledBodies = new WeakSet<ReadableStream<Uint8Array>>();
+const cleanedReaders = new WeakSet<ReadableStreamDefaultReader<Uint8Array>>();
+
+/** Cancel an unread response without allowing hostile cancellation to delay cleanup. */
+export function cancelUnreadBody(body: ReadableStream<Uint8Array> | null): void {
+  if (body === null || cancelledBodies.has(body)) return;
+  cancelledBodies.add(body);
+  try {
+    void body.cancel().catch(() => undefined);
+  } catch {
+    // Cleanup is best effort and deliberately synchronous-bounded.
+  }
+}
+
+/** Relinquish a reader exactly once without awaiting its cancellation promise. */
+export function cancelAndReleaseReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): void {
+  if (cleanedReaders.has(reader)) return;
+  cleanedReaders.add(reader);
+  try {
+    void reader.cancel().catch(() => undefined);
+  } catch {
+    // Cleanup is best effort and deliberately synchronous-bounded.
+  }
+  releaseReader(reader);
+}
+
+function releaseReader(reader: ReadableStreamDefaultReader<Uint8Array>): void {
+  try {
+    reader.releaseLock();
+  } catch {
+    // A hostile or already-released reader cannot retain widget ownership.
   }
 }
 
@@ -480,24 +593,6 @@ function endpointFromBase(apiBase: string, suffix: string): string {
   const basePath = apiBase === parsed.origin ? "" : parsed.pathname;
   parsed.pathname = `${basePath}${suffix}`;
   return parsed.href;
-}
-
-function byteBoundary(bytes: Uint8Array): { index: number; length: number } | null {
-  for (let index = 0; index < bytes.byteLength - 1; index += 1) {
-    if (bytes[index] === 10 && bytes[index + 1] === 10) {
-      return { index, length: 2 };
-    }
-    if (
-      index < bytes.byteLength - 3 &&
-      bytes[index] === 13 &&
-      bytes[index + 1] === 10 &&
-      bytes[index + 2] === 13 &&
-      bytes[index + 3] === 10
-    ) {
-      return { index, length: 4 };
-    }
-  }
-  return null;
 }
 
 function decodeRecord(record: string): ChatStreamEvent | null {

@@ -44,7 +44,9 @@ Optional configuration can be added without changing the basic embed:
 Do not reuse a nonce between responses. The widget validates the host element's
 standard `nonce` property, authorizes its fixed shadow-root style before insertion,
 and conceals the readable attribute copy. It never places the nonce in CSS text,
-URLs, storage, requests, errors, or events.
+URLs, storage, requests, errors, events, the configuration snapshot, or another
+widget-owned field. Dynamic changes are read from and applied through the standard
+`nonce` property without creating a second retained copy.
 
 ## Capability negotiation and CORS
 
@@ -133,7 +135,10 @@ Chat streams use fatal UTF-8 decoding and fixed limits: 32 MiB response and
 pending record, 6,000 output code points, six aggregate citations in one citation
 event, 6,016 non-ping events, 45 seconds without a complete SSE record, and a
 600-second absolute deadline. Readers are canceled and released on terminal,
-timeout, overflow, close, clear, disconnect, or stale configuration.
+timeout, overflow, close, clear, disconnect, or stale configuration. Pending SSE
+bytes are scanned with a retained cursor and copied with amortized linear work,
+including when an unterminated record arrives one byte at a time. Cancellation is
+initiated without awaiting a producer-controlled cancellation promise.
 
 Widget compatibility `0.2.0` tightens configurations that `0.1.0` accepted.
 Remove credentials, queries, and fragments from `api-url`; use exact lowercase
