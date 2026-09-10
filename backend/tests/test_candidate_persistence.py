@@ -1610,7 +1610,7 @@ def test_outer_attestation_models_reject_bypass_mutated_nested_models() -> None:
             surface()
 
 
-def test_all_public_model_surfaces_reject_unknown_and_missing_fields_content_free() -> None:
+def _public_model_instances() -> tuple[Any, ...]:
     plan = _plan()
     corpus = AttestationCorpus(kind="exact", corpus_id="public-docs", corpus_version="2026.09.10")
     payload = AttestationPayload(
@@ -1628,7 +1628,7 @@ def test_all_public_model_surfaces_reject_unknown_and_missing_fields_content_fre
         signature_algorithm_id="algorithm-1",
         signing_key_id="key-1",
     )
-    models = (
+    return (
         CandidatePersistenceRequest(contract_version="1.0", plan=plan),
         CandidatePersistenceReceipt(
             contract_version="1.0",
@@ -1667,6 +1667,80 @@ def test_all_public_model_surfaces_reject_unknown_and_missing_fields_content_fre
             signing_key_id="key-1",
         ),
     )
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        CandidatePersistenceRequest,
+        CandidatePersistenceReceipt,
+        CandidateStoreRecord,
+        CandidateStorePage,
+        AttestationCorpus,
+        AttestationEmbedding,
+        AttestationRecordSchemas,
+        AttestationPayload,
+        CandidateAttestation,
+        AttestationIdentity,
+        VerifiedCandidateEvidence,
+    ],
+    ids=lambda model: model.__name__,
+)
+@pytest.mark.parametrize(
+    "route",
+    [
+        "model_python",
+        "model_json_malformed",
+        "model_json_structural",
+        "model_strings",
+        "adapter_python",
+        "adapter_json_malformed",
+        "adapter_json_structural",
+        "adapter_strings",
+    ],
+)
+def test_all_public_model_validation_routes_are_content_free(
+    model: type[Any], route: str
+) -> None:
+    instance = next(item for item in _public_model_instances() if type(item) is model)
+    adapter = TypeAdapter(model)
+    canary = f"PRIVATE-{model.__name__.upper()}-{route.upper()}-CANARY"
+    python_value = {**instance.model_dump(mode="python", round_trip=True), canary: canary}
+    json_value = json.dumps(
+        {**instance.model_dump(mode="json", round_trip=True), canary: canary}
+    )
+    malformed_json = json_value[:-1]
+    strings_value = {canary: canary}
+
+    if route == "model_python":
+        operation = partial(model.model_validate, python_value, extra="allow")
+    elif route == "model_json_malformed":
+        operation = partial(model.model_validate_json, malformed_json)
+    elif route == "model_json_structural":
+        operation = partial(model.model_validate_json, json_value, extra="ignore")
+    elif route == "model_strings":
+        operation = partial(model.model_validate_strings, strings_value, extra="allow")
+    elif route == "adapter_python":
+        operation = partial(adapter.validate_python, python_value, extra="ignore")
+    elif route == "adapter_json_malformed":
+        operation = partial(adapter.validate_json, malformed_json)
+    elif route == "adapter_json_structural":
+        operation = partial(adapter.validate_json, json_value, extra="allow")
+    else:
+        operation = partial(adapter.validate_strings, strings_value, extra="ignore")
+
+    with pytest.raises(CandidatePersistenceError) as caught:
+        operation()
+    assert caught.value.code == "invalid_plan"
+    _assert_content_free_error(caught.value, (canary, json_value, malformed_json))
+
+    dumped = instance.model_dump_json()
+    assert model.model_validate_json(dumped) == instance
+    assert adapter.validate_json(dumped) == instance
+
+
+def test_all_public_model_surfaces_reject_unknown_and_missing_fields_content_free() -> None:
+    models = _public_model_instances()
     invalid_known_fields: dict[type[Any], tuple[str, object]] = {
         CandidatePersistenceRequest: ("contract_version", "2.0"),
         CandidatePersistenceReceipt: ("disposition", "unknown"),

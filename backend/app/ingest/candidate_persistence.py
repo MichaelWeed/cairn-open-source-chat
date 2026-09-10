@@ -240,6 +240,36 @@ def _content_free_validation(
     )
 
 
+class _ContentFreeSchemaValidator:
+    """Seal Pydantic parser failures before they can retain public model input."""
+
+    __slots__ = ("_validator",)
+
+    def __init__(self, validator: Any) -> None:
+        self._validator = validator
+
+    def validate_python(self, *args: Any, **kwargs: Any) -> Any:
+        return _content_free_call(
+            "invalid_plan",
+            lambda: self._validator.validate_python(*args, **kwargs),
+        )
+
+    def validate_json(self, *args: Any, **kwargs: Any) -> Any:
+        return _content_free_call(
+            "invalid_plan",
+            lambda: self._validator.validate_json(*args, **kwargs),
+        )
+
+    def validate_strings(self, *args: Any, **kwargs: Any) -> Any:
+        return _content_free_call(
+            "invalid_plan",
+            lambda: self._validator.validate_strings(*args, **kwargs),
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._validator, name)
+
+
 class CandidatePersistenceModel(BaseModel):
     model_config = ConfigDict(
         frozen=True,
@@ -249,6 +279,13 @@ class CandidatePersistenceModel(BaseModel):
         arbitrary_types_allowed=True,
         revalidate_instances="always",
     )
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        validator = cls.__pydantic_validator__
+        if not isinstance(validator, _ContentFreeSchemaValidator):
+            cast(Any, cls).__pydantic_validator__ = _ContentFreeSchemaValidator(validator)
 
     @classmethod
     def __get_pydantic_core_schema__(

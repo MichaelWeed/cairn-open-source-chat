@@ -10,7 +10,8 @@
 - Rejected implementation commit: `f4eeb4087f54f99f74b542eccb29f7b48476b03d`
 - Rejected first repair commit: `8a0445b4fdbc437ad11e1578d40f7ec9a3dd2ec3`
 - Rejected second repair commit: `969e85c005b69c83aa6a44a9cb04a5e793cc2211`
-- Final privacy repair commit: the follow-up repair commit containing this report; its exact
+- Rejected privacy repair commit: `cf25bb1a120bd07d3b429f53e8fdc3944f78f05f`
+- Final public-model repair commit: the follow-up repair commit containing this report; its exact
   object ID is returned to the control lane after handoff.
 
 The accepted M5 source snapshot, M6 bounded chunk-key and embedding contracts, and
@@ -111,6 +112,16 @@ recursive probes inspect the complete reachable exception graph, arguments,
 instance state, structured errors, JSON, string, and representation for raw record,
 provenance, hash, key, and canary retention.
 
+The public-model repair seals Pydantic's pre-schema JSON parser as well as the
+existing model schema. Each M8 model installs the same content-free validator
+facade during Pydantic subclass initialization, so constructors and direct
+`model_validate`, `model_validate_json`, and `model_validate_strings` calls share
+the exact validator used by `TypeAdapter` for its Python, JSON, and strings routes.
+Malformed JSON syntax is therefore normalized before either public caller receives
+Pydantic's input-retaining `ValidationError`; structurally invalid inputs and
+hostile `extra` overrides remain fixed `invalid_plan`. Valid direct-model and
+`TypeAdapter` JSON round trips remain exact for all eleven public models.
+
 ## Public Surface and Privacy
 
 The capability manifest now reports `corpus.immutable_versions` as
@@ -165,12 +176,19 @@ Red-first evidence:
   were reachable through `__context__`. After moving error construction outside
   caught frames and sealing both public service boundaries, all 11 direct recursive
   exception-graph probes passed.
+- The public-model validation matrix initially produced 22 malformed-JSON failures
+  and 66 passes across all eleven public models and eight direct-model/`TypeAdapter`
+  Python, JSON, and strings routes. Both malformed-JSON routes leaked raw Pydantic
+  errors for every model. After the class-wide validator-boundary repair, all 88
+  route/model combinations passed with recursive retention checks and valid JSON
+  round trips.
 
 Focused evidence:
 
-- M8 candidate persistence component tests after privacy repair: 77 passed, exit 0.
-- Firestore-profile focused matrix: 329 passed, one upstream warning, exit 0.
-- Combined Firestore/Gemini focused matrix: 497 passed, one upstream warning,
+- M8 candidate persistence component tests after public-model repair: 165 passed,
+  exit 0.
+- Firestore-profile focused matrix: 417 passed, one upstream warning, exit 0.
+- Combined Firestore/Gemini focused matrix: 585 passed, one upstream warning,
   exit 0.
 - Linear-count probes: 401 records required exactly 401 record encodes and split
   into 400 plus 1; 65,536 records required exactly 65,536 record encodes and split
@@ -195,7 +213,7 @@ Final mandatory repository evidence:
 - `make gemini-image-check`: exit 0.
 - `make firestore-image-check`: exit 0, including default, Firestore, Gemini, and
   combined profiles with default restoration.
-- Final `make validate`: exit 0; 912 backend tests passed plus all widget protocol,
+- Final `make validate`: exit 0; 1,000 backend tests passed plus all widget protocol,
   history, layout, browser, type, build, size, distribution, supply-chain, and image
   gates. One upstream Starlette deprecation warning was reported.
 
