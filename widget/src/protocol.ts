@@ -127,13 +127,15 @@ export class BoundedSseDecoder {
   private end = 0;
   private scan = 0;
   private responseBytes = 0;
-  private completedRecords = 0;
+  private validCompletedRecords = 0;
+  private delimiterCount = 0;
   private scannedBytes = 0;
   private copiedBytes = 0;
   private readonly decoder = new TextDecoder("utf-8", { fatal: true });
 
   push(chunk: Uint8Array): ChatStreamEvent[] {
-    this.completedRecords = 0;
+    this.validCompletedRecords = 0;
+    this.delimiterCount = 0;
     this.responseBytes += chunk.byteLength;
     if (this.responseBytes > CHAT_RESPONSE_MAX_BYTES) {
       throw new SseDecodeError("The chat response exceeded its safe byte limit.");
@@ -147,15 +149,16 @@ export class BoundedSseDecoder {
       const record = this.bytes.subarray(this.start, boundary.index);
       this.start = boundary.index + boundary.length;
       this.scan = this.start;
-      this.completedRecords += 1;
+      this.delimiterCount += 1;
       let decoded: string;
       try {
         decoded = this.decoder.decode(record);
       } catch {
         throw new SseDecodeError("The chat response was not valid UTF-8.");
       }
-      const event = decodeRecord(decoded);
-      if (event !== null) events.push(event);
+      const result = decodeRecordWithValidity(decoded);
+      if (result.valid) this.validCompletedRecords += 1;
+      if (result.event !== null) events.push(result.event);
       if (this.start === this.end) {
         this.start = 0;
         this.end = 0;
@@ -194,7 +197,15 @@ export class BoundedSseDecoder {
   }
 
   get recordsCompleted(): number {
-    return this.completedRecords;
+    return this.validCompletedRecords;
+  }
+
+  get validRecordsCompleted(): number {
+    return this.validCompletedRecords;
+  }
+
+  get delimitedRecords(): number {
+    return this.delimiterCount;
   }
 
   get work(): Readonly<{ scannedBytes: number; copiedBytes: number }> {
@@ -595,7 +606,16 @@ function endpointFromBase(apiBase: string, suffix: string): string {
   return parsed.href;
 }
 
+interface DecodedRecord {
+  readonly event: ChatStreamEvent | null;
+  readonly valid: boolean;
+}
+
 function decodeRecord(record: string): ChatStreamEvent | null {
+  return decodeRecordWithValidity(record).event;
+}
+
+function decodeRecordWithValidity(record: string): DecodedRecord {
   let eventName = "message";
   const data: string[] = [];
 
@@ -613,27 +633,38 @@ function decodeRecord(record: string): ChatStreamEvent | null {
     }
   }
 
-  if (data.length === 0 || eventName === "ping") {
-    return null;
+  if (data.length === 0) {
+    return { event: null, valid: false };
   }
 
   let payload: unknown;
   try {
     payload = JSON.parse(data.join("\n"));
   } catch {
+    if (eventName === "ping") return { event: null, valid: false };
     throw new SseDecodeError("The chat response could not be read.");
   }
   if (!isRecord(payload) || payload.type !== eventName) {
+    if (eventName === "ping") return { event: null, valid: false };
     throw new SseDecodeError("The chat response did not match its declared event.");
   }
 
   switch (eventName) {
     case "status":
-      return { type: "status", label: boundedString(payload, "label", 80) };
+      return {
+        event: { type: "status", label: boundedString(payload, "label", 80) },
+        valid: true,
+      };
     case "chunk":
-      return { type: "chunk", delta: boundedString(payload, "delta", 1_000, false) };
+      return {
+        event: { type: "chunk", delta: boundedString(payload, "delta", 1_000, false) },
+        valid: true,
+      };
     case "citations":
-      return { type: "citations", sources: requiredCitations(payload) };
+      return {
+        event: { type: "citations", sources: requiredCitations(payload) },
+        valid: true,
+      };
     case "error":
       if (!ERROR_CODES.has(requiredString(payload, "code"))) {
         throw new SseDecodeError("The chat response contained an unknown error code.");
@@ -642,10 +673,17 @@ function decodeRecord(record: string): ChatStreamEvent | null {
         throw new SseDecodeError("The chat response contained an invalid retryable value.");
       }
       return {
-        type: "error",
-        message: boundedString(payload, "message", 240),
-        retryable: payload.retryable,
+        event: {
+          type: "error",
+          message: boundedString(payload, "message", 240),
+          retryable: payload.retryable,
+        },
+        valid: true,
       };
+    case "ping":
+      return Object.keys(payload).length === 1
+        ? { event: null, valid: true }
+        : { event: null, valid: false };
     case "done": {
       const finishReason = requiredString(payload, "finish_reason");
       if (
@@ -656,10 +694,10 @@ function decodeRecord(record: string): ChatStreamEvent | null {
       ) {
         throw new SseDecodeError("The chat response ended unexpectedly.");
       }
-      return { type: "done", finishReason };
+      return { event: { type: "done", finishReason }, valid: true };
     }
     default:
-      return null;
+      return { event: null, valid: false };
   }
 }
 

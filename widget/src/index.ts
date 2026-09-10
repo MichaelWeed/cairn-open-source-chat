@@ -519,7 +519,9 @@ export class CairnChat extends HTMLElement {
         }
         const events = decoder.push(read.value);
         if (!isCurrent()) return { kind: "aborted" };
-        if (decoder.recordsCompleted > 0) lastCompleteRecord = this.transportClock.now();
+        if (decoder.validRecordsCompleted > 0) {
+          lastCompleteRecord = this.transportClock.now();
+        }
         if (!validateChatEventBatch(events, streamState)) return { kind: "protocol" };
         for (const event of events) {
           if (!isCurrent()) return { kind: "aborted" };

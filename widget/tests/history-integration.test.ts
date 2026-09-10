@@ -395,6 +395,58 @@ async function testPartialDripDoesNotResetLiveness(): Promise<void> {
   assert.equal(reader.releaseCount, 1);
 }
 
+async function testInvalidRecordsDoNotResetLiveness(): Promise<void> {
+  const invalidRecords = [
+    { name: "blank", record: "\n\n" },
+    { name: "comment-only", record: ": ignored\n\n" },
+    { name: "data-less ping", record: "event: ping\n\n" },
+    {
+      name: "unknown event",
+      record: 'event: unknown\ndata: {"type":"unknown"}\n\n',
+    },
+    { name: "malformed ping", record: "event: ping\ndata: not-json\n\n" },
+    {
+      name: "type-mismatched ping",
+      record: 'event: ping\ndata: {"type":"status"}\n\n',
+    },
+    {
+      name: "ping with an extra field",
+      record: 'event: ping\ndata: {"type":"ping","extra":true}\n\n',
+    },
+  ];
+
+  for (const fixture of invalidRecords) {
+    const clock = new FakeClock();
+    const widget = testWidget();
+    useClock(widget, clock);
+    const reader = new ControlledReader();
+    globalThis.fetch = async () => responseWithReader(reader);
+    const controller = new AbortController();
+    let settled = false;
+    const attempt = streamAttempt(widget, controller, assistantExchange());
+    void attempt.then(() => { settled = true; });
+    await flushMicrotasks();
+    clock.advance(44_000);
+    const bytes = new TextEncoder().encode(fixture.record);
+    reader.deliverBytes(bytes.subarray(0, bytes.byteLength - 1));
+    await flushMicrotasks();
+    reader.deliverBytes(bytes.subarray(bytes.byteLength - 1));
+    await flushMicrotasks();
+    assert.equal(settled, false, `${fixture.name} is not an immediate visible event`);
+    clock.advance(1_001);
+    await flushMicrotasks();
+    const settledAtOriginalDeadline = settled;
+    const abortedAtOriginalDeadline = controller.signal.aborted;
+    if (!settled) controller.abort();
+    const result = await attempt;
+    assert.equal(settledAtOriginalDeadline, true, `${fixture.name} cannot extend inactivity`);
+    assert.equal(abortedAtOriginalDeadline, true, `${fixture.name} times out and aborts`);
+    assert.equal(result.kind, "protocol");
+    assert.equal(reader.cancelCount, 1, `${fixture.name} cancels exactly once`);
+    assert.equal(reader.releaseCount, 1, `${fixture.name} releases exactly once`);
+  }
+}
+
 async function testPingResetsLiveness(): Promise<void> {
   const clock = new FakeClock();
   const widget = testWidget();
@@ -651,6 +703,7 @@ await testDeclaredChatOverflowCancelsBody();
 await testNonSuccessChatCancellationIsBounded();
 await testCapabilityHeaderAndBodyDeadlines();
 await testPartialDripDoesNotResetLiveness();
+await testInvalidRecordsDoNotResetLiveness();
 await testPingResetsLiveness();
 await testAbsoluteStreamDeadline();
 await testTerminalAndProtocolReaderOwnership();

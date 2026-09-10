@@ -195,7 +195,27 @@ function testBoundedChatDecoding(): void {
     decoder.push(new TextEncoder().encode('event: ping\ndata: {"type":"ping"}\n\n')),
     [],
   );
-  assert.equal(decoder.recordsCompleted, 1, "a complete ping keeps the stream alive");
+  assert.equal(decoder.delimitedRecords, 1);
+  assert.equal(decoder.validRecordsCompleted, 1, "a valid complete ping keeps the stream alive");
+  for (const record of [
+    "\n\n",
+    ": ignored\n\n",
+    "event: ping\n\n",
+    'event: unknown\ndata: {"type":"unknown"}\n\n',
+    "event: ping\ndata: not-json\n\n",
+    'event: ping\ndata: {"type":"status"}\n\n',
+    'event: ping\ndata: {"type":"ping","extra":true}\n\n',
+  ]) {
+    const invalid = new BoundedSseDecoder();
+    const bytes = new TextEncoder().encode(record);
+    const events = [];
+    for (const byte of bytes) events.push(...invalid.push(Uint8Array.of(byte)));
+    assert.deepEqual(events, []);
+    assert.equal(invalid.delimitedRecords, 1);
+    assert.equal(invalid.validRecordsCompleted, 0);
+    assert.equal(invalid.work.scannedBytes <= bytes.byteLength * 4, true);
+    assert.equal(invalid.work.copiedBytes <= bytes.byteLength * 3, true);
+  }
   assert.throws(
     () => new BoundedSseDecoder().push(new Uint8Array([0xff, 10, 10])),
     /UTF-8/u,
