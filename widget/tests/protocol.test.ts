@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   SseDecoder,
@@ -72,6 +73,28 @@ function testMalformedSse(): void {
     () => decoder.push("event: chunk\ndata: {bad json}\n\n"),
     "malformed event payload is rejected",
   );
+}
+
+function testSharedEventFixtures(): void {
+  const fixture = JSON.parse(
+    readFileSync(new URL("../../tests/fixtures/chat-contract-v1.json", import.meta.url), "utf8"),
+  ) as {
+    valid_events: Array<{ event: Record<string, unknown> }>;
+    invalid_events: Array<{ event: Record<string, unknown> }>;
+  };
+  for (const { event } of fixture.valid_events) {
+    const decoder = new SseDecoder();
+    const decoded = decoder.push(`event: ${String(event.type)}\ndata: ${JSON.stringify(event)}\n\n`);
+    if (event.type === "ping") assert.deepEqual(decoded, []);
+    else assert.equal(decoded.length, 1);
+  }
+  for (const { event } of fixture.invalid_events) {
+    const decoder = new SseDecoder();
+    expectThrows(
+      () => decoder.push(`event: ${String(event.type)}\ndata: ${JSON.stringify(event)}\n\n`),
+      `invalid shared fixture ${String(event.type)} is rejected`,
+    );
+  }
 }
 
 function testHistoryAndEndpoint(): void {
@@ -188,6 +211,7 @@ async function testRetryOnce(): Promise<void> {
 async function main(): Promise<void> {
   testSseDecoder();
   testMalformedSse();
+  testSharedEventFixtures();
   testHistoryAndEndpoint();
   testCitationSafety();
   await testRetryOnce();

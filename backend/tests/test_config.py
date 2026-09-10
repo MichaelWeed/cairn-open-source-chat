@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from app.config import Settings
 
 
@@ -6,6 +9,22 @@ def test_defaults() -> None:
     assert settings.ollama_base_url == "http://localhost:11434"
     assert settings.chat_message_max_chars == 500
     assert settings.cairn_port == 8080
+    assert settings.system_instruction == ""
+    assert settings.max_output_tokens == 1500
+    assert settings.max_output_chars == 6000
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("system_instruction", "x" * 4001),
+        ("max_output_tokens", 1501),
+        ("max_output_chars", 6001),
+    ],
+)
+def test_generation_settings_respect_contract_maxima(field: str, value: object) -> None:
+    with pytest.raises(ValidationError):
+        Settings.model_validate({field: value})
 
 
 def test_origins_splits_and_strips() -> None:

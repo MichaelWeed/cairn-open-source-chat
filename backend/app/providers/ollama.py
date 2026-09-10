@@ -3,8 +3,32 @@ from collections.abc import AsyncIterator
 
 import httpx
 
-from app.api.contracts import ChatTurn
+from app.api.contracts import CHUNK_MAX_CHARS, ProviderChunk, ProviderGenerationRequest
 from app.providers.base import Provider
+
+
+class _InvalidProviderOutput(ValueError):
+    """Content-free failure for output that cannot satisfy the provider seam."""
+
+
+def _provider_chunk(delta: str) -> ProviderChunk:
+    try:
+        return ProviderChunk(delta=delta)
+    except ValueError:
+        raise _InvalidProviderOutput("Ollama returned invalid response content") from None
+
+
+def _split_complete_chunks(content: str) -> tuple[list[ProviderChunk], str]:
+    chunks: list[ProviderChunk] = []
+    while len(content) > CHUNK_MAX_CHARS:
+        delta = content[:CHUNK_MAX_CHARS]
+        if not delta.strip():
+            raise _InvalidProviderOutput(
+                "Ollama response whitespace cannot satisfy chunk bounds"
+            )
+        chunks.append(_provider_chunk(delta))
+        content = content[CHUNK_MAX_CHARS:]
+    return chunks, content
 
 
 class OllamaProvider(Provider):
@@ -30,27 +54,55 @@ class OllamaProvider(Provider):
         self._model = model
         self._client = client or httpx.AsyncClient(timeout=self._DEFAULT_TIMEOUT)
 
-    async def stream(
-        self, *, message: str, history: list[ChatTurn], context: str | None = None
-    ) -> AsyncIterator[str]:
+    async def stream(self, request: ProviderGenerationRequest) -> AsyncIterator[ProviderChunk]:
         messages: list[dict[str, str]] = []
-        if context is not None:
-            messages.append({"role": "system", "content": context})
-        messages.extend({"role": turn.role, "content": turn.content} for turn in history)
-        messages.append({"role": "user", "content": message})
+        if request.system_instruction:
+            messages.append({"role": "system", "content": request.system_instruction})
+        if request.retrieved_context:
+            messages.append({"role": "system", "content": request.retrieved_context})
+        messages.extend({"role": turn.role, "content": turn.content} for turn in request.history)
+        messages.append({"role": "user", "content": request.message})
 
         async with self._client.stream(
             "POST",
             f"{self._base_url}/api/chat",
-            json={"model": self._model, "messages": messages, "stream": True},
+            json={
+                "model": self._model,
+                "messages": messages,
+                "stream": True,
+                "options": {"num_predict": request.max_output_tokens},
+            },
         ) as response:
             response.raise_for_status()
+            pending_content = ""
             async for line in response.aiter_lines():
                 if not line:
                     continue
                 data = json.loads(line)
                 content = data.get("message", {}).get("content")
+                if content is not None and not isinstance(content, str):
+                    raise _InvalidProviderOutput("Ollama returned invalid response content")
                 if content:
-                    yield content
+                    if content.strip() and pending_content.strip():
+                        ready, pending_content = _split_complete_chunks(pending_content)
+                        for chunk in ready:
+                            yield chunk
+                        if pending_content.strip():
+                            yield _provider_chunk(pending_content)
+                            pending_content = ""
+                    pending_content += content
+                    ready, pending_content = _split_complete_chunks(pending_content)
+                    for chunk in ready:
+                        yield chunk
                 if data.get("done"):
-                    return
+                    break
+
+            if pending_content:
+                ready, pending_content = _split_complete_chunks(pending_content)
+                for chunk in ready:
+                    yield chunk
+                if not pending_content.strip():
+                    raise _InvalidProviderOutput(
+                        "Ollama response whitespace cannot satisfy chunk bounds"
+                    )
+                yield _provider_chunk(pending_content)

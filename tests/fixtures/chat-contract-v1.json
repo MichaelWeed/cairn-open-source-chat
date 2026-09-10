@@ -1,0 +1,65 @@
+{
+  "valid_requests": [
+    {
+      "name": "legacy minimal request",
+      "value": {"session_id": "session_1", "message": "How do returns work?"}
+    },
+    {
+      "name": "bounded request with optional fields",
+      "value": {
+        "session_id": "session-2",
+        "message": "Where is my order?",
+        "history": [
+          {"role": "user", "content": "I placed an order."},
+          {"role": "assistant", "content": "How can I help?"}
+        ],
+        "context": {"locale": "en-US", "page_path": "/orders/123"}
+      }
+    }
+  ],
+  "invalid_requests": [
+    {"name": "unknown request field", "value": {"session_id": "s1", "message": "Hello", "extra": true}},
+    {"name": "invalid session id", "value": {"session_id": "spaces are invalid", "message": "Hello"}},
+    {"name": "blank message", "value": {"session_id": "s1", "message": "  \t\n"}},
+    {"name": "message control character", "value": {"session_id": "s1", "message": "hello\u0000world"}},
+    {"name": "unknown turn field", "value": {"session_id": "s1", "message": "Hello", "history": [{"role": "user", "content": "Hi", "extra": true}]}},
+    {"name": "blank turn content", "value": {"session_id": "s1", "message": "Hello", "history": [{"role": "user", "content": "   "}]}},
+    {"name": "unknown context field", "value": {"session_id": "s1", "message": "Hello", "context": {"campaign": "fall"}}},
+    {"name": "null locale", "value": {"session_id": "s1", "message": "Hello", "context": {"locale": null}}},
+    {"name": "null page path", "value": {"session_id": "s1", "message": "Hello", "context": {"page_path": null}}},
+    {"name": "invalid locale", "value": {"session_id": "s1", "message": "Hello", "context": {"locale": "not_a_locale"}}},
+    {"name": "protocol-relative page path", "value": {"session_id": "s1", "message": "Hello", "context": {"page_path": "//example.test/path"}}}
+  ],
+  "valid_events": [
+    {"name": "status", "event": {"type": "status", "state": "generating", "label": "Generating a reply"}},
+    {"name": "unicode status boundary", "event": {"type": "status", "state": "generating", "label": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"}},
+    {"name": "chunk", "event": {"type": "chunk", "delta": "A bounded answer."}},
+    {"name": "chunk boundary", "event": {"type": "chunk", "delta": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}},
+    {"name": "internal citation", "event": {"type": "citations", "sources": [{"id": "doc-1", "title": "Return policy", "url": "document://doc-1"}]}},
+    {"name": "additive error", "event": {"type": "error", "code": "provider_timeout", "message": "The provider timed out.", "retryable": true}},
+    {"name": "error message boundary", "event": {"type": "error", "code": "internal", "message": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "retryable": false}},
+    {"name": "ping", "event": {"type": "ping"}},
+    {"name": "additive done reason", "event": {"type": "done", "finish_reason": "limit"}}
+  ],
+  "invalid_events": [
+    {"name": "blank chunk", "event": {"type": "chunk", "delta": ""}},
+    {"name": "oversized chunk", "event": {"type": "chunk", "delta": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}},
+    {"name": "oversized status label", "event": {"type": "status", "state": "generating", "label": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}},
+    {"name": "oversized unicode status label", "event": {"type": "status", "state": "generating", "label": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"}},
+    {"name": "oversized citation title", "event": {"type": "citations", "sources": [{"id": "doc-1", "title": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "url": "document://doc-1"}]}},
+    {"name": "too many citations", "event": {"type": "citations", "sources": [
+      {"id": "1", "title": "One", "url": "document://1"},
+      {"id": "2", "title": "Two", "url": "document://2"},
+      {"id": "3", "title": "Three", "url": "document://3"},
+      {"id": "4", "title": "Four", "url": "document://4"},
+      {"id": "5", "title": "Five", "url": "document://5"},
+      {"id": "6", "title": "Six", "url": "document://6"},
+      {"id": "7", "title": "Seven", "url": "document://7"}
+    ]}},
+    {"name": "unknown error code", "event": {"type": "error", "code": "invented", "message": "No", "retryable": false}},
+    {"name": "oversized error message", "event": {"type": "error", "code": "internal", "message": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "retryable": false}},
+    {"name": "missing retryable", "event": {"type": "error", "code": "internal", "message": "No"}},
+    {"name": "non-boolean retryable", "event": {"type": "error", "code": "internal", "message": "No", "retryable": "false"}},
+    {"name": "unknown done reason", "event": {"type": "done", "finish_reason": "complete"}}
+  ]
+}

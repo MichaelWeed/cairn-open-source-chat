@@ -295,7 +295,14 @@ class CairnChat extends HTMLElement {
         return { kind: "error", message: event.message, retryable: event.retryable };
       } else if (event.type === "done") {
         assistant.article.dataset.complete = "true";
-        assistant.status.textContent = event.finishReason === "refused" ? "Cairn could not find a confident answer." : "Answer complete";
+        assistant.status.textContent =
+          event.finishReason === "refused"
+            ? "Cairn could not find a confident answer."
+            : event.finishReason === "limit"
+              ? "Answer reached its length limit."
+              : event.finishReason === "cancelled"
+                ? "Answer cancelled."
+                : "Answer complete";
         if (event.finishReason === "refused") {
           assistant.article.classList.add("refusal");
         }

@@ -16,7 +16,20 @@ export type ChatStreamEvent =
   | { type: "chunk"; delta: string }
   | { type: "citations"; sources: Citation[] }
   | { type: "error"; message: string; retryable: boolean }
-  | { type: "done"; finishReason: "stop" | "refused" };
+  | { type: "done"; finishReason: "stop" | "refused" | "limit" | "cancelled" };
+
+const ERROR_CODES = new Set([
+  "invalid_request",
+  "rate_limited",
+  "budget_exhausted",
+  "concurrency_limited",
+  "provider_timeout",
+  "provider_unavailable",
+  "retrieval_unavailable",
+  "guardrail_block",
+  "request_cancelled",
+  "internal",
+]);
 
 export type StreamAttemptResult<T> =
   | { kind: "done"; value: T }
@@ -148,20 +161,31 @@ function decodeRecord(record: string): ChatStreamEvent | null {
 
   switch (eventName) {
     case "status":
-      return { type: "status", label: requiredString(payload, "label") };
+      return { type: "status", label: boundedString(payload, "label", 80) };
     case "chunk":
-      return { type: "chunk", delta: requiredString(payload, "delta") };
+      return { type: "chunk", delta: boundedString(payload, "delta", 1_000, false) };
     case "citations":
       return { type: "citations", sources: requiredCitations(payload) };
     case "error":
+      if (!ERROR_CODES.has(requiredString(payload, "code"))) {
+        throw new SseDecodeError("The chat response contained an unknown error code.");
+      }
+      if (typeof payload.retryable !== "boolean") {
+        throw new SseDecodeError("The chat response contained an invalid retryable value.");
+      }
       return {
         type: "error",
-        message: requiredString(payload, "message"),
-        retryable: payload.retryable === true,
+        message: boundedString(payload, "message", 240),
+        retryable: payload.retryable,
       };
     case "done": {
       const finishReason = requiredString(payload, "finish_reason");
-      if (finishReason !== "stop" && finishReason !== "refused") {
+      if (
+        finishReason !== "stop" &&
+        finishReason !== "refused" &&
+        finishReason !== "limit" &&
+        finishReason !== "cancelled"
+      ) {
         throw new SseDecodeError("The chat response ended unexpectedly.");
       }
       return { type: "done", finishReason };
@@ -183,10 +207,26 @@ function requiredString(value: RawEvent, key: string): string {
   return field;
 }
 
+function boundedString(
+  value: RawEvent,
+  key: string,
+  maxChars: number,
+  allowBlank = true,
+): string {
+  const field = requiredString(value, key);
+  if ((!allowBlank && field.trim() === "") || Array.from(field).length > maxChars) {
+    throw new SseDecodeError(`The chat response contained an invalid ${key}.`);
+  }
+  return field;
+}
+
 function requiredCitations(value: RawEvent): Citation[] {
   const sources = value.sources;
   if (!Array.isArray(sources)) {
     throw new SseDecodeError("The chat response citations were invalid.");
+  }
+  if (sources.length > 6) {
+    throw new SseDecodeError("The chat response contained too many citations.");
   }
   return sources.map((source) => {
     if (!isRecord(source)) {
@@ -194,7 +234,7 @@ function requiredCitations(value: RawEvent): Citation[] {
     }
     return {
       id: requiredString(source, "id"),
-      title: requiredString(source, "title"),
+      title: boundedString(source, "title", 160),
       url: requiredString(source, "url"),
     };
   });
