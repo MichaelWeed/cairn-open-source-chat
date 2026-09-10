@@ -1,12 +1,15 @@
 import {
   SseDecoder,
   boundedHistory,
+  chatRequestPayload,
   chatEndpoint,
+  completedHistory,
   retryOnce,
   safeCitationUrl,
   type ChatStreamEvent,
   type ChatTurn,
   type Citation,
+  type DoneReason,
   type StreamAttemptResult,
 } from "./protocol";
 
@@ -20,9 +23,10 @@ interface AssistantExchange {
   citations: HTMLElement;
   status: HTMLElement;
   text: string;
+  finishReason: DoneReason | null;
 }
 
-class CairnChat extends HTMLElement {
+export class CairnChat extends HTMLElement {
   private readonly root = this.attachShadow({ mode: "open" });
   private readonly instanceId = `cairn-chat-${++widgetCount}`;
   private controller: AbortController | null = null;
@@ -211,8 +215,13 @@ class CairnChat extends HTMLElement {
         () => this.streamAttempt(endpoint, message, history, controller, assistant),
         () => this.resetAssistant(assistant),
       );
-      if (result.kind === "done") {
-        this.history = boundedHistory([...this.history, { role: "user", content: message }, { role: "assistant", content: assistant.text }]);
+      if (result.kind === "done" && assistant.finishReason !== null) {
+        this.history = completedHistory(
+          this.history,
+          message,
+          assistant.text,
+          assistant.finishReason,
+        );
       } else if (result.kind === "error") {
         this.failExchange(assistant, result.message);
       }
@@ -236,7 +245,7 @@ class CairnChat extends HTMLElement {
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: this.sessionId, message, history }),
+        body: JSON.stringify(chatRequestPayload(this.sessionId, message, history)),
         signal: controller.signal,
       });
       if (!response.ok || response.body === null) {
@@ -294,8 +303,16 @@ class CairnChat extends HTMLElement {
         this.failExchange(assistant, event.message);
         return { kind: "error", message: event.message, retryable: event.retryable };
       } else if (event.type === "done") {
+        assistant.finishReason = event.finishReason;
         assistant.article.dataset.complete = "true";
-        assistant.status.textContent = event.finishReason === "refused" ? "Cairn could not find a confident answer." : "Answer complete";
+        assistant.status.textContent =
+          event.finishReason === "refused"
+            ? "Cairn could not find a confident answer."
+            : event.finishReason === "limit"
+              ? "Answer reached its length limit."
+              : event.finishReason === "cancelled"
+                ? "Answer cancelled."
+                : "Answer complete";
         if (event.finishReason === "refused") {
           assistant.article.classList.add("refusal");
         }
@@ -330,7 +347,7 @@ class CairnChat extends HTMLElement {
     article.append(content, citations, status);
     this.messages.append(article);
     this.scrollMessages();
-    return { article, content, citations, status, text: "" };
+    return { article, content, citations, status, text: "", finishReason: null };
   }
 
   private appendCitations(container: HTMLElement, sources: Citation[]): void {
@@ -371,6 +388,7 @@ class CairnChat extends HTMLElement {
     assistant.citations.replaceChildren();
     assistant.status.textContent = "Retrying Cairn…";
     assistant.text = "";
+    assistant.finishReason = null;
     this.clearError();
     this.scrollMessages();
   }

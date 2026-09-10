@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 
-from app.api.contracts import ChatTurn
+from app.api.contracts import ProviderChunk, ProviderGenerationRequest
 
 
 class Provider(ABC):
@@ -12,14 +12,10 @@ class Provider(ABC):
     the `provider_unavailable` SSE error is the chat endpoint's job (task
     1.7), not the adapter's.
 
-    `context`, when given, is the retrieval pipeline's fully-formatted,
-    delimited, untrusted-context block (task 2.4, see app/retrieval.py) —
-    already assembled, adapters just need to place it ahead of the user
-    turn. Adapters that don't ground on retrieved context (e.g.
-    EchoProvider) are free to ignore it.
+    The request is validated and server-owned. Public request context is not
+    passed through this seam. Implementations may ignore retrieved context
+    when grounding is intentionally unsupported (for example EchoProvider).
     """
 
     @abstractmethod
-    def stream(
-        self, *, message: str, history: list[ChatTurn], context: str | None = None
-    ) -> AsyncIterator[str]: ...
+    def stream(self, request: ProviderGenerationRequest) -> AsyncIterator[ProviderChunk]: ...

@@ -9,9 +9,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.api.capabilities import router as capabilities_router
 from app.api.chat import router as chat_router
+from app.api.contracts import REQUEST_BODY_MAX_BYTES
 from app.config import Settings, get_settings
 from app.db import bootstrap
 from app.ingest.startup import ingest_corpus
@@ -25,6 +28,48 @@ from app.vectorstore import get_document_collection, get_vector_client
 logger = logging.getLogger("app")
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+class _RequestBodyTooLarge(HTTPException):
+    def __init__(self) -> None:
+        super().__init__(status_code=413, detail="Request body too large")
+
+
+class ChatRequestBodyLimitMiddleware:
+    """Count received chat-body bytes without buffering the whole request."""
+
+    def __init__(self, app: ASGIApp, max_bytes: int) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if (
+            scope["type"] != "http"
+            or scope["method"] != "POST"
+            or scope["path"] != "/api/v1/chat/message"
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        received_bytes = 0
+
+        async def receive_with_limit() -> Message:
+            nonlocal received_bytes
+            message = await receive()
+            if message["type"] == "http.request":
+                received_bytes += len(message.get("body", b""))
+                if received_bytes > self.max_bytes:
+                    raise _RequestBodyTooLarge
+            return message
+
+        try:
+            await self.app(scope, receive_with_limit, send)
+        except _RequestBodyTooLarge:
+            response = JSONResponse(
+                {"detail": "Request body too large"},
+                status_code=413,
+            )
+            await response(scope, receive, send)
 
 
 def _default_provider(settings: Settings) -> Provider:
@@ -104,6 +149,7 @@ def create_app(settings: Settings | None = None, provider: Provider | None = Non
         allow_methods=["POST", "GET"],
         allow_headers=["*"],
     )
+    app.add_middleware(ChatRequestBodyLimitMiddleware, max_bytes=REQUEST_BODY_MAX_BYTES)
 
     app.include_router(capabilities_router)
     app.include_router(chat_router)

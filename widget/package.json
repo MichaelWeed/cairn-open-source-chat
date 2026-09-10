@@ -9,7 +9,7 @@
     "check-distribution": "node scripts/distribution.mjs check",
     "check-size": "node scripts/check-size.mjs",
     "sync-distribution": "node scripts/distribution.mjs sync",
-    "test": "esbuild tests/protocol.test.ts --bundle --platform=node --format=esm --outfile=dist/protocol.test.mjs && node dist/protocol.test.mjs && esbuild tests/layout.test.ts --bundle --platform=node --format=esm --outfile=dist/layout.test.mjs && node dist/layout.test.mjs",
+    "test": "esbuild tests/protocol.test.ts --bundle --platform=node --format=esm --outfile=dist/protocol.test.mjs && node dist/protocol.test.mjs && esbuild tests/history-integration.test.ts --bundle --platform=node --format=esm --outfile=dist/history-integration.test.mjs && node dist/history-integration.test.mjs && esbuild tests/layout.test.ts --bundle --platform=node --format=esm --outfile=dist/layout.test.mjs && node dist/layout.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

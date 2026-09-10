@@ -3,11 +3,16 @@
 import asyncio
 import logging
 from collections.abc import AsyncIterator
+from contextlib import suppress
+from dataclasses import replace
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from starlette.types import Send
 
 from app.api.contracts import (
+    CITATION_TITLE_MAX_CHARS,
+    CITATIONS_MAX_COUNT,
     ChatEvent,
     ChatMessageRequest,
     ChunkEvent,
@@ -15,6 +20,8 @@ from app.api.contracts import (
     DoneEvent,
     ErrorEvent,
     PingEvent,
+    ProviderChunk,
+    ProviderGenerationRequest,
     StatusEvent,
 )
 from app.providers.base import Provider
@@ -41,7 +48,9 @@ def format_sse(event: ChatEvent) -> str:
 
 
 async def stream_with_pings(
-    source: AsyncIterator[str], ping_interval: float = PING_INTERVAL_SECONDS
+    source: AsyncIterator[ProviderChunk],
+    ping_interval: float = PING_INTERVAL_SECONDS,
+    max_output_chars: int | None = None,
 ) -> AsyncIterator[ChatEvent]:
     """Interleave PingEvent()s into `source` whenever it goes quiet for
     `ping_interval` seconds, without cancelling or restarting `source`.
@@ -54,6 +63,7 @@ async def stream_with_pings(
     """
     iterator = source.__aiter__()
     next_item = asyncio.ensure_future(iterator.__anext__())
+    emitted_chars = 0
     try:
         while True:
             done, _ = await asyncio.wait({next_item}, timeout=ping_interval)
@@ -61,13 +71,33 @@ async def stream_with_pings(
                 yield PingEvent()
                 continue
             try:
-                delta = next_item.result()
+                chunk = next_item.result()
             except StopAsyncIteration:
                 return
-            yield ChunkEvent(delta=delta)
+            remaining = (
+                len(chunk.delta)
+                if max_output_chars is None
+                else max_output_chars - emitted_chars
+            )
+            if remaining <= 0:
+                yield DoneEvent(finish_reason="limit")
+                return
+            delta = chunk.delta[:remaining]
+            if delta:
+                yield ChunkEvent(delta=delta)
+                emitted_chars += len(delta)
+            if len(delta) < len(chunk.delta):
+                yield DoneEvent(finish_reason="limit")
+                return
             next_item = asyncio.ensure_future(iterator.__anext__())
     finally:
-        next_item.cancel()
+        if not next_item.done():
+            next_item.cancel()
+            with suppress(asyncio.CancelledError, StopAsyncIteration):
+                await next_item
+        close = getattr(iterator, "aclose", None)
+        if close is not None:
+            await close()
 
 
 async def chat_event_stream(
@@ -77,6 +107,9 @@ async def chat_event_stream(
     top_k: int = DEFAULT_TOP_K,
     max_distance: float = DEFAULT_MAX_DISTANCE,
     ping_interval: float = PING_INTERVAL_SECONDS,
+    system_instruction: str = "",
+    max_output_tokens: int = 1500,
+    max_output_chars: int = 6000,
 ) -> AsyncIterator[ChatEvent]:
     yield StatusEvent(state="retrieving", label="Searching the knowledge base")
     try:
@@ -91,19 +124,41 @@ async def chat_event_stream(
         yield DoneEvent(finish_reason="refused")
         return
 
-    citations = build_citations(chunks)
+    citation_chunks = [
+        replace(chunk, source=chunk.source[:CITATION_TITLE_MAX_CHARS]) for chunk in chunks
+    ]
+    citations = build_citations(citation_chunks)[:CITATIONS_MAX_COUNT]
     if citations:
         yield CitationsEvent(sources=citations)
 
     yield StatusEvent(state="generating", label="Generating a reply")
     try:
-        provider_stream = provider.stream(
-            message=body.message, history=body.history, context=build_context_block(chunks)
+        provider_request = ProviderGenerationRequest(
+            system_instruction=system_instruction,
+            message=body.message,
+            history=body.history,
+            retrieved_context=build_context_block(chunks),
+            max_output_tokens=max_output_tokens,
+            max_output_chars=max_output_chars,
         )
-        async for event in stream_with_pings(provider_stream, ping_interval):
-            yield event
-    except Exception:
-        logger.exception("provider stream failed", extra={"session_id": body.session_id})
+        provider_stream = provider.stream(provider_request)
+        provider_events = stream_with_pings(
+            provider_stream, ping_interval, max_output_chars=max_output_chars
+        )
+        try:
+            async for event in provider_events:
+                yield event
+                if isinstance(event, DoneEvent):
+                    return
+        finally:
+            close = getattr(provider_events, "aclose", None)
+            if close is not None:
+                await close()
+    except Exception as exc:
+        logger.error(
+            "provider stream failed",
+            extra={"session_id": body.session_id, "error_type": type(exc).__name__},
+        )
         yield ErrorEvent(
             code="provider_unavailable",
             message="The model provider is unavailable. Please try again.",
@@ -117,9 +172,30 @@ async def _single_event_stream(event: ChatEvent) -> AsyncIterator[ChatEvent]:
     yield event
 
 
+async def _formatted_sse_stream(events: AsyncIterator[ChatEvent]) -> AsyncIterator[str]:
+    iterator = events.__aiter__()
+    try:
+        async for event in iterator:
+            yield format_sse(event)
+    finally:
+        close = getattr(iterator, "aclose", None)
+        if close is not None:
+            await close()
+
+
+class _ClosingStreamingResponse(StreamingResponse):
+    async def stream_response(self, send: Send) -> None:
+        try:
+            await super().stream_response(send)
+        finally:
+            close = getattr(self.body_iterator, "aclose", None)
+            if close is not None:
+                await close()
+
+
 def _sse_response(events: AsyncIterator[ChatEvent]) -> StreamingResponse:
-    return StreamingResponse(
-        (format_sse(event) async for event in events),
+    return _ClosingStreamingResponse(
+        _formatted_sse_stream(events),
         media_type="text/event-stream",
     )
 
@@ -154,5 +230,8 @@ async def chat_message(request: Request, body: ChatMessageRequest) -> StreamingR
             collection,
             top_k=settings.retrieval_top_k,
             max_distance=settings.retrieval_max_distance,
+            system_instruction=settings.system_instruction,
+            max_output_tokens=settings.max_output_tokens,
+            max_output_chars=settings.max_output_chars,
         )
     )

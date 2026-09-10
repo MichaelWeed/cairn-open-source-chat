@@ -118,18 +118,28 @@ These operator surfaces are roadmap design, not current routes or UI.
 
 ## 4. Chat API Contract
 
-`POST /api/v1/chat/message` with `{session_id, message, history[<=5], context?}`. Response is SSE:
+`POST /api/v1/chat/message` accepts exactly `{session_id, message, history?, context?}`.
+The JSON body is capped at 16,384 actual UTF-8 bytes. Session IDs are 1-96 ASCII
+letters, digits, `_`, or `-`; messages and per-turn content are non-blank and at
+most 500 characters; history contains at most 5 turns and 2,000 total content
+characters. Optional context accepts only `locale` and a non-protocol-relative
+`page_path`, each at most 256 characters. Public context is metadata only and is
+never included in provider instructions or retrieved context. Response is SSE:
 
 | Event | Payload |
 | --- | --- |
 | `status` | `{state, label}` |
 | `chunk` | `{delta}` |
 | `citations` | `{sources: [{id, title, url}]}` |
-| `error` | `{code: rate_limited\|provider_unavailable\|guardrail_block\|internal, message, retryable}` |
+| `error` | `{code, message, retryable}`; SSE 1.1 adds `invalid_request`, `budget_exhausted`, `concurrency_limited`, `provider_timeout`, `retrieval_unavailable`, and `request_cancelled` |
 | `ping` | `{}` heartbeat every 15 s |
-| `done` | `{finish_reason}` |
+| `done` | `{finish_reason: stop\|refused\|limit\|cancelled}` |
 
 Widget behavior on `error`: render message; reconnect once if `retryable`.
+Provider adapters receive one frozen `ProviderGenerationRequest`; Ollama receives
+the server-owned token cap through `num_predict`. Provider deltas are at most 1,000
+characters, and the endpoint stops the provider at the configured total character
+budget (default 6,000), ending with `done.limit` when truncated.
 
 WISMO tool result includes `"mode": "deep_link" | "api"`. The system prompt forbids asserting delivery status when mode is `deep_link`; the model may only present the link.
 
