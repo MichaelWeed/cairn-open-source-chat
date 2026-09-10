@@ -66,8 +66,9 @@ Design invariants and current limits:
   with stable IDs and SHA-256 digests. Inputs are bounded to 1,024 documents, 8 MiB
   per document, 64 MiB total source text, 16,384 chunks per document, 65,536 chunks
   total, 4,096 embedding dimensions, and 8,388,608 vector scalars. The planner does
-  not read files, contact providers or stores, persist data, or change lifecycle;
-  immutable candidate persistence and activation remain planned.
+  not read files, contact providers or stores, persist data, or change lifecycle.
+  The separate candidate persistence service consumes that complete plan through
+  injected store and signer/verifier boundaries; activation remains planned.
 
 ## 2. Developer Preview Quick Start
 
@@ -181,6 +182,30 @@ settings. `GOOGLE_SDK_PYTHON_LOGGING_SCOPE` must be blank. Focused tests inject 
 fake transport, deny DNS, sockets, providers, ADC, and the production factory, and
 make no live or credentialed call. `/readyz` intentionally does not probe
 Firestore in this milestone.
+
+### Immutable candidate persistence (development only)
+
+`app.ingest.candidate_persistence` maps one validated plan to an immutable header,
+document records, the existing Firestore chunk schema, and a final attestation.
+Writes are create-only and header-first. Document and chunk batches are sorted and
+bounded to 400 records and an exact 8 MiB encoded commit, while each encoded
+document must fit 1 MiB. A complete independent readback uses 200-record pages with
+a 201st-row lookahead before inventory hashing or signing.
+
+Failure may leave an immutable header or content prefix. That prefix is not
+attested, ready, active, or eligible for retrieval lifecycle promotion. Replaying
+the same plan confirms exact records and creates only missing records; any changed
+record fails closed and is never repaired, overwritten, or deleted. The service
+uses the Firestore timeout and zero-or-one retry policy and resolves ambiguous
+creates by read-confirm before retrying.
+
+The module ships no signer, key loader, credential setting, KMS client, or trust
+policy. Tests use an injected deterministic fixture that is not cryptography. A
+read-only verification seam accepts a separately selected verifier and performs
+the same complete readback, inventory, payload, and signature checks without
+signing or writing. KAN-45 must supply trusted signing policy and lifecycle rules
+before any candidate can become ready or active. All persistence tests are offline
+and deny providers, sockets, credentials, and production factories.
 
 **Config plumbing:** compose only interpolates `.env` into `compose.yaml` — it never passes `.env` to the container by itself. Every knob in `.env.example` is therefore forwarded explicitly in the `environment:` block of `compose.yaml`, with defaults mirroring `backend/app/config.py`. Add new settings in all three places.
 

@@ -47,7 +47,7 @@ EXPECTED_MANIFEST: dict[str, Any] = {
         "corpus": {
             "local_directory": "available",
             "reviewed_manifest": "available",
-            "immutable_versions": "planned",
+            "immutable_versions": "development_only",
         },
         "widget": {
             "custom_element": "available",

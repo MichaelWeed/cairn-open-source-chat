@@ -43,7 +43,7 @@ validation.
     "corpus": {
       "local_directory": "available",
       "reviewed_manifest": "available",
-      "immutable_versions": "planned"
+      "immutable_versions": "development_only"
     },
     "widget": {
       "custom_element": "available",
@@ -129,11 +129,15 @@ embedding function. Its `1.0` algorithm identities and bounded canonical SHA-256
 material make a complete candidate plan deterministic across retries and process
 hash seeds. Planning does not persist or activate a candidate.
 
-This internal addition changes no public request, SSE event, capability value,
-version 1 provenance manifest, local corpus compatibility, or local retrieval-store
-schema. Existing deployments require no migration or reindex. Exact-version storage,
-readback attestation, and lifecycle remain planned, so `immutable_versions` remains
-`planned` in the packaged capability manifest.
+The internal candidate persistence contract adds create-or-confirm storage, exact
+readback, canonical inventory hashing, and injected attestation verification.
+Therefore `immutable_versions` is `development_only`. It is not wired to startup or
+an endpoint and supplies no real signer or trust policy. Lifecycle, ready state,
+active pointers, promotion, rollback, and hosted readiness remain planned.
+
+The public chat API remains `1.0`, SSE remains `1.1`, local corpus remains `2`, and
+local retrieval store remains `1`. Existing deployments require no migration or
+reindex for this internal addition.
 
 ## Chat compatibility 1.0 and SSE compatibility 1.1
 
