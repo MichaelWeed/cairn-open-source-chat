@@ -4,10 +4,10 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import suppress
-from dataclasses import replace
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from pydantic import ValidationError
 from starlette.types import Send
 
 from app.api.contracts import (
@@ -32,10 +32,14 @@ from app.retrieval import (
     REFUSAL_MESSAGE,
     build_citations,
     build_context_block,
-    retrieve_chunks,
-    should_refuse,
 )
-from app.vectorstore import DocumentCollection
+from app.retrieval_contracts import (
+    LocalActiveScope,
+    RetrievalAdapter,
+    RetrievalError,
+    RetrievalRequest,
+    RetrievalResult,
+)
 
 logger = logging.getLogger("app")
 
@@ -87,9 +91,7 @@ async def stream_with_pings(
                 continue
             chunk = provider_event
             remaining = (
-                len(chunk.delta)
-                if max_output_chars is None
-                else max_output_chars - emitted_chars
+                len(chunk.delta) if max_output_chars is None else max_output_chars - emitted_chars
             )
             if remaining <= 0:
                 yield DoneEvent(finish_reason="limit")
@@ -116,7 +118,7 @@ async def stream_with_pings(
 async def chat_event_stream(
     provider: Provider,
     body: ChatMessageRequest,
-    collection: DocumentCollection,
+    retrieval_adapter: RetrievalAdapter,
     top_k: int = DEFAULT_TOP_K,
     max_distance: float = DEFAULT_MAX_DISTANCE,
     ping_interval: float = PING_INTERVAL_SECONDS,
@@ -126,19 +128,65 @@ async def chat_event_stream(
 ) -> AsyncIterator[ChatEvent]:
     yield StatusEvent(state="retrieving", label="Searching the knowledge base")
     try:
-        chunks = retrieve_chunks(collection, body.message, top_k=top_k)
-    except Exception:
-        logger.exception("retrieval failed", extra={"session_id": body.session_id})
-        chunks = []
+        retrieval_request = RetrievalRequest(
+            scope=LocalActiveScope(),
+            query=body.message,
+            max_results=top_k,
+            max_distance=max_distance,
+            distance_measure="squared_l2",
+        )
+    except ValidationError:
+        logger.warning("retrieval failed", extra={"retrieval_error_code": "invalid_request"})
+        retrieval_result = None
+    else:
+        try:
+            adapter_result = await retrieval_adapter.retrieve(retrieval_request)
+            result_payload = (
+                adapter_result.model_dump()
+                if isinstance(adapter_result, RetrievalResult)
+                else adapter_result
+            )
+            retrieval_result = RetrievalResult.model_validate(result_payload)
+            if (
+                retrieval_result.scope != retrieval_request.scope
+                or retrieval_result.distance_measure != retrieval_request.distance_measure
+                or retrieval_result.max_distance != retrieval_request.max_distance
+                or len(retrieval_result.chunks) > retrieval_request.max_results
+            ):
+                raise RetrievalError("malformed_result") from None
+        except ValidationError:
+            logger.warning(
+                "retrieval failed", extra={"retrieval_error_code": "malformed_result"}
+            )
+            retrieval_result = None
+        except RetrievalError as error:
+            logger.warning("retrieval failed", extra={"retrieval_error_code": error.code})
+            retrieval_result = None
+        except Exception:
+            logger.warning(
+                "retrieval failed", extra={"retrieval_error_code": "malformed_result"}
+            )
+            retrieval_result = None
 
-    if should_refuse(chunks, max_distance):
+    if retrieval_result is None or retrieval_result.refused:
+        yield StatusEvent(state="refusing", label="No confident match found")
+        yield ChunkEvent(delta=REFUSAL_MESSAGE)
+        yield DoneEvent(finish_reason="refused")
+        return
+
+    chunks = retrieval_result.chunks
+    try:
+        retrieved_context = build_context_block(chunks)
+    except RetrievalError as error:
+        logger.warning("retrieval failed", extra={"retrieval_error_code": error.code})
         yield StatusEvent(state="refusing", label="No confident match found")
         yield ChunkEvent(delta=REFUSAL_MESSAGE)
         yield DoneEvent(finish_reason="refused")
         return
 
     citation_chunks = [
-        replace(chunk, source=chunk.source[:CITATION_TITLE_MAX_CHARS]) for chunk in chunks
+        chunk.model_copy(update={"source": chunk.source[:CITATION_TITLE_MAX_CHARS]})
+        for chunk in chunks
     ]
     citations = build_citations(citation_chunks)[:CITATIONS_MAX_COUNT]
     if citations:
@@ -150,7 +198,7 @@ async def chat_event_stream(
             system_instruction=system_instruction,
             message=body.message,
             history=body.history,
-            retrieved_context=build_context_block(chunks),
+            retrieved_context=retrieved_context,
             max_output_tokens=max_output_tokens,
             max_output_chars=max_output_chars,
         )
@@ -248,12 +296,12 @@ async def chat_message(request: Request, body: ChatMessageRequest) -> StreamingR
         return _sse_response(_single_event_stream(event))
 
     provider: Provider = request.app.state.provider
-    collection: DocumentCollection = request.app.state.document_collection
+    retrieval_adapter: RetrievalAdapter = request.app.state.retrieval_adapter
     return _sse_response(
         chat_event_stream(
             provider,
             body,
-            collection,
+            retrieval_adapter,
             top_k=settings.retrieval_top_k,
             max_distance=settings.retrieval_max_distance,
             system_instruction=settings.system_instruction,

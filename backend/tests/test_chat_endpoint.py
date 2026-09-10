@@ -15,6 +15,13 @@ from app.main import ChatRequestBodyLimitMiddleware, create_app
 from app.providers.base import Provider
 from app.providers.contracts import ProviderStreamEvent, ProviderTextChunk
 from app.providers.echo import EchoProvider
+from app.retrieval_contracts import (
+    LocalActiveScope,
+    RetrievalProbe,
+    RetrievalRequest,
+    RetrievalResult,
+    RetrievalScope,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -64,6 +71,32 @@ def parse_sse(body: str) -> list[tuple[str, str]]:
         data = next(line.removeprefix("data: ") for line in lines if line.startswith("data: "))
         events.append((event_type, data))
     return events
+
+
+class InjectedRetrievalAdapter:
+    def __init__(self) -> None:
+        self.requests: list[RetrievalRequest] = []
+        self.close_calls = 0
+
+    async def retrieve(self, request: RetrievalRequest) -> RetrievalResult:
+        self.requests.append(request)
+        return RetrievalResult(
+            scope=LocalActiveScope(),
+            distance_measure="squared_l2",
+            max_distance=request.max_distance,
+            chunks=(),
+        )
+
+    async def check_readiness(self, scope: RetrievalScope) -> RetrievalProbe:
+        return RetrievalProbe(
+            scope=scope,
+            reachable=True,
+            store_ready=True,
+            exact_version_ready=False,
+        )
+
+    def close(self) -> None:
+        self.close_calls += 1
 
 
 @pytest.fixture
@@ -195,6 +228,23 @@ def test_refuses_and_skips_provider_when_nothing_ingested(client: TestClient) ->
 
     done_body = json.loads(next(data for t, data in events if t == "done"))
     assert done_body["finish_reason"] == "refused"
+
+
+def test_injected_retrieval_adapter_is_used_and_remains_caller_owned(tmp_path: Path) -> None:
+    adapter = InjectedRetrievalAdapter()
+    settings = Settings(database_path=tmp_path / "test.db", chroma_path=tmp_path / "chroma")
+    app = create_app(settings, provider=EchoProvider(), retrieval_adapter=adapter)
+
+    with TestClient(app) as client:
+        assert app.state.retrieval_adapter is adapter
+        assert app.state.document_collection is not None
+        response = client.post(
+            "/api/v1/chat/message", json={"session_id": "s1", "message": " exact query "}
+        )
+
+    assert response.status_code == 200
+    assert adapter.requests[0].query == " exact query "
+    assert adapter.close_calls == 0
 
 
 def test_refuses_when_confidence_below_threshold_despite_matching_chunk(tmp_path: Path) -> None:
@@ -369,7 +419,7 @@ def test_emitted_citations_enforce_count_and_title_bounds(tmp_path: Path) -> Non
     settings = Settings(
         database_path=tmp_path / "test.db",
         chroma_path=tmp_path / "chroma",
-        retrieval_top_k=7,
+        retrieval_top_k=6,
         retrieval_max_distance=1000.0,
     )
     app = create_app(settings, provider=CapturingProvider())

@@ -1,6 +1,7 @@
+import math
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal, cast
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -38,13 +39,50 @@ class Settings(BaseSettings):
     # Compose override sets this to its read-only operator corpus mount.
     corpus_path: Path | None = None
     embedding_model: str = "nomic-embed-text"
-    retrieval_top_k: int = 4
-    retrieval_max_distance: float = 1.2
+    retrieval_top_k: Annotated[int, Field(ge=1, le=6)] = 4
+    retrieval_max_distance: Annotated[float, Field(ge=0, allow_inf_nan=False)] = 1.2
 
     rate_limit_ip_capacity: float = 20
     rate_limit_ip_refill_per_minute: float = 20
     rate_limit_session_capacity: float = 10
     rate_limit_session_refill_per_minute: float = 10
+
+    @field_validator("retrieval_top_k", mode="before")
+    @classmethod
+    def validate_retrieval_top_k_type(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("retrieval_top_k must be an integer")
+        if isinstance(value, str):
+            if not value.isascii() or not value.isdecimal():
+                raise ValueError("retrieval_top_k must be an integer")
+            return int(value)
+        if type(value) is not int:
+            raise ValueError("retrieval_top_k must be an integer")
+        return value
+
+    @field_validator("retrieval_max_distance", mode="before")
+    @classmethod
+    def validate_retrieval_max_distance_type(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("retrieval_max_distance must be a finite non-negative number")
+        if isinstance(value, str):
+            try:
+                value = float(value)
+            except ValueError as error:
+                raise ValueError(
+                    "retrieval_max_distance must be a finite non-negative number"
+                ) from error
+        if type(value) not in {int, float}:
+            raise ValueError("retrieval_max_distance must be a finite non-negative number")
+        try:
+            finite = math.isfinite(float(cast(int | float, value)))
+        except OverflowError as error:
+            raise ValueError(
+                "retrieval_max_distance must be a finite non-negative number"
+            ) from error
+        if not finite:
+            raise ValueError("retrieval_max_distance must be a finite non-negative number")
+        return value
 
     @field_validator("deployment_mode", "provider", "embedding_provider", mode="before")
     @classmethod

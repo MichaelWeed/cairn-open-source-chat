@@ -186,6 +186,17 @@ usage is never treated as zero, mixed currencies and empty aggregates fail close
 and projections are available only with complete priced coverage. No default
 price catalog, persistence sink, budget enforcement, or public usage event exists.
 
+Retrieval crosses a separate frozen internal contract (`retrieval_contracts.py`,
+version `1.0`). Chat currently requests only `local_active` corpus compatibility 2
+with squared-L2 distance. The local adapter clamps `RETRIEVAL_TOP_K` to the store
+count and the public maximum of 6, validates every returned SQLite row and its
+provenance metadata without coercion, and fails closed on unsupported scope,
+malformed output, or context larger than 12,000 characters. Exact immutable corpus
+references are modeled for adapter portability but are not implemented by the local
+store. `RETRIEVAL_TOP_K` must be an integer from 1 through 6 and
+`RETRIEVAL_MAX_DISTANCE` must be finite and non-negative; invalid settings stop
+startup rather than changing retrieval behavior silently.
+
 WISMO tool result includes `"mode": "deep_link" | "api"`. The system prompt forbids asserting delivery status when mode is `deep_link`; the model may only present the link.
 
 ## 5. Security Model
@@ -259,10 +270,11 @@ No core changes required; the registry injects enabled tool schemas into the pro
 
 ### Concurrency, one instance
 
-FastAPI/uvicorn runs a single async event loop, but retrieval is deliberately
-synchronous: embedding and the local flat-vector query run on that loop, and the
-query scans the bounded corpus in O(N) time. Do not assume concurrent retrieval
-throughput. The client lock protects the SQLite connection inside this one process;
+FastAPI/uvicorn runs a single async event loop. The retrieval protocol is async and
+yields once for cancellation, but the local adapter then performs embedding and its
+flat-vector query synchronously on that loop. The query scans the bounded corpus in
+O(N) time. Do not assume concurrent retrieval throughput. The client lock protects
+the SQLite connection inside this one process;
 it does not make multiple application instances a supported configuration. Two
 other pieces are also scoped to one instance rather than made distributed, by design:
 

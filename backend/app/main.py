@@ -24,6 +24,8 @@ from app.providers.base import Provider
 from app.providers.echo import EchoProvider
 from app.providers.ollama import OllamaProvider
 from app.ratelimit import RateLimiter
+from app.retrieval import LocalRetrievalAdapter
+from app.retrieval_contracts import RetrievalAdapter
 from app.vectorstore import get_document_collection, get_vector_client
 
 logger = logging.getLogger("app")
@@ -104,7 +106,11 @@ async def _close_owned_provider(provider: Provider) -> None:
         await close()
 
 
-def create_app(settings: Settings | None = None, provider: Provider | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    provider: Provider | None = None,
+    retrieval_adapter: RetrievalAdapter | None = None,
+) -> FastAPI:
     configure_logging()
     settings = settings or get_settings()
     owns_provider = provider is None
@@ -120,8 +126,9 @@ def create_app(settings: Settings | None = None, provider: Provider | None = Non
             app.state.db = db
             vector_client = get_vector_client(settings)
             app.state.vector_client = vector_client
-            app.state.document_collection = get_document_collection(
-                vector_client, settings
+            app.state.document_collection = get_document_collection(vector_client, settings)
+            app.state.retrieval_adapter = retrieval_adapter or LocalRetrievalAdapter(
+                app.state.document_collection
             )
             if settings.corpus_path is not None:
                 summary = ingest_corpus(
