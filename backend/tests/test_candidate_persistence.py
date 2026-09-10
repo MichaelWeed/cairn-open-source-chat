@@ -9,7 +9,9 @@ import socket
 import subprocess
 import sys
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+from threading import Barrier
 from typing import Any, cast
 
 import pytest
@@ -1737,6 +1739,150 @@ def test_all_public_model_validation_routes_are_content_free(
     dumped = instance.model_dump_json()
     assert model.model_validate_json(dumped) == instance
     assert adapter.validate_json(dumped) == instance
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        CandidatePersistenceRequest,
+        CandidatePersistenceReceipt,
+        CandidateStoreRecord,
+        CandidateStorePage,
+        AttestationCorpus,
+        AttestationEmbedding,
+        AttestationRecordSchemas,
+        AttestationPayload,
+        CandidateAttestation,
+        AttestationIdentity,
+        VerifiedCandidateEvidence,
+    ],
+    ids=lambda model: model.__name__,
+)
+def test_public_model_rebuild_reinstalls_content_free_validation(
+    model: type[Any],
+) -> None:
+    instance = next(item for item in _public_model_instances() if type(item) is model)
+    existing_adapter = TypeAdapter(model)
+    canary = f"PRIVATE-{model.__name__.upper()}-REBUILD-CANARY"
+    malformed_json = "{" + canary
+
+    assert model.model_rebuild() is None
+    assert model.model_rebuild(force=True) is True
+    new_adapter = TypeAdapter(model)
+    python_value = {**instance.model_dump(mode="python", round_trip=True), canary: canary}
+    strings_value = {canary: canary}
+    for surface in (
+        partial(model.model_validate_json, malformed_json),
+        partial(model.model_validate, python_value, extra="allow"),
+        partial(model.model_validate_strings, strings_value, extra="ignore"),
+        partial(new_adapter.validate_json, malformed_json),
+        partial(new_adapter.validate_python, python_value, extra="ignore"),
+        partial(new_adapter.validate_strings, strings_value, extra="allow"),
+        partial(existing_adapter.validate_json, malformed_json),
+        partial(existing_adapter.validate_python, python_value, extra="allow"),
+        partial(existing_adapter.validate_strings, strings_value, extra="ignore"),
+    ):
+        with pytest.raises(CandidatePersistenceError) as caught:
+            surface()
+        _assert_content_free_error(caught.value, (canary, malformed_json))
+
+    assert model.model_rebuild(force=True) is True
+    assert model.model_rebuild() is None
+    dumped = instance.model_dump_json()
+    values = instance.model_dump(mode="python", round_trip=True)
+    assert model.model_validate_json(dumped) == instance
+    assert model.model_validate(values) == instance
+    assert new_adapter.validate_json(dumped) == instance
+    assert new_adapter.validate_python(values) == instance
+    assert existing_adapter.validate_json(dumped) == instance
+    assert existing_adapter.validate_python(values) == instance
+    assert model.model_json_schema() == new_adapter.json_schema()
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        CandidatePersistenceRequest,
+        CandidatePersistenceReceipt,
+        CandidateStoreRecord,
+        CandidateStorePage,
+        AttestationCorpus,
+        AttestationEmbedding,
+        AttestationRecordSchemas,
+        AttestationPayload,
+        CandidateAttestation,
+        AttestationIdentity,
+        VerifiedCandidateEvidence,
+    ],
+    ids=lambda model: model.__name__,
+)
+def test_public_model_rebuild_and_validation_are_thread_safe(model: type[Any]) -> None:
+    existing_adapter = TypeAdapter(model)
+    canary = f"PRIVATE-{model.__name__.upper()}-THREADED-REBUILD-CANARY"
+    malformed_json = "{" + canary
+    rebuild_barrier = Barrier(2)
+
+    def rebuild() -> None:
+        rebuild_barrier.wait()
+        for _ in range(10):
+            assert model.model_rebuild(force=True) is True
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        rebuild_futures = (executor.submit(rebuild), executor.submit(rebuild))
+        for future in rebuild_futures:
+            future.result()
+
+    validation_barrier = Barrier(4)
+
+    def validate(adapter: TypeAdapter[Any] | None) -> None:
+        validation_barrier.wait()
+        for _ in range(10):
+            selected = TypeAdapter(model) if adapter is None else adapter
+            with pytest.raises(CandidatePersistenceError) as caught:
+                selected.validate_json(malformed_json)
+            _assert_content_free_error(caught.value, (canary, malformed_json))
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = (
+            executor.submit(validate, existing_adapter),
+            executor.submit(validate, existing_adapter),
+            executor.submit(validate, None),
+            executor.submit(validate, None),
+        )
+        for future in futures:
+            future.result()
+
+
+def test_public_model_subclass_rebuild_keeps_content_free_validation() -> None:
+    class DerivedCandidateStoreRecord(CandidateStoreRecord):
+        marker: str
+
+    instance = DerivedCandidateStoreRecord(
+        kind="candidate",
+        key="safe",
+        value={},
+        marker="safe",
+    )
+    existing_adapter = TypeAdapter(DerivedCandidateStoreRecord)
+    canary = "PRIVATE-DERIVED-MODEL-REBUILD-CANARY"
+    malformed_json = "{" + canary
+
+    assert DerivedCandidateStoreRecord.model_rebuild(force=True) is True
+    for surface in (
+        partial(DerivedCandidateStoreRecord.model_validate_json, malformed_json),
+        partial(TypeAdapter(DerivedCandidateStoreRecord).validate_json, malformed_json),
+        partial(existing_adapter.validate_json, malformed_json),
+    ):
+        with pytest.raises(CandidatePersistenceError) as caught:
+            surface()
+        _assert_content_free_error(caught.value, (canary, malformed_json))
+    dumped = instance.model_dump_json()
+    assert DerivedCandidateStoreRecord.model_validate_json(dumped) == instance
+    assert existing_adapter.validate_json(dumped) == instance
+    assert (
+        DerivedCandidateStoreRecord.model_json_schema()
+        == TypeAdapter(DerivedCandidateStoreRecord).json_schema()
+    )
 
 
 def test_all_public_model_surfaces_reject_unknown_and_missing_fields_content_free() -> None:

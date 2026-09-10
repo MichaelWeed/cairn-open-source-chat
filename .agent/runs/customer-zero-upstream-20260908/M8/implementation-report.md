@@ -11,7 +11,8 @@
 - Rejected first repair commit: `8a0445b4fdbc437ad11e1578d40f7ec9a3dd2ec3`
 - Rejected second repair commit: `969e85c005b69c83aa6a44a9cb04a5e793cc2211`
 - Rejected privacy repair commit: `cf25bb1a120bd07d3b429f53e8fdc3944f78f05f`
-- Final public-model repair commit: the follow-up repair commit containing this report; its exact
+- Rejected public-model repair commit: `c58efec3601efcc2d7f729d505115b36844b757d`
+- Final model-lifecycle repair commit: the follow-up repair commit containing this report; its exact
   object ID is returned to the control lane after handoff.
 
 The accepted M5 source snapshot, M6 bounded chunk-key and embedding contracts, and
@@ -122,6 +123,18 @@ Pydantic's input-retaining `ValidationError`; structurally invalid inputs and
 hostile `extra` overrides remain fixed `invalid_plan`. Valid direct-model and
 `TypeAdapter` JSON round trips remain exact for all eleven public models.
 
+The model-lifecycle repair keeps that facade effective across Pydantic schema
+rebuilds. A model-local `model_rebuild` override serializes rebuild calls, lets
+Pydantic prepare its replacement schema, and reinstalls the facade before releasing
+the lock or returning. It does not patch Pydantic `BaseModel` or M7 models globally.
+The override preserves `None` for a default completed-model no-op and `True` for
+forced rebuilds. Repeated and concurrent serialized rebuild calls, concurrent
+validation after return, adapters created before and after rebuild, derived
+subclasses, valid Python/JSON round trips, and model/adapter JSON schema generation
+remain deterministic and content-free. Validation concurrent with an in-progress
+rebuild is not claimed because Pydantic explicitly documents that lifecycle as not
+thread-safe.
+
 ## Public Surface and Privacy
 
 The capability manifest now reports `corpus.immutable_versions` as
@@ -182,13 +195,18 @@ Red-first evidence:
   errors for every model. After the class-wide validator-boundary repair, all 88
   route/model combinations passed with recursive retention checks and valid JSON
   round trips.
+- The model-lifecycle slice initially failed all 22 all-model rebuild and concurrent
+  rebuild/validation cases because a forced rebuild replaced each facade with a raw
+  `SchemaValidator`. After preserving the facade as the model-local lifecycle seam,
+  all 22 all-model cases plus the derived-subclass rebuild probe passed.
 
 Focused evidence:
 
-- M8 candidate persistence component tests after public-model repair: 165 passed,
+- M8 candidate persistence component tests after model-lifecycle repair: 188 passed,
   exit 0.
-- Firestore-profile focused matrix: 417 passed, one upstream warning, exit 0.
-- Combined Firestore/Gemini focused matrix: 585 passed, one upstream warning,
+- M8 persistence plus Firestore component tests: 203 passed, exit 0.
+- Firestore-profile focused matrix: 440 passed, one upstream warning, exit 0.
+- Combined Firestore/Gemini focused matrix: 608 passed, one upstream warning,
   exit 0.
 - Linear-count probes: 401 records required exactly 401 record encodes and split
   into 400 plus 1; 65,536 records required exactly 65,536 record encodes and split
@@ -213,7 +231,7 @@ Final mandatory repository evidence:
 - `make gemini-image-check`: exit 0.
 - `make firestore-image-check`: exit 0, including default, Firestore, Gemini, and
   combined profiles with default restoration.
-- Final `make validate`: exit 0; 1,000 backend tests passed plus all widget protocol,
+- Final `make validate`: exit 0; 1,023 backend tests passed plus all widget protocol,
   history, layout, browser, type, build, size, distribution, supply-chain, and image
   gates. One upstream Starlette deprecation warning was reported.
 

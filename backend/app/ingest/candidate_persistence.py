@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from functools import partial
+from threading import RLock
 from types import MappingProxyType
 from typing import Annotated, Any, Literal, Protocol, Self, cast
 from urllib.parse import urlsplit
@@ -270,6 +271,9 @@ class _ContentFreeSchemaValidator:
         return getattr(self._validator, name)
 
 
+_MODEL_REBUILD_LOCK = RLock()
+
+
 class CandidatePersistenceModel(BaseModel):
     model_config = ConfigDict(
         frozen=True,
@@ -286,6 +290,27 @@ class CandidatePersistenceModel(BaseModel):
         validator = cls.__pydantic_validator__
         if not isinstance(validator, _ContentFreeSchemaValidator):
             cast(Any, cls).__pydantic_validator__ = _ContentFreeSchemaValidator(validator)
+
+    @classmethod
+    def model_rebuild(
+        cls,
+        *,
+        force: bool = False,
+        raise_errors: bool = True,
+        _parent_namespace_depth: int = 2,
+        _types_namespace: Any = None,
+    ) -> bool | None:
+        with _MODEL_REBUILD_LOCK:
+            result = super().model_rebuild(
+                force=force,
+                raise_errors=raise_errors,
+                _parent_namespace_depth=_parent_namespace_depth,
+                _types_namespace=_types_namespace,
+            )
+            validator = cls.__pydantic_validator__
+            if not isinstance(validator, _ContentFreeSchemaValidator):
+                cast(Any, cls).__pydantic_validator__ = _ContentFreeSchemaValidator(validator)
+            return result
 
     @classmethod
     def __get_pydantic_core_schema__(
