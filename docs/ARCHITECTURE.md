@@ -73,9 +73,10 @@ Three properties of this diagram carry most of the design weight:
 
 Built and tested today, in order:
 
-1. **Contract validation.** The request body is a Pydantic model with
-   `extra="forbid"`. Unknown fields are rejected outright; the 500-character message
-   cap and 5-turn history limit are enforced here, before any handler code runs.
+1. **Contract validation.** The actual request body is capped at 16,384 bytes, then
+   parsed by a frozen Pydantic model with `extra="forbid"`. Session, message,
+   history, and optional context fields have explicit per-field and aggregate
+   bounds before any handler code runs.
 2. **Origin check.** The `Origin` header is checked against the allowlist. This is
    a browser-embedding control, not authentication — a non-browser client sending no
    `Origin` is not blocked by it, and the security documentation says so.
@@ -90,7 +91,9 @@ Built and tested today, in order:
 6. **Prompt assembly.** Surviving chunks are wrapped in a delimited
    `<retrieved-context>` block with instructions that its contents are untrusted
    data, not instructions.
-7. **Streaming.** The provider streams tokens; the endpoint emits `status`,
+7. **Streaming.** The endpoint builds one validated, server-owned provider request.
+   Public context metadata does not enter its instructions or retrieved context.
+   Provider chunks and total output are bounded before the endpoint emits `status`,
    `citations`, `chunk`, `ping`, and `done`/`error` events per the contract.
 
 Mounted startup ingestion validates the complete versioned provenance manifest before

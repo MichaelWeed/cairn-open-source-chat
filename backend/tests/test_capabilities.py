@@ -23,7 +23,7 @@ EXPECTED_MANIFEST: dict[str, Any] = {
     "release": {"stage": "developer-preview", "version": "0.0.0"},
     "compatibility": {
         "chat_api": "1.0",
-        "sse_events": "1.0",
+        "sse_events": "1.1",
         "widget": "0.1.0",
         "local_retrieval_store": "1",
         "local_corpus": "2",
