@@ -11,8 +11,13 @@ async function main(): Promise<void> {
   );
   assert.match(
     source,
-    /\.messages \{[^}]*min-height: 0;[^}]*overflow-y: auto;[^}]*\}/s,
-    "the message region must be allowed to shrink and scroll instead of overlapping the composer",
+    /\.messages \{[^}]*min-height: 0;[^}]*overflow-y: auto;[^}]*padding: 0 1rem;[^}]*\}/s,
+    "the message region must shrink and scroll without vertical box padding overlapping the composer",
+  );
+  assert.match(
+    source,
+    /article:first-of-type \{ margin-top: 1rem; \}[\s\S]*article:last-of-type \{ margin-bottom: 1rem; \}/,
+    "the scrollable message content must retain its established vertical inset",
   );
   assert.match(
     source,
