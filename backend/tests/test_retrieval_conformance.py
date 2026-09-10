@@ -135,6 +135,14 @@ class CollectionHarness:
         else:
             delegate.delete(ids=_IDS)
 
+    def retain(self, count: int) -> None:
+        delegate = self.collection.delegate
+        removed_ids = _IDS[count:]
+        if isinstance(delegate, ConformingMemoryCollection):
+            delegate.rows = [row for row in delegate.rows if row[0] not in removed_ids]
+        else:
+            delegate.delete(ids=removed_ids)
+
     def fail(self) -> None:
         delegate = self.collection.delegate
         if isinstance(delegate, ConformingMemoryCollection):
@@ -160,8 +168,27 @@ def no_external_retrieval_calls(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(socket.socket, "connect", forbidden)
     monkeypatch.setattr(socket, "create_connection", forbidden)
+    monkeypatch.setattr(socket, "getaddrinfo", forbidden)
     monkeypatch.setattr("app.providers.gemini.GeminiProvider.stream", forbidden)
     monkeypatch.setattr("app.providers.ollama.OllamaProvider.stream", forbidden)
+
+
+def test_external_call_guard_denies_dns_and_connection_attempts() -> None:
+    def direct_connect() -> None:
+        with socket.socket() as candidate:
+            candidate.connect(("127.0.0.1", 9))
+
+    operations = (
+        lambda: socket.getaddrinfo("localhost", 0),
+        lambda: socket.create_connection(("localhost", 9)),
+        direct_connect,
+    )
+    for operation in operations:
+        with pytest.raises(
+            AssertionError,
+            match="external call forbidden in retrieval conformance tests",
+        ):
+            operation()
 
 
 @pytest.fixture(params=("memory", "sqlite"))
@@ -233,6 +260,21 @@ async def test_shared_empty_collection_counts_once_and_never_queries(
     assert result.refused is True
     assert collection.count_calls == 1
     assert collection.query_calls == []
+
+
+async def test_shared_nonempty_collection_clamps_query_to_collection_count(
+    conforming_collection: CollectionHarness,
+) -> None:
+    conforming_collection.retain(2)
+    collection = conforming_collection.collection
+
+    result = await LocalRetrievalAdapter(collection).retrieve(
+        _request(max_results=6)
+    )
+
+    assert [chunk.chunk_id for chunk in result.chunks] == list(_IDS[:2])
+    assert collection.count_calls == 1
+    assert collection.query_calls == [([" exact query "], 2)]
 
 
 async def test_shared_query_bounds_order_ties_cutoffs_and_provenance(
