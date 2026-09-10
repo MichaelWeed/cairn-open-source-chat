@@ -1,23 +1,189 @@
 import asyncio
-from collections.abc import Sequence
+import socket
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import pytest
 
-from app.config import Settings
-from app.retrieval import LocalRetrievalAdapter
+from app.retrieval import LocalRetrievalAdapter, build_citations
 from app.retrieval_contracts import (
     ExactCorpusReference,
     LocalActiveScope,
     RetrievalError,
     RetrievalRequest,
 )
-from app.vectorstore import (
-    DocumentCollection,
-    VectorStoreClient,
-    get_document_collection,
-    get_vector_client,
+from app.vectorstore import DocumentCollection, VectorStoreClient
+
+_IDS = (
+    "doc-a::chunk::0",
+    "doc-a::chunk::1",
+    "doc-b::chunk::0",
+    "doc-c::chunk::0",
+    "doc-d::chunk::0",
+    "doc-e::chunk::0",
+    "doc-f::chunk::0",
 )
+_DOCUMENTS = (
+    " leading  and trailing ",
+    "second\n\nchunk",
+    "third",
+    "fourth",
+    "fifth",
+    "sixth",
+    "seventh",
+)
+_METADATAS = (
+    {
+        "document_id": "doc-a",
+        "source": "a.md",
+        "chunk_index": 0,
+        "citation_title": " A title ",
+        "citation_url": "https://example.com/a?q=1#part",
+    },
+    {
+        "document_id": "doc-a",
+        "source": "a.md",
+        "chunk_index": 1,
+        "citation_title": " A title ",
+        "citation_url": "https://example.com/a?q=1#part",
+    },
+    {"document_id": "doc-b", "source": "b.md", "chunk_index": 0},
+    {"document_id": "doc-c", "source": "c.md", "chunk_index": 0},
+    {"document_id": "doc-d", "source": "d.md", "chunk_index": 0},
+    {"document_id": "doc-e", "source": "e.md", "chunk_index": 0},
+    {"document_id": "doc-f", "source": "f.md", "chunk_index": 0},
+)
+_EMBEDDINGS = {
+    " exact query ": 0.0,
+    "offset query": 0.5,
+    **dict(zip(_DOCUMENTS, (0.0, -1.0, 1.0, 2.0, 3.0, 4.0, 5.0), strict=True)),
+}
+
+
+def _fixed_embeddings(input: Sequence[str]) -> list[list[float]]:
+    return [[_EMBEDDINGS[text]] for text in input]
+
+
+class ConformingMemoryCollection:
+    def __init__(self) -> None:
+        self.rows: list[tuple[str, str, dict[str, object], float]] = []
+        self.failed = False
+
+    def add(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Sequence[str],
+        metadatas: Sequence[dict[str, object]],
+    ) -> None:
+        self.rows.extend(
+            (identifier, document, dict(metadata), _EMBEDDINGS[document])
+            for identifier, document, metadata in zip(ids, documents, metadatas, strict=True)
+        )
+
+    def clear(self) -> None:
+        self.rows.clear()
+
+    def count(self) -> int:
+        if self.failed:
+            raise RuntimeError("storage-secret")
+        return len(self.rows)
+
+    def query(self, *, query_texts: Sequence[str], n_results: int) -> object:
+        if self.failed:
+            raise RuntimeError("storage-secret")
+        query = _EMBEDDINGS[query_texts[0]]
+        scored = sorted(
+            ((query - vector) ** 2, identifier, document, metadata)
+            for identifier, document, metadata, vector in self.rows
+        )[:n_results]
+        return {
+            "ids": [[row[1] for row in scored]],
+            "documents": [[row[2] for row in scored]],
+            "metadatas": [[row[3] for row in scored]],
+            "distances": [[row[0] for row in scored]],
+        }
+
+
+class TrackingCollection:
+    def __init__(self, delegate: ConformingMemoryCollection | DocumentCollection) -> None:
+        self.delegate = delegate
+        self.count_calls = 0
+        self.query_calls: list[tuple[list[str], int]] = []
+
+    def count(self) -> object:
+        self.count_calls += 1
+        return self.delegate.count()
+
+    def query(self, *, query_texts: Sequence[str], n_results: int) -> object:
+        self.query_calls.append((list(query_texts), n_results))
+        return self.delegate.query(query_texts=query_texts, n_results=n_results)
+
+
+@dataclass
+class CollectionHarness:
+    kind: str
+    collection: TrackingCollection
+    client: VectorStoreClient | None
+
+    def clear(self) -> None:
+        delegate = self.collection.delegate
+        if isinstance(delegate, ConformingMemoryCollection):
+            delegate.clear()
+        else:
+            delegate.delete(ids=_IDS)
+
+    def fail(self) -> None:
+        delegate = self.collection.delegate
+        if isinstance(delegate, ConformingMemoryCollection):
+            delegate.failed = True
+        else:
+            assert self.client is not None
+            self.client.close()
+
+
+@pytest.fixture(autouse=True)
+def no_external_retrieval_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make this local conformance suite fail immediately on provider/network use."""
+
+    def forbidden(*_: object, **__: object) -> object:
+        raise AssertionError("external call forbidden in retrieval conformance tests")
+
+    for name in (
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "OLLAMA_HOST",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(socket.socket, "connect", forbidden)
+    monkeypatch.setattr(socket, "create_connection", forbidden)
+    monkeypatch.setattr("app.providers.gemini.GeminiProvider.stream", forbidden)
+    monkeypatch.setattr("app.providers.ollama.OllamaProvider.stream", forbidden)
+
+
+@pytest.fixture(params=("memory", "sqlite"))
+def conforming_collection(
+    request: pytest.FixtureRequest, tmp_path: Path
+) -> Iterator[CollectionHarness]:
+    kind = cast(str, request.param)
+    client: VectorStoreClient | None = None
+    if kind == "memory":
+        delegate: ConformingMemoryCollection | DocumentCollection = ConformingMemoryCollection()
+    else:
+        client = VectorStoreClient(tmp_path / "conformance.sqlite3")
+        delegate = client.get_or_create_collection(
+            name="documents", embedding_function=_fixed_embeddings
+        )
+    delegate.add(
+        ids=_IDS[::-1], documents=_DOCUMENTS[::-1], metadatas=_METADATAS[::-1]
+    )
+    harness = CollectionHarness(kind, TrackingCollection(delegate), client)
+    yield harness
+    if client is not None:
+        client.close()
 
 
 def _request(**overrides: object) -> RetrievalRequest:
@@ -57,8 +223,11 @@ class MemoryCollection:
         return self.result
 
 
-async def test_empty_collection_counts_once_and_never_queries() -> None:
-    collection = MemoryCollection(count=0)
+async def test_shared_empty_collection_counts_once_and_never_queries(
+    conforming_collection: CollectionHarness,
+) -> None:
+    conforming_collection.clear()
+    collection = conforming_collection.collection
     result = await LocalRetrievalAdapter(collection).retrieve(_request())
     assert result.chunks == ()
     assert result.refused is True
@@ -66,15 +235,36 @@ async def test_empty_collection_counts_once_and_never_queries() -> None:
     assert collection.query_calls == []
 
 
-async def test_query_is_preserved_and_result_count_is_clamped() -> None:
-    collection = MemoryCollection(count=2)
+async def test_shared_query_bounds_order_ties_cutoffs_and_provenance(
+    conforming_collection: CollectionHarness,
+) -> None:
+    collection = conforming_collection.collection
     result = await LocalRetrievalAdapter(collection).retrieve(_request(max_results=6))
-    assert result.chunks[0].chunk_id == "doc-1::chunk::0"
-    assert collection.query_calls == [([" exact query "], 2)]
+    assert [chunk.chunk_id for chunk in result.chunks] == list(_IDS[:6])
+    assert [chunk.distance for chunk in result.chunks] == [0.0, 1.0, 1.0, 4.0, 9.0, 16.0]
+    assert [chunk.text for chunk in result.chunks[:3]] == list(_DOCUMENTS[:3])
+    assert result.chunks[0].citation_title == " A title "
+    assert result.chunks[0].citation_url == "https://example.com/a?q=1#part"
+    assert result.chunks[1].citation_title == " A title "
+    assert result.chunks[2].citation_title is None
+    citations = build_citations(result.chunks)
+    assert [citation.model_dump() for citation in citations[:2]] == [
+        {
+            "id": "doc-a",
+            "title": " A title ",
+            "url": "https://example.com/a?q=1#part",
+        },
+        {"id": "doc-b", "title": "b.md", "url": "document://doc-b"},
+    ]
+    cutoff = await LocalRetrievalAdapter(collection).retrieve(_request(max_results=2))
+    assert [chunk.chunk_id for chunk in cutoff.chunks] == list(_IDS[:2])
+    assert collection.query_calls == [([" exact query "], 6), ([" exact query "], 2)]
 
 
-async def test_exact_scope_and_non_local_metric_fail_before_store_access() -> None:
-    collection = MemoryCollection()
+async def test_shared_exact_scope_and_non_local_metric_fail_before_store_access(
+    conforming_collection: CollectionHarness,
+) -> None:
+    collection = conforming_collection.collection
     adapter = LocalRetrievalAdapter(collection)
     exact = _request(scope=ExactCorpusReference(corpus_id="docs", corpus_version="v1"))
     with pytest.raises(RetrievalError) as exact_error:
@@ -84,6 +274,19 @@ async def test_exact_scope_and_non_local_metric_fail_before_store_access() -> No
         await adapter.retrieve(_request(distance_measure="cosine"))
     assert metric_error.value.code == "unsupported_scope"
     assert collection.count_calls == 0
+    assert collection.query_calls == []
+
+
+async def test_shared_threshold_equality_and_above_cutoff(
+    conforming_collection: CollectionHarness,
+) -> None:
+    adapter = LocalRetrievalAdapter(conforming_collection.collection)
+    at_cutoff = await adapter.retrieve(_request(query="offset query", max_distance=0.25))
+    above_cutoff = await adapter.retrieve(_request(query="offset query", max_distance=0.249))
+    assert at_cutoff.best_distance == 0.25
+    assert at_cutoff.refused is False
+    assert above_cutoff.best_distance == 0.25
+    assert above_cutoff.refused is True
 
 
 @pytest.mark.parametrize("count", [-1, True, 1.5, "1"])
@@ -216,8 +419,11 @@ async def test_citation_pair_is_preserved_exactly() -> None:
     assert result.chunks[0].citation_url == "http://example.com/p?q=1#x"
 
 
-async def test_readiness_is_scope_aware_and_does_not_query() -> None:
-    collection = MemoryCollection(count=0)
+async def test_shared_readiness_is_scope_aware_and_does_not_query(
+    conforming_collection: CollectionHarness,
+) -> None:
+    conforming_collection.clear()
+    collection = conforming_collection.collection
     probe = await LocalRetrievalAdapter(collection).check_readiness(LocalActiveScope())
     assert probe.reachable and probe.store_ready and not probe.exact_version_ready
     assert collection.query_calls == []
@@ -228,125 +434,37 @@ async def test_readiness_is_scope_aware_and_does_not_query() -> None:
     assert caught.value.code == "unsupported_scope"
 
 
-async def test_readiness_storage_failure_is_content_free() -> None:
-    with pytest.raises(RetrievalError) as caught:
-        await LocalRetrievalAdapter(FailingCollection()).check_readiness(LocalActiveScope())
-    assert caught.value.code == "store_unavailable"
-    assert caught.value.__cause__ is None
-    assert caught.value.__context__ is None
-    assert "storage-secret" not in str(caught.value)
-
-
-async def test_cancelled_task_does_not_enter_synchronous_collection() -> None:
-    collection = MemoryCollection()
-    task = asyncio.create_task(LocalRetrievalAdapter(collection).retrieve(_request()))
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert collection.count_calls == 0
-
-
-async def test_cancelled_readiness_does_not_enter_synchronous_collection() -> None:
-    collection = MemoryCollection()
-    task = asyncio.create_task(
-        LocalRetrievalAdapter(collection).check_readiness(LocalActiveScope())
-    )
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert collection.count_calls == 0
-
-
-@pytest.fixture(autouse=True)
-def fake_embeddings(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("EMBEDDING_PROVIDER", "fake")
-
-
-async def test_real_sqlite_collection_conforms_without_external_calls(tmp_path: Path) -> None:
-    settings = Settings(chroma_path=tmp_path / "chroma")
-    client = get_vector_client(settings)
-    collection: DocumentCollection = get_document_collection(client, settings)
-    collection.add(
-        ids=["doc-b::chunk::0", "doc-a::chunk::0"],
-        documents=["same", "same"],
-        metadatas=[
-            {"document_id": "doc-b", "source": "b.md", "chunk_index": 0},
-            {"document_id": "doc-a", "source": "a.md", "chunk_index": 0},
-        ],
-    )
-    result = await LocalRetrievalAdapter(collection).retrieve(_request(max_results=2))
-    assert [chunk.chunk_id for chunk in result.chunks] == [
-        "doc-a::chunk::0",
-        "doc-b::chunk::0",
-    ]
-    client.close()
-
-
-@pytest.mark.parametrize("collection_kind", ["memory", "sqlite"])
-async def test_shared_collection_conformance_preserves_order_text_and_provenance(
-    collection_kind: str, tmp_path: Path
+@pytest.mark.parametrize("operation", ["retrieve", "readiness"])
+async def test_shared_store_errors_are_content_free(
+    operation: str, conforming_collection: CollectionHarness
 ) -> None:
-    ids = ["doc-a::chunk::0", "doc-a::chunk::1", "doc-b::chunk::0"]
-    documents = [" leading  and trailing ", "second\n\nchunk", "third"]
-    metadatas = [
-        {
-            "document_id": "doc-a",
-            "source": "a.md",
-            "chunk_index": 0,
-            "citation_title": " A title ",
-            "citation_url": "https://example.com/a?q=1#part",
-        },
-        {
-            "document_id": "doc-a",
-            "source": "a.md",
-            "chunk_index": 1,
-            "citation_title": " A title ",
-            "citation_url": "https://example.com/a?q=1#part",
-        },
-        {"document_id": "doc-b", "source": "b.md", "chunk_index": 0},
-    ]
-    client: VectorStoreClient | None = None
-    if collection_kind == "memory":
-        collection: MemoryCollection | DocumentCollection = MemoryCollection(
-            result={
-                "ids": [ids],
-                "documents": [documents],
-                "metadatas": [metadatas],
-                "distances": [[0.0, 0.0, 0.0]],
-            },
-            count=3,
-        )
-    else:
-        client = VectorStoreClient(tmp_path / "fixed.sqlite3")
-        collection = client.get_or_create_collection(
-            name="documents",
-            embedding_function=lambda texts: [[0.0, 0.0] for _ in texts],
-        )
-        collection.add(ids=ids[::-1], documents=documents[::-1], metadatas=metadatas[::-1])
-
-    result = await LocalRetrievalAdapter(collection).retrieve(_request(max_results=3))
-
-    assert [chunk.chunk_id for chunk in result.chunks] == ids
-    assert [chunk.text for chunk in result.chunks] == documents
-    assert result.chunks[0].citation_title == " A title "
-    assert result.chunks[0].citation_url == "https://example.com/a?q=1#part"
-    assert result.chunks[2].citation_title is None
-    assert result.chunks[2].citation_url is None
-    assert result.best_distance == 0.0
-    assert result.refused is False
-    if client is not None:
-        client.close()
-
-
-class FailingCollection(MemoryCollection):
-    def count(self) -> object:
-        raise RuntimeError("storage-secret")
-
-
-async def test_store_exception_is_sanitized_without_retaining_cause() -> None:
+    conforming_collection.fail()
+    adapter = LocalRetrievalAdapter(conforming_collection.collection)
     with pytest.raises(RetrievalError) as caught:
-        await LocalRetrievalAdapter(FailingCollection()).retrieve(_request())
+        if operation == "retrieve":
+            await adapter.retrieve(_request())
+        else:
+            await adapter.check_readiness(LocalActiveScope())
     assert caught.value.code == "store_unavailable"
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
     assert "storage-secret" not in str(caught.value)
+
+
+@pytest.mark.parametrize("operation", ["retrieve", "readiness"])
+async def test_shared_cancelled_tasks_never_enter_synchronous_collection(
+    operation: str, conforming_collection: CollectionHarness
+) -> None:
+    adapter = LocalRetrievalAdapter(conforming_collection.collection)
+
+    async def invoke() -> object:
+        if operation == "retrieve":
+            return await adapter.retrieve(_request())
+        return await adapter.check_readiness(LocalActiveScope())
+
+    task = asyncio.create_task(invoke())
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert conforming_collection.collection.count_calls == 0
+    assert conforming_collection.collection.query_calls == []

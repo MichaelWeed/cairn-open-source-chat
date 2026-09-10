@@ -15,8 +15,9 @@ from app.api.contracts import (
 )
 from app.providers.base import Provider
 from app.providers.gemini import GeminiProviderError
-from app.retrieval import LocalRetrievalAdapter, build_context_block
+from app.retrieval import DEFAULT_MAX_DISTANCE, LocalRetrievalAdapter, build_context_block
 from app.retrieval_contracts import (
+    ExactCorpusReference,
     LocalActiveScope,
     RetrievalProbe,
     RetrievalRequest,
@@ -316,7 +317,7 @@ def _result_with_context_length(target: int) -> RetrievalResult:
     return RetrievalResult(
         scope=LocalActiveScope(),
         distance_measure="squared_l2",
-        max_distance=1.0,
+        max_distance=DEFAULT_MAX_DISTANCE,
         chunks=tuple(expanded),
     )
 
@@ -393,6 +394,105 @@ async def test_unexpected_adapter_failure_is_content_free_and_skips_provider(
     assert provider.calls == 0
     assert caplog.records[-1].retrieval_error_code == "malformed_result"  # type: ignore[attr-defined]
     assert "adapter-secret" not in caplog.text
+
+
+def _policy_result(case: str) -> RetrievalResult:
+    first_distance = 5.0 if case == "threshold" else 0.1
+    chunks: tuple[RetrievedChunk, ...] = (
+        RetrievedChunk(
+            chunk_id="policy-secret::chunk::0",
+            document_id="policy-secret",
+            source="policy-secret.md",
+            chunk_index=0,
+            text="chunk-secret",
+            distance=first_distance,
+        ),
+    )
+    if case == "count":
+        chunks += (
+            RetrievedChunk(
+                chunk_id="second::chunk::0",
+                document_id="second",
+                source="second.md",
+                chunk_index=0,
+                text="second",
+                distance=0.2,
+            ),
+        )
+    return RetrievalResult(
+        scope=(
+            ExactCorpusReference(corpus_id="corpus-secret", corpus_version="v1-secret")
+            if case == "scope"
+            else LocalActiveScope()
+        ),
+        distance_measure="cosine" if case == "measure" else "squared_l2",
+        max_distance=100.0 if case == "threshold" else 1.2,
+        chunks=chunks,
+    )
+
+
+@pytest.mark.parametrize("case", ["scope", "measure", "count", "threshold"])
+async def test_adapter_cannot_echo_different_application_policy(
+    case: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    provider = _CountingProvider()
+    events = [
+        event
+        async for event in chat_event_stream(
+            provider,
+            ChatMessageRequest(session_id="session-secret", message="query-secret"),
+            _StaticAdapter(_policy_result(case)),
+            top_k=1,
+            max_distance=1.2,
+        )
+    ]
+
+    assert [event.type for event in events] == ["status", "status", "chunk", "done"]
+    assert events[-1].finish_reason == "refused"  # type: ignore[union-attr]
+    assert provider.calls == 0
+    assert len([record for record in caplog.records if record.message == "retrieval failed"]) == 1
+    assert caplog.records[-1].retrieval_error_code == "malformed_result"  # type: ignore[attr-defined]
+    public_payload = "".join(event.model_dump_json() for event in events)
+    for secret in (
+        "session-secret",
+        "query-secret",
+        "policy-secret",
+        "chunk-secret",
+        "corpus-secret",
+    ):
+        assert secret not in caplog.text
+        assert secret not in public_payload
+
+
+class _MalformedResultAdapter(_StaticAdapter):
+    async def retrieve(self, request: RetrievalRequest) -> RetrievalResult:
+        return cast(
+            RetrievalResult,
+            {
+                "scope": request.scope.model_dump(),
+                "distance_measure": request.distance_measure,
+                "max_distance": request.max_distance,
+                "chunks": "malformed-secret",
+            },
+        )
+
+
+async def test_structurally_malformed_adapter_result_uses_malformed_result_code(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    provider = _CountingProvider()
+    events = [
+        event
+        async for event in chat_event_stream(
+            provider,
+            ChatMessageRequest(session_id="s1", message="hi"),
+            _MalformedResultAdapter(_result_with_context_length(1_000)),
+        )
+    ]
+    assert events[-1].finish_reason == "refused"  # type: ignore[union-attr]
+    assert provider.calls == 0
+    assert caplog.records[-1].retrieval_error_code == "malformed_result"  # type: ignore[attr-defined]
+    assert "malformed-secret" not in caplog.text
 
 
 async def test_normalized_gemini_failure_preserves_safe_sse_and_log_fields(

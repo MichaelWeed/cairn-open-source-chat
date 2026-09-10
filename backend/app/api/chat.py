@@ -123,22 +123,38 @@ async def chat_event_stream(
             max_distance=max_distance,
             distance_measure="squared_l2",
         )
-        adapter_result = await retrieval_adapter.retrieve(retrieval_request)
-        result_payload = (
-            adapter_result.model_dump()
-            if isinstance(adapter_result, RetrievalResult)
-            else adapter_result
-        )
-        retrieval_result = RetrievalResult.model_validate(result_payload)
     except ValidationError:
         logger.warning("retrieval failed", extra={"retrieval_error_code": "invalid_request"})
         retrieval_result = None
-    except RetrievalError as error:
-        logger.warning("retrieval failed", extra={"retrieval_error_code": error.code})
-        retrieval_result = None
-    except Exception:
-        logger.warning("retrieval failed", extra={"retrieval_error_code": "malformed_result"})
-        retrieval_result = None
+    else:
+        try:
+            adapter_result = await retrieval_adapter.retrieve(retrieval_request)
+            result_payload = (
+                adapter_result.model_dump()
+                if isinstance(adapter_result, RetrievalResult)
+                else adapter_result
+            )
+            retrieval_result = RetrievalResult.model_validate(result_payload)
+            if (
+                retrieval_result.scope != retrieval_request.scope
+                or retrieval_result.distance_measure != retrieval_request.distance_measure
+                or retrieval_result.max_distance != retrieval_request.max_distance
+                or len(retrieval_result.chunks) > retrieval_request.max_results
+            ):
+                raise RetrievalError("malformed_result") from None
+        except ValidationError:
+            logger.warning(
+                "retrieval failed", extra={"retrieval_error_code": "malformed_result"}
+            )
+            retrieval_result = None
+        except RetrievalError as error:
+            logger.warning("retrieval failed", extra={"retrieval_error_code": error.code})
+            retrieval_result = None
+        except Exception:
+            logger.warning(
+                "retrieval failed", extra={"retrieval_error_code": "malformed_result"}
+            )
+            retrieval_result = None
 
     if retrieval_result is None or retrieval_result.refused:
         yield StatusEvent(state="refusing", label="No confident match found")
