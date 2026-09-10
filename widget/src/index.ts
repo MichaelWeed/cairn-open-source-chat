@@ -90,9 +90,11 @@ export class CairnChat extends HTMLElement {
         .title { font-size: 1rem; font-weight: 750; margin: 0; }
         .close { background: transparent; border: 0; border-radius: .375rem; color: #384238; font-size: 1.25rem; height: 2rem; line-height: 1; width: 2rem; }
         .close:hover { background: #dce5dc; }
-        .messages { display: flex; flex-direction: column; gap: .75rem; min-height: 0; overflow-y: auto; padding: 1rem; }
+        .messages { display: flex; flex-direction: column; gap: .75rem; min-height: 0; overflow-y: auto; padding: 0 1rem; }
         .empty { color: #5e665d; font-size: .925rem; line-height: 1.5; margin: auto 0; text-align: center; }
         article { align-self: flex-start; max-width: 92%; }
+        article:first-of-type { margin-top: 1rem; }
+        article:last-of-type { margin-bottom: 1rem; }
         .message { border-radius: .75rem; line-height: 1.5; overflow-wrap: anywhere; padding: .7rem .8rem; white-space: pre-wrap; word-break: break-word; }
         .user { align-self: flex-end; }
         .user .message { background: #3e6b4f; color: #f4faf6; }
