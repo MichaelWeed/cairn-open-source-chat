@@ -7,6 +7,7 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from app.providers.accounting import (
+    ProviderAccountingError,
     ProviderAttemptAccountingInput,
     ProviderAttemptCostRecord,
     ProviderCostAggregate,
@@ -215,7 +216,7 @@ def test_snapshot_id_is_canonical_and_json_money_is_exact() -> None:
 def test_snapshot_rejects_invalid_currency_interval_url_and_rates(
     changes: dict[str, object],
 ) -> None:
-    with pytest.raises((ValidationError, ValueError)):
+    with pytest.raises(ProviderAccountingError):
         _snapshot(**changes)
 
 
@@ -224,7 +225,7 @@ def test_snapshot_rejects_stale_identity_after_any_field_change() -> None:
     values = snapshot.model_dump()
     values["output_rate_per_million"] = Decimal("6")
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ProviderAccountingError):
         ProviderPriceSnapshot.model_validate(values)
 
 
@@ -250,7 +251,7 @@ def test_snapshot_identity_covers_every_economic_and_provenance_field(
     values = _snapshot().model_dump()
     values[field_name] = replacement
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ProviderAccountingError):
         ProviderPriceSnapshot.model_validate(values)
 
 
@@ -331,13 +332,13 @@ def test_missing_evidence_is_unknown_not_zero(
     ],
 )
 def test_supplied_snapshot_mismatch_is_rejected(changes: dict[str, object]) -> None:
-    with pytest.raises(ValueError, match="Provider accounting input is invalid"):
+    with pytest.raises(ProviderAccountingError, match="Provider accounting input is invalid"):
         price_provider_attempt(_attempt(**changes))
 
 
 def test_attempt_state_rejects_grounded_error_or_cancelled() -> None:
     for state in ("error", "cancelled"):
-        with pytest.raises(ValidationError):
+        with pytest.raises(ProviderAccountingError):
             _attempt(completion_state=state, answer_outcome="grounded")
 
 
@@ -369,15 +370,15 @@ def test_aggregate_coverage_controls_projection_and_grounded_denominator() -> No
 
 
 def test_aggregate_rejects_empty_bad_target_and_mixed_currency() -> None:
-    with pytest.raises(ValueError, match="Provider accounting input is invalid"):
+    with pytest.raises(ProviderAccountingError, match="Provider accounting input is invalid"):
         aggregate_provider_costs((), target_attempt_count=1)
-    with pytest.raises(ValueError, match="Provider accounting input is invalid"):
+    with pytest.raises(ProviderAccountingError, match="Provider accounting input is invalid"):
         aggregate_provider_costs((price_provider_attempt(_attempt()),), target_attempt_count=0)
 
     usd = price_provider_attempt(_attempt())
     eur_snapshot = _snapshot(currency="EUR")
     eur = price_provider_attempt(_attempt(price_snapshot=eur_snapshot))
-    with pytest.raises(ValueError, match="Provider accounting input is invalid"):
+    with pytest.raises(ProviderAccountingError, match="Provider accounting input is invalid"):
         aggregate_provider_costs((usd, eur), target_attempt_count=2)
 
 
@@ -406,18 +407,18 @@ def test_derived_models_reject_inconsistent_states() -> None:
     priced = price_provider_attempt(_attempt())
     record_values = priced.model_dump()
     record_values["usage"] = None
-    with pytest.raises(ValidationError):
+    with pytest.raises(ProviderAccountingError):
         ProviderAttemptCostRecord.model_validate(record_values)
 
     aggregate = aggregate_provider_costs((priced,), target_attempt_count=1)
     aggregate_values = aggregate.model_dump()
     aggregate_values["priced_coverage"] = Decimal("0.5")
-    with pytest.raises(ValidationError):
+    with pytest.raises(ProviderAccountingError):
         ProviderCostAggregate.model_validate(aggregate_values)
 
 
 def test_accounting_models_reject_content_and_serialize_no_forbidden_fields() -> None:
-    with pytest.raises(ValidationError):
+    with pytest.raises(ProviderAccountingError):
         ProviderAttemptAccountingInput.model_validate(
             {**_attempt().model_dump(), "message": "prompt-sentinel"}
         )
@@ -433,3 +434,59 @@ def test_accounting_models_reject_content_and_serialize_no_forbidden_fields() ->
         "source_url",
     ):
         assert forbidden not in serialized
+
+
+@pytest.mark.parametrize("entrypoint", ["constructor", "python", "json", "strings"])
+def test_untrusted_accounting_validation_errors_are_content_free(
+    entrypoint: str,
+) -> None:
+    secret = "prompt-secret-sentinel"
+    payload = {**_attempt().model_dump(), "message": secret}
+
+    with pytest.raises(ProviderAccountingError) as caught:
+        if entrypoint == "constructor":
+            ProviderAttemptAccountingInput(**payload)
+        elif entrypoint == "python":
+            ProviderAttemptAccountingInput.model_validate(payload)
+        elif entrypoint == "json":
+            ProviderAttemptAccountingInput.model_validate_json(
+                json.dumps(payload, default=str)
+            )
+        else:
+            ProviderAttemptAccountingInput.model_validate_strings(
+                {"message": secret}
+            )
+
+    rendered = (
+        str(caught.value)
+        + json.dumps(caught.value.errors(include_input=True))
+        + caught.value.json(include_input=True)
+    )
+    assert rendered.count("Provider accounting input is invalid.") == 3
+    assert secret not in rendered
+    assert "message" not in rendered
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
+def test_sensitive_snapshot_values_do_not_survive_structured_validation_error() -> None:
+    source_secret = "source-secret-sentinel"
+    rate_secret = 987654.125
+    payload = _snapshot().model_dump()
+    payload["source_url"] = f"https://example.com/pricing?key={source_secret}"
+    payload["output_rate_per_million"] = rate_secret
+
+    with pytest.raises(ProviderAccountingError) as caught:
+        ProviderPriceSnapshot.model_validate(payload)
+
+    rendered = (
+        str(caught.value)
+        + json.dumps(caught.value.errors(include_input=True))
+        + caught.value.json(include_input=True)
+    )
+    assert source_secret not in rendered
+    assert str(rate_secret) not in rendered
+    assert "source_url" not in rendered
+    assert "output_rate_per_million" not in rendered
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None

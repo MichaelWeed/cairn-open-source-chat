@@ -64,17 +64,24 @@ async def stream_with_pings(
     """
     iterator = source.__aiter__()
     next_item = asyncio.ensure_future(iterator.__anext__())
+    loop = asyncio.get_running_loop()
+    next_ping_deadline = loop.time() + ping_interval
     emitted_chars = 0
     try:
         while True:
-            done, _ = await asyncio.wait({next_item}, timeout=ping_interval)
+            remaining_to_ping = max(0.0, next_ping_deadline - loop.time())
+            done, _ = await asyncio.wait({next_item}, timeout=remaining_to_ping)
             if not done:
+                next_ping_deadline = loop.time() + ping_interval
                 yield PingEvent()
                 continue
             try:
                 provider_event = next_item.result()
             except StopAsyncIteration:
                 return
+            if loop.time() >= next_ping_deadline:
+                next_ping_deadline = loop.time() + ping_interval
+                yield PingEvent()
             if provider_event.kind == "usage":
                 next_item = asyncio.ensure_future(iterator.__anext__())
                 continue
@@ -89,6 +96,7 @@ async def stream_with_pings(
                 return
             delta = chunk.delta[:remaining]
             if delta:
+                next_ping_deadline = loop.time() + ping_interval
                 yield ChunkEvent(delta=delta)
                 emitted_chars += len(delta)
             if len(delta) < len(chunk.delta):

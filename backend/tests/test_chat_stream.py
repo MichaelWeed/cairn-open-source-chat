@@ -130,6 +130,52 @@ async def test_usage_events_are_consumed_without_public_output_or_budget() -> No
     assert closed is True
 
 
+async def test_hidden_usage_does_not_reset_public_ping_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = asyncio.get_running_loop()
+    current_time = 0.0
+    wait_count = 0
+    observed_timeouts: list[float | None] = []
+
+    async def deterministic_wait(
+        tasks: set[asyncio.Task[ProviderStreamEvent]],
+        timeout: float | None = None,
+    ) -> tuple[
+        set[asyncio.Task[ProviderStreamEvent]],
+        set[asyncio.Task[ProviderStreamEvent]],
+    ]:
+        nonlocal current_time, wait_count
+        wait_count += 1
+        observed_timeouts.append(timeout)
+        await asyncio.sleep(0)
+        task = next(iter(tasks))
+        assert task.done()
+        if wait_count == 1:
+            current_time = 0.9
+        elif wait_count == 2:
+            current_time = 1.1
+        return {task}, set()
+
+    async def source() -> AsyncIterator[ProviderStreamEvent]:
+        yield ProviderUsageChunk(
+            provider="gemini",
+            model="gemini-3.8-flash",
+            provider_attempt=1,
+            usage=ProviderUsage(input_tokens=10),
+        )
+        yield ProviderTextChunk(delta="visible")
+
+    monkeypatch.setattr(loop, "time", lambda: current_time)
+    monkeypatch.setattr(asyncio, "wait", deterministic_wait)
+
+    events = [event async for event in stream_with_pings(source(), ping_interval=1.0)]
+
+    assert [event.type for event in events] == ["ping", "chunk"]
+    assert observed_timeouts[0] == pytest.approx(1.0)
+    assert observed_timeouts[1] == pytest.approx(0.1)
+
+
 async def test_output_stops_at_exact_character_budget_and_closes_source() -> None:
     closed = False
 

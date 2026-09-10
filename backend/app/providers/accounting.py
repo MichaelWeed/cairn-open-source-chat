@@ -6,7 +6,7 @@ import re
 from collections.abc import Sequence
 from datetime import date
 from decimal import Context, Decimal, localcontext
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, Self
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -14,6 +14,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StrictInt,
+    ValidationError,
     ValidationInfo,
     field_serializer,
     field_validator,
@@ -36,7 +37,63 @@ _CURRENCY_PATTERN = re.compile(r"^[A-Z]{3}$")
 _DECIMAL_CONTEXT = Context(prec=80)
 
 
-class ProviderAccountingModel(BaseModel):
+class ProviderAccountingError(ValueError):
+    """Content-free invalid accounting input."""
+
+    def __init__(self) -> None:
+        super().__init__("Provider accounting input is invalid.")
+
+    def errors(
+        self,
+        *,
+        include_url: bool = True,
+        include_context: bool = True,
+        include_input: bool = True,
+    ) -> list[dict[str, object]]:
+        del include_url, include_context, include_input
+        return [
+            {
+                "type": "provider_accounting_invalid",
+                "loc": (),
+                "msg": "Provider accounting input is invalid.",
+            }
+        ]
+
+    def json(
+        self,
+        *,
+        indent: int | None = None,
+        include_url: bool = True,
+        include_context: bool = True,
+        include_input: bool = True,
+    ) -> str:
+        return json.dumps(
+            self.errors(
+                include_url=include_url,
+                include_context=include_context,
+                include_input=include_input,
+            ),
+            indent=indent,
+            separators=None if indent is not None else (",", ":"),
+        )
+
+
+class _ContentFreeAccountingMetaclass(type(BaseModel)):  # type: ignore[misc]
+    def __call__(cls, *args: Any, **kwargs: Any) -> Any:
+        result: Any = None
+        try:
+            result = super().__call__(*args, **kwargs)
+        except ValidationError:
+            pass
+        if result is None:
+            raise ProviderAccountingError from None
+        return result
+
+
+class ProviderAccountingModel(
+    BaseModel,
+    metaclass=_ContentFreeAccountingMetaclass,
+):
     model_config = ConfigDict(
         frozen=True,
         extra="forbid",
@@ -44,12 +101,88 @@ class ProviderAccountingModel(BaseModel):
         hide_input_in_errors=True,
     )
 
+    @classmethod
+    def model_validate(
+        cls,
+        obj: Any,
+        *,
+        strict: bool | None = None,
+        extra: Literal["allow", "ignore", "forbid"] | None = None,
+        from_attributes: bool | None = None,
+        context: Any | None = None,
+        by_alias: bool | None = None,
+        by_name: bool | None = None,
+    ) -> Self:
+        validated: Self | None = None
+        try:
+            validated = super().model_validate(
+                obj,
+                strict=strict,
+                extra=extra,
+                from_attributes=from_attributes,
+                context=context,
+                by_alias=by_alias,
+                by_name=by_name,
+            )
+        except ValidationError:
+            pass
+        if validated is None:
+            raise ProviderAccountingError from None
+        return validated
 
-class ProviderAccountingError(ValueError):
-    """Content-free invalid accounting input."""
+    @classmethod
+    def model_validate_json(
+        cls,
+        json_data: str | bytes | bytearray,
+        *,
+        strict: bool | None = None,
+        extra: Literal["allow", "ignore", "forbid"] | None = None,
+        context: Any | None = None,
+        by_alias: bool | None = None,
+        by_name: bool | None = None,
+    ) -> Self:
+        validated: Self | None = None
+        try:
+            validated = super().model_validate_json(
+                json_data,
+                strict=strict,
+                extra=extra,
+                context=context,
+                by_alias=by_alias,
+                by_name=by_name,
+            )
+        except ValidationError:
+            pass
+        if validated is None:
+            raise ProviderAccountingError from None
+        return validated
 
-    def __init__(self) -> None:
-        super().__init__("Provider accounting input is invalid.")
+    @classmethod
+    def model_validate_strings(
+        cls,
+        obj: Any,
+        *,
+        strict: bool | None = None,
+        extra: Literal["allow", "ignore", "forbid"] | None = None,
+        context: Any | None = None,
+        by_alias: bool | None = None,
+        by_name: bool | None = None,
+    ) -> Self:
+        validated: Self | None = None
+        try:
+            validated = super().model_validate_strings(
+                obj,
+                strict=strict,
+                extra=extra,
+                context=context,
+                by_alias=by_alias,
+                by_name=by_name,
+            )
+        except ValidationError:
+            pass
+        if validated is None:
+            raise ProviderAccountingError from None
+        return validated
 
 
 def _canonical_decimal(value: Decimal) -> str:
@@ -176,23 +309,29 @@ def compute_price_snapshot_id(
 ) -> str:
     """Return the identity of one fully validated caller-supplied snapshot."""
 
-    material = _snapshot_material(
-        provider=provider,
-        model=model,
-        service_tier=service_tier,
-        currency=currency,
-        effective_from=effective_from,
-        effective_through=effective_through,
-        source_url=source_url,
-        uncached_input_rate_per_million=uncached_input_rate_per_million,
-        cached_input_rate_per_million=cached_input_rate_per_million,
-        output_rate_per_million=output_rate_per_million,
-        thinking_rate_per_million=thinking_rate_per_million,
-    )
+    material: bytes | None = None
+    try:
+        material = _snapshot_material(
+            provider=provider,
+            model=model,
+            service_tier=service_tier,
+            currency=currency,
+            effective_from=effective_from,
+            effective_through=effective_through,
+            source_url=source_url,
+            uncached_input_rate_per_million=uncached_input_rate_per_million,
+            cached_input_rate_per_million=cached_input_rate_per_million,
+            output_rate_per_million=output_rate_per_million,
+            thinking_rate_per_million=thinking_rate_per_million,
+        )
+    except (AttributeError, TypeError, ValueError):
+        pass
+    if material is None:
+        raise ProviderAccountingError from None
     return hashlib.sha256(material).hexdigest()
 
 
-class ProviderPriceSnapshot(ProviderAccountingModel):
+class ProviderPriceSnapshot(ProviderAccountingModel):  # type: ignore[metaclass]
     schema_version: Literal["1.0"] = "1.0"
     snapshot_id: str
     provider: str
@@ -292,7 +431,7 @@ class ProviderPriceSnapshot(ProviderAccountingModel):
         return _canonical_decimal(value)
 
 
-class ProviderAttemptAccountingInput(ProviderAccountingModel):
+class ProviderAttemptAccountingInput(ProviderAccountingModel):  # type: ignore[metaclass]
     schema_version: Literal["1.0"] = "1.0"
     provider: str
     model: str
@@ -328,7 +467,7 @@ class ProviderAttemptAccountingInput(ProviderAccountingModel):
         return self
 
 
-class ProviderAttemptCostRecord(ProviderAccountingModel):
+class ProviderAttemptCostRecord(ProviderAccountingModel):  # type: ignore[metaclass]
     schema_version: Literal["1.0"] = "1.0"
     provider: str
     model: str
@@ -526,7 +665,7 @@ def price_provider_attempt(
     )
 
 
-class ProviderCostAggregate(ProviderAccountingModel):
+class ProviderCostAggregate(ProviderAccountingModel):  # type: ignore[metaclass]
     schema_version: Literal["1.0"] = "1.0"
     target_attempt_count: Annotated[
         StrictInt, Field(ge=1, le=MAX_SAFE_TOKEN_COUNT)
