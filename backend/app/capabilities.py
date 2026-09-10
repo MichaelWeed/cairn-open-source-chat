@@ -20,7 +20,7 @@ class Release(CapabilityModel):
 class Compatibility(CapabilityModel):
     chat_api: Literal["1.0"]
     sse_events: Literal["1.1"]
-    widget: Literal["0.1.0"]
+    widget: Literal["0.2.0"]
     local_retrieval_store: Literal["1"]
     local_corpus: Literal["2"]
     provider_accounting: Literal["1.0"]

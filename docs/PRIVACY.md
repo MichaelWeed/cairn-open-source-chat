@@ -23,13 +23,19 @@ will be one gating chat answers, even once Phase 5's admin auth ships.
 | Data | Where it lives | Retention |
 | --- | --- | --- |
 | Chat message text (the question a visitor types) | Nowhere, server-side. Passed through the rate limiter (keyed by IP/session, not content), the retrieval query, and the provider call, then discarded. | None — never written to disk. |
-| Conversation history | The current demo sends an empty `history` array on every request. The generic widget keeps bounded history in memory and a session identifier in browser session storage when available; the API accepts up to five caller-supplied turns and the server remains stateless ([DEVELOPER_README.md §1](../DEVELOPER_README.md)). | None on the server. Demo history is empty; generic-widget history lasts only for the page lifetime. |
+| Conversation history | The current demo sends an empty `history` array on every request. The generic widget keeps bounded completed non-refusal history in memory and a session identifier in browser session storage when available; the API accepts up to five caller-supplied turns and the server remains stateless ([WIDGET.md](WIDGET.md)). | None on the server. Demo history is empty; generic-widget history lasts only for the page lifetime and `Clear chat` removes it and rotates the session ID. |
 | `session_id` | Client-generated opaque identifier (`crypto.randomUUID()` in the demo page), used only as a rate-limit bucket key. Not linked to any account or identity — none exists to link it to. | Lives as long as the client keeps it (`sessionStorage`). |
 | Ingested documents (the operator's knowledge base) | Chunk text + embeddings in the local SQLite vector index (`CHROMA_PATH`/`cairn-vectors-v1.sqlite3`); per-document metadata (`id`, `source`, `content_hash`, `chunk_count`, `ingested_at` - no raw content) in SQLite's `documents` table. Legacy Chroma files are untouched and are not read. | Until re-ingested or (once task 5.3 ships) deleted via the admin content surface. |
 | Structured logs | stdout, JSON. By convention (not a mechanical filter — see docs/SECURITY.md), never includes message bodies or document content: latency, guardrail stage outcomes, error codes, query counts only. | Whatever your log aggregation/host retains. |
 | Provider usage metadata | Bounded token counts, provider/model identifiers, attempt number, and optional service tier are normalized in memory. They are excluded from public SSE and are not persisted or logged by the built path. | Request lifetime only. |
 | Metrics | Not implemented yet. The design intent (DEVELOPER_README.md §5) is counters and topic labels only, never message content — recorded here so the commitment is visible before the code exists. | N/A |
 | Escalation tickets | Not implemented yet (task 3.4). Will be off by default when it ships. | N/A |
+
+The widget's optional privacy and operator-owned handoff links never receive a
+message, history, session, citation, source page, referrer, error body, or widget
+state. Handoff navigation requires a user click. Widget host events contain only
+fixed version, enum, retryability, and citation-count fields. See
+[WIDGET.md](WIDGET.md) for the exact browser data flow.
 
 The knowledge-base corpus is operator-provided content (docs, help articles, product pages) — by
 design, Cairn answers from that corpus, not from anything a site visitor tells it. A visitor's chat

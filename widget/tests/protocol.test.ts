@@ -175,6 +175,11 @@ function testHistoryAndEndpoint(): void {
     [],
     "a cancelled exchange is not persisted",
   );
+  assert.deepEqual(
+    completedHistory([], "refused question", "bounded refusal", "refused"),
+    [],
+    "widget 0.2.0 refusals are not persisted",
+  );
 
   assert.equal(chatEndpoint(" https://support.example.test/ "), "https://support.example.test/api/v1/chat/message");
   assert.equal(chatEndpoint("https://support.example.test//"), "https://support.example.test//api/v1/chat/message");

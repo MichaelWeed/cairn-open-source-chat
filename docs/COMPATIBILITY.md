@@ -20,7 +20,7 @@ validation.
   "compatibility": {
     "chat_api": "1.0",
     "sse_events": "1.1",
-    "widget": "0.1.0",
+    "widget": "0.2.0",
     "local_retrieval_store": "1",
     "local_corpus": "2",
     "provider_accounting": "1.0"
@@ -47,7 +47,7 @@ validation.
     },
     "widget": {
       "custom_element": "available",
-      "production_configuration": "planned"
+      "production_configuration": "available"
     },
     "safety": {
       "origin_allowlist": "available",
@@ -96,6 +96,14 @@ provider selection, and a server-side key. `operations.hosted_readiness` remains
 `development_only`: the optional Firestore adapter can perform bounded exact-scope
 reads in development and tests, while production selection and lifecycle promotion
 remain unavailable. The chat and SSE compatibility versions are unchanged.
+
+Widget compatibility 0.2.0 adds the fail-closed configuration, capability probe,
+privacy, event, CSP, and accessibility contract documented in [WIDGET.md](WIDGET.md).
+It also excludes refusals from later browser history and tightens URLs, names,
+themes, and nonces as described in that guide's migration section.
+`widget.production_configuration = "available"` identifies only the packaged
+widget configuration boundary. It is not deployment certification, provider or
+hosted readiness, or deployment-wide abuse control.
 
 Provider accounting compatibility 1.0 adds an internal discriminated provider
 event stream and pure cost helpers. Usage records identify their provider, model,

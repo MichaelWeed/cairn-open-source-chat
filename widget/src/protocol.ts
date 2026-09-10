@@ -1,7 +1,36 @@
 export const HISTORY_LIMIT = 5;
 export const HISTORY_TURN_MAX_CODE_POINTS = 500;
 export const HISTORY_AGGREGATE_MAX_CODE_POINTS = 2_000;
+export const MESSAGE_MAX_CODE_POINTS = 500;
+export const CAPABILITY_RESPONSE_MAX_BYTES = 16_384;
+export const CHAT_RESPONSE_MAX_BYTES = 33_554_432;
+export const SSE_PENDING_RECORD_MAX_BYTES = 33_554_432;
+export const CHAT_OUTPUT_MAX_CODE_POINTS = 6_000;
+export const CHAT_CITATIONS_MAX_COUNT = 6;
+export const CHAT_NON_PING_EVENT_MAX_COUNT = 6_016;
+export const CHAT_COMPLETE_RECORD_IDLE_SECONDS = 45;
+export const CHAT_TOTAL_DEADLINE_SECONDS = 600;
+export const CAPABILITY_DEADLINE_SECONDS = 5;
 const HISTORY_EDGE_WHITESPACE = /^[\p{White_Space}\u001c-\u001f\ufeff]+|[\p{White_Space}\u001c-\u001f\ufeff]+$/gu;
+const FORBIDDEN_CONTROL = /[\u0000-\u001f\u007f-\u009f]/u;
+const NONCE_PATTERN = /^[A-Za-z0-9+/_-]+={0,2}$/u;
+
+export type WidgetTheme = "auto" | "light" | "dark";
+
+export interface WidgetConfiguration {
+  readonly apiBase: string;
+  readonly assistantName: string;
+  readonly theme: WidgetTheme;
+  readonly privacyUrl: string | null;
+  readonly handoffUrl: string | null;
+}
+
+export type WidgetConfigurationResult =
+  | { readonly ok: true; readonly value: Readonly<WidgetConfiguration> }
+  | { readonly ok: false; readonly message: string };
+
+export const CONFIGURATION_ERROR =
+  "Cairn widget configuration is invalid.";
 
 export interface ChatTurn {
   role: "user" | "assistant";
@@ -23,6 +52,8 @@ export type ChatStreamEvent =
   | { type: "error"; message: string; retryable: boolean }
   | { type: "done"; finishReason: DoneReason };
 
+export type ChatDecodedRecord = ChatStreamEvent | { type: "ping" };
+
 const ERROR_CODES = new Set([
   "invalid_request",
   "rate_limited",
@@ -42,6 +73,15 @@ export type StreamAttemptResult<T> =
   | { kind: "aborted" };
 
 type RawEvent = Record<string, unknown>;
+
+export interface ChatAttemptState {
+  terminal: boolean;
+  sawOutput: boolean;
+  sawCitations: boolean;
+  outputCodePoints: number;
+  citationCount: number;
+  nonPingEvents: number;
+}
 
 export class SseDecodeError extends Error {
   constructor(message: string) {
@@ -83,6 +123,165 @@ export class SseDecoder {
   }
 }
 
+export class BoundedSseDecoder {
+  private bytes = new Uint8Array();
+  private start = 0;
+  private end = 0;
+  private scan = 0;
+  private responseBytes = 0;
+  private validCompletedRecords = 0;
+  private delimiterCount = 0;
+  private scannedBytes = 0;
+  private copiedBytes = 0;
+  private readonly decoder = new TextDecoder("utf-8", { fatal: true });
+
+  push(chunk: Uint8Array): ChatDecodedRecord[] {
+    this.validCompletedRecords = 0;
+    this.delimiterCount = 0;
+    this.responseBytes += chunk.byteLength;
+    if (this.responseBytes > CHAT_RESPONSE_MAX_BYTES) {
+      throw new SseDecodeError("The chat response exceeded its safe byte limit.");
+    }
+    this.append(chunk);
+    const events: ChatDecodedRecord[] = [];
+
+    for (;;) {
+      const boundary = this.nextBoundary();
+      if (boundary === null) break;
+      const record = this.bytes.subarray(this.start, boundary.index);
+      this.start = boundary.index + boundary.length;
+      this.scan = this.start;
+      this.delimiterCount += 1;
+      let decoded: string;
+      try {
+        decoded = this.decoder.decode(record);
+      } catch {
+        throw new SseDecodeError("The chat response was not valid UTF-8.");
+      }
+      const result = decodeRecordWithValidity(decoded);
+      if (result.valid) this.validCompletedRecords += 1;
+      if (result.event !== null) events.push(result.event);
+      if (this.start === this.end) {
+        this.start = 0;
+        this.end = 0;
+        this.scan = 0;
+      }
+    }
+    if (this.pendingBytes > SSE_PENDING_RECORD_MAX_BYTES) {
+      throw new SseDecodeError("The chat response record exceeded its safe byte limit.");
+    }
+    return events;
+  }
+
+  finish(): ChatStreamEvent[] {
+    if (this.pendingBytes === 0) return [];
+    const remaining = this.bytes.subarray(this.start, this.end);
+    this.bytes = new Uint8Array();
+    this.start = 0;
+    this.end = 0;
+    this.scan = 0;
+    let decoded: string;
+    try {
+      decoded = this.decoder.decode(remaining);
+    } catch {
+      throw new SseDecodeError("The chat response was not valid UTF-8.");
+    }
+    if (decoded.trim() === "") return [];
+    throw new SseDecodeError("The chat response ended with an incomplete record.");
+  }
+
+  get pendingBytes(): number {
+    return this.end - this.start;
+  }
+
+  get totalBytes(): number {
+    return this.responseBytes;
+  }
+
+  get recordsCompleted(): number {
+    return this.validCompletedRecords;
+  }
+
+  get validRecordsCompleted(): number {
+    return this.validCompletedRecords;
+  }
+
+  get delimitedRecords(): number {
+    return this.delimiterCount;
+  }
+
+  get work(): Readonly<{ scannedBytes: number; copiedBytes: number }> {
+    return Object.freeze({
+      scannedBytes: this.scannedBytes,
+      copiedBytes: this.copiedBytes,
+    });
+  }
+
+  private append(chunk: Uint8Array): void {
+    if (chunk.byteLength === 0) return;
+    const pending = this.pendingBytes;
+    if (this.bytes.byteLength - this.end < chunk.byteLength) {
+      const oldStart = this.start;
+      const oldScan = this.scan;
+      if (this.bytes.byteLength >= pending + chunk.byteLength) {
+        this.bytes.copyWithin(0, this.start, this.end);
+        this.copiedBytes += pending;
+      } else {
+        let capacity = Math.max(1_024, this.bytes.byteLength * 2);
+        const required = pending + chunk.byteLength;
+        while (capacity < required) capacity *= 2;
+        const replacement = new Uint8Array(capacity);
+        replacement.set(this.bytes.subarray(this.start, this.end));
+        this.copiedBytes += pending;
+        this.bytes = replacement;
+      }
+      this.start = 0;
+      this.end = pending;
+      this.scan = Math.max(0, oldScan - oldStart);
+    }
+    this.bytes.set(chunk, this.end);
+    this.end += chunk.byteLength;
+    this.copiedBytes += chunk.byteLength;
+  }
+
+  private nextBoundary(): { index: number; length: number } | null {
+    for (let index = this.scan; index < this.end - 1; index += 1) {
+      this.scannedBytes += 1;
+      if (this.bytes[index] === 10) {
+        if (this.bytes[index + 1] === 10) {
+          return { index, length: 2 };
+        }
+        if (
+          index < this.end - 2 &&
+          this.bytes[index + 1] === 13 &&
+          this.bytes[index + 2] === 10
+        ) {
+          return { index, length: 3 };
+        }
+      }
+      if (
+        this.bytes[index] === 13 &&
+        this.bytes[index + 1] === 10 &&
+        index < this.end - 2
+      ) {
+        if (this.bytes[index + 2] === 10) {
+          return { index, length: 3 };
+        }
+        if (
+          index < this.end - 3 &&
+          this.bytes[index + 2] === 13 &&
+          this.bytes[index + 3] === 10
+        ) {
+          return { index, length: 4 };
+        }
+      }
+    }
+    // Only a delimiter's three-byte prefix can become complete after the next push.
+    this.scan = Math.max(this.start, this.end - 3);
+    return null;
+  }
+}
+
 export function boundedHistory(history: readonly ChatTurn[]): ChatTurn[] {
   const candidates = history
     .map((turn) => ({
@@ -117,6 +316,7 @@ export function completedHistory(
 ): ChatTurn[] {
   if (
     finishReason === "cancelled" ||
+    finishReason === "refused" ||
     assistantMessage.replace(HISTORY_EDGE_WHITESPACE, "") === ""
   ) {
     return boundedHistory(history);
@@ -150,22 +350,221 @@ export async function retryOnce<T>(
 }
 
 export function chatEndpoint(apiUrl: string | null): string | null {
-  if (apiUrl === null) {
-    return null;
+  const parsed = parseApiBase(apiUrl);
+  return parsed === null ? null : endpointFromBase(parsed, "/api/v1/chat/message");
+}
+
+export function capabilityEndpoint(apiBase: string): string {
+  return endpointFromBase(apiBase, "/api/v1/capabilities");
+}
+
+export function parseWidgetConfiguration(
+  getAttribute: (name: string) => string | null,
+  nonceProperty?: string,
+): WidgetConfigurationResult {
+  const apiBase = parseApiBase(getAttribute("api-url"));
+  const assistantRaw = getAttribute("assistant-name")?.trim() ?? "";
+  const assistantName = assistantRaw === "" ? "Cairn" : assistantRaw;
+  const themeRaw = getAttribute("theme")?.trim() ?? "";
+  const theme = themeRaw === "" ? "auto" : themeRaw;
+  const privacyUrl = parseOptionalExternalUrl(getAttribute("privacy-url"));
+  const handoffUrl = parseOptionalExternalUrl(getAttribute("handoff-url"));
+  const nonceRaw = (nonceProperty ?? getAttribute("nonce") ?? "").trim();
+
+  if (
+    apiBase === null ||
+    Array.from(assistantName).length > 80 ||
+    FORBIDDEN_CONTROL.test(assistantName) ||
+    (theme !== "auto" && theme !== "light" && theme !== "dark") ||
+    privacyUrl === undefined ||
+    handoffUrl === undefined ||
+    (nonceRaw !== "" && (nonceRaw.length > 256 || !NONCE_PATTERN.test(nonceRaw)))
+  ) {
+    return { ok: false, message: CONFIGURATION_ERROR };
   }
-  const normalized = apiUrl.trim().replace(/\/$/, "");
-  if (normalized === "") {
-    return null;
+
+  return {
+    ok: true,
+    value: Object.freeze({
+      apiBase,
+      assistantName,
+      theme,
+      privacyUrl,
+      handoffUrl,
+    }),
+  };
+}
+
+export function validateCapabilityManifest(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const compatibility = value.compatibility;
+  const capabilities = value.capabilities;
+  if (!isRecord(compatibility) || !isRecord(capabilities)) return false;
+  const widget = capabilities.widget;
+  return (
+    value.schema_version === "1.1" &&
+    compatibility.chat_api === "1.0" &&
+    compatibility.sse_events === "1.1" &&
+    compatibility.widget === "0.2.0" &&
+    isRecord(widget) &&
+    widget.production_configuration === "available"
+  );
+}
+
+export async function readBoundedJsonResponse(
+  response: Response,
+  maximumBytes = CAPABILITY_RESPONSE_MAX_BYTES,
+  readNext: (
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+  ) => Promise<ReadableStreamReadResult<Uint8Array> | null> = (reader) => reader.read(),
+): Promise<unknown> {
+  if (!response.ok) {
+    cancelUnreadBody(response.body);
+    throw new Error("capability response unavailable");
+  }
+  if (response.body === null) {
+    throw new Error("capability response unavailable");
+  }
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength !== null) {
+    const length = Number(declaredLength);
+    if (!Number.isSafeInteger(length) || length < 0 || length > maximumBytes) {
+      cancelUnreadBody(response.body);
+      throw new Error("capability response too large");
+    }
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let complete = false;
+  try {
+    for (;;) {
+      const result = await readNext(reader);
+      if (result === null) throw new Error("capability response timeout");
+      const { done, value } = result;
+      if (done) {
+        complete = true;
+        break;
+      }
+      total += value.byteLength;
+      if (total > maximumBytes) {
+        throw new Error("capability response too large");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    if (complete) releaseReader(reader);
+    else cancelAndReleaseReader(reader);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error("capability response invalid");
   }
   try {
-    const parsed = new URL(normalized);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return null;
-    }
+    return JSON.parse(text) as unknown;
   } catch {
-    return null;
+    throw new Error("capability response invalid");
   }
-  return `${normalized}/api/v1/chat/message`;
+}
+
+const cancelledBodies = new WeakSet<ReadableStream<Uint8Array>>();
+const cleanedReaders = new WeakSet<ReadableStreamDefaultReader<Uint8Array>>();
+
+/** Cancel an unread response without allowing hostile cancellation to delay cleanup. */
+export function cancelUnreadBody(body: ReadableStream<Uint8Array> | null): void {
+  if (body === null || cancelledBodies.has(body)) return;
+  cancelledBodies.add(body);
+  try {
+    void body.cancel().catch(() => undefined);
+  } catch {
+    // Cleanup is best effort and deliberately synchronous-bounded.
+  }
+}
+
+/** Relinquish a reader exactly once without awaiting its cancellation promise. */
+export function cancelAndReleaseReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): void {
+  if (cleanedReaders.has(reader)) return;
+  cleanedReaders.add(reader);
+  try {
+    void reader.cancel().catch(() => undefined);
+  } catch {
+    // Cleanup is best effort and deliberately synchronous-bounded.
+  }
+  releaseReader(reader);
+}
+
+function releaseReader(reader: ReadableStreamDefaultReader<Uint8Array>): void {
+  try {
+    reader.releaseLock();
+  } catch {
+    // A hostile or already-released reader cannot retain widget ownership.
+  }
+}
+
+export function codePointLength(value: string): number {
+  return Array.from(value).length;
+}
+
+export function newChatAttemptState(): ChatAttemptState {
+  return {
+    terminal: false,
+    sawOutput: false,
+    sawCitations: false,
+    outputCodePoints: 0,
+    citationCount: 0,
+    nonPingEvents: 0,
+  };
+}
+
+export function validateChatEventBatch(
+  events: readonly ChatDecodedRecord[],
+  state: ChatAttemptState,
+): boolean {
+  const next = { ...state };
+  for (const event of events) {
+    if (next.terminal) return false;
+    if (event.type === "ping") continue;
+    next.nonPingEvents += 1;
+    if (next.nonPingEvents > CHAT_NON_PING_EVENT_MAX_COUNT) return false;
+    if (event.type === "status") {
+      if (next.sawOutput) return false;
+    } else if (event.type === "citations") {
+      if (next.sawCitations || next.sawOutput) return false;
+      next.sawCitations = true;
+      next.citationCount += event.sources.length;
+      if (next.citationCount > CHAT_CITATIONS_MAX_COUNT) return false;
+    } else if (event.type === "chunk") {
+      next.sawOutput = true;
+      next.outputCodePoints += codePointLength(event.delta);
+      if (next.outputCodePoints > CHAT_OUTPUT_MAX_CODE_POINTS) return false;
+    } else {
+      next.terminal = true;
+    }
+  }
+  Object.assign(state, next);
+  return true;
+}
+
+export function streamDeadlineRemaining(
+  startedMilliseconds: number,
+  lastCompleteRecordMilliseconds: number,
+  nowMilliseconds: number,
+): number {
+  return Math.min(
+    CHAT_COMPLETE_RECORD_IDLE_SECONDS * 1_000 -
+      (nowMilliseconds - lastCompleteRecordMilliseconds),
+    CHAT_TOTAL_DEADLINE_SECONDS * 1_000 - (nowMilliseconds - startedMilliseconds),
+  );
 }
 
 /** Return only absolute HTTP(S) destinations suitable for a citation link. */
@@ -181,7 +580,62 @@ export function safeCitationUrl(value: string): string | null {
   return null;
 }
 
+function parseApiBase(value: string | null): string | null {
+  if (value === null) return null;
+  const trimmed = value.trim();
+  if (trimmed === "" || trimmed.includes("?") || trimmed.includes("#")) return null;
+  const normalized = trimmed.replace(/\/$/u, "");
+  try {
+    const parsed = new URL(normalized);
+    if (
+      (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+      parsed.username !== "" ||
+      parsed.password !== "" ||
+      parsed.search !== "" ||
+      parsed.hash !== ""
+    ) return null;
+    return normalized.slice(parsed.origin.length).startsWith("/")
+      ? `${parsed.origin}${parsed.pathname}`
+      : parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+function parseOptionalExternalUrl(value: string | null): string | null | undefined {
+  const trimmed = value?.trim() ?? "";
+  if (trimmed === "") return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (
+      (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+      parsed.username !== "" ||
+      parsed.password !== ""
+    ) return undefined;
+    return parsed.href;
+  } catch {
+    return undefined;
+  }
+}
+
+function endpointFromBase(apiBase: string, suffix: string): string {
+  const parsed = new URL(apiBase);
+  const basePath = apiBase === parsed.origin ? "" : parsed.pathname;
+  parsed.pathname = `${basePath}${suffix}`;
+  return parsed.href;
+}
+
+interface DecodedRecord {
+  readonly event: ChatDecodedRecord | null;
+  readonly valid: boolean;
+}
+
 function decodeRecord(record: string): ChatStreamEvent | null {
+  const event = decodeRecordWithValidity(record).event;
+  return event?.type === "ping" ? null : event;
+}
+
+function decodeRecordWithValidity(record: string): DecodedRecord {
   let eventName = "message";
   const data: string[] = [];
 
@@ -199,27 +653,38 @@ function decodeRecord(record: string): ChatStreamEvent | null {
     }
   }
 
-  if (data.length === 0 || eventName === "ping") {
-    return null;
+  if (data.length === 0) {
+    return { event: null, valid: false };
   }
 
   let payload: unknown;
   try {
     payload = JSON.parse(data.join("\n"));
   } catch {
+    if (eventName === "ping") return { event: null, valid: false };
     throw new SseDecodeError("The chat response could not be read.");
   }
   if (!isRecord(payload) || payload.type !== eventName) {
+    if (eventName === "ping") return { event: null, valid: false };
     throw new SseDecodeError("The chat response did not match its declared event.");
   }
 
   switch (eventName) {
     case "status":
-      return { type: "status", label: boundedString(payload, "label", 80) };
+      return {
+        event: { type: "status", label: boundedString(payload, "label", 80) },
+        valid: true,
+      };
     case "chunk":
-      return { type: "chunk", delta: boundedString(payload, "delta", 1_000, false) };
+      return {
+        event: { type: "chunk", delta: boundedString(payload, "delta", 1_000, false) },
+        valid: true,
+      };
     case "citations":
-      return { type: "citations", sources: requiredCitations(payload) };
+      return {
+        event: { type: "citations", sources: requiredCitations(payload) },
+        valid: true,
+      };
     case "error":
       if (!ERROR_CODES.has(requiredString(payload, "code"))) {
         throw new SseDecodeError("The chat response contained an unknown error code.");
@@ -228,10 +693,17 @@ function decodeRecord(record: string): ChatStreamEvent | null {
         throw new SseDecodeError("The chat response contained an invalid retryable value.");
       }
       return {
-        type: "error",
-        message: boundedString(payload, "message", 240),
-        retryable: payload.retryable,
+        event: {
+          type: "error",
+          message: boundedString(payload, "message", 240),
+          retryable: payload.retryable,
+        },
+        valid: true,
       };
+    case "ping":
+      return Object.keys(payload).length === 1
+        ? { event: { type: "ping" }, valid: true }
+        : { event: null, valid: false };
     case "done": {
       const finishReason = requiredString(payload, "finish_reason");
       if (
@@ -242,10 +714,10 @@ function decodeRecord(record: string): ChatStreamEvent | null {
       ) {
         throw new SseDecodeError("The chat response ended unexpectedly.");
       }
-      return { type: "done", finishReason };
+      return { event: { type: "done", finishReason }, valid: true };
     }
     default:
-      return null;
+      return { event: null, valid: false };
   }
 }
 
