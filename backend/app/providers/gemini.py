@@ -267,11 +267,21 @@ class GeminiProvider(Provider):
             except Exception as exc:
                 failure = _normalize_exception(exc)
             finally:
+                cleanup_task = asyncio.current_task()
+                cancelling_before_cleanup = (
+                    cleanup_task.cancelling() if cleanup_task is not None else 0
+                )
                 try:
                     await _close_iterator(iterator)
                 except asyncio.CancelledError:
-                    if failure is None and not caller_exit:
+                    cancellation_arrived = (
+                        cleanup_task is not None
+                        and cleanup_task.cancelling() > cancelling_before_cleanup
+                    )
+                    if cancellation_arrived:
                         raise
+                    if failure is None and not caller_exit:
+                        failure = _NormalizedFailure("provider_unavailable", False)
                 except Exception:
                     if failure is None and not caller_exit:
                         failure = _NormalizedFailure("provider_unavailable", False)

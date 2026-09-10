@@ -419,6 +419,58 @@ async def test_throwing_close_does_not_replace_early_close_or_cancellation() -> 
     assert cancelled_stream.close_calls == 1
 
 
+async def test_cancellation_during_cleanup_replaces_recorded_provider_failure() -> None:
+    close_started = asyncio.Event()
+
+    class _BlockingCloseStream(_Stream):
+        def __init__(self) -> None:
+            super().__init__([_StatusError(503)])
+            self.close_calls = 0
+
+        async def aclose(self) -> None:
+            self.close_calls += 1
+            close_started.set()
+            await asyncio.Event().wait()
+
+    stream = _BlockingCloseStream()
+    task = asyncio.create_task(
+        _collect(_provider(_Models([stream]), max_retries=0))
+    )
+    await close_started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert stream.close_calls == 1
+
+
+async def test_internally_raised_close_cancellation_obeys_failure_precedence() -> None:
+    class _InternallyCancelledCloseStream(_Stream):
+        def __init__(self, items: Iterable[object]) -> None:
+            super().__init__(items)
+            self.close_calls = 0
+
+        async def aclose(self) -> None:
+            self.close_calls += 1
+            raise asyncio.CancelledError
+
+    failed_stream = _InternallyCancelledCloseStream([_StatusError(503)])
+    with pytest.raises(GeminiProviderError) as caught:
+        await _collect(_provider(_Models([failed_stream]), max_retries=0))
+    assert caught.value.code == "provider_unavailable"
+    assert caught.value.retryable is True
+    assert failed_stream.close_calls == 1
+
+    completed_stream = _InternallyCancelledCloseStream([_Item(text="ok")])
+    iterator = _provider(_Models([completed_stream]), max_retries=0).stream(_request())
+    assert (await anext(iterator)).delta == "ok"
+    with pytest.raises(GeminiProviderError) as caught:
+        await anext(iterator)
+    assert caught.value.code == "provider_unavailable"
+    assert caught.value.retryable is False
+    assert completed_stream.close_calls == 1
+
+
 async def test_readiness_requires_exact_model_and_generation_method() -> None:
     ready_model = SimpleNamespace(
         name="models/gemini-3.8-flash",
