@@ -541,6 +541,11 @@ class CandidateIngestionPlan(IngestionPlanModel):
     chunk_count: Annotated[StrictInt, Field(ge=1, le=MAX_TOTAL_CHUNKS)]
     plan_sha256: str
 
+    @field_validator("corpus", mode="before")
+    @classmethod
+    def validate_corpus(cls, value: object) -> ExactCorpusReference:
+        return _revalidate_exact_corpus(value)
+
     @field_validator("semantic_manifest_sha256", "plan_sha256")
     @classmethod
     def validate_sha256(cls, value: str) -> str:
@@ -570,6 +575,10 @@ class CandidateIngestionPlan(IngestionPlanModel):
             raise ValueError("embedding dimensions are inconsistent")
         if len(chunks) * self.embedding.dimensions > MAX_TOTAL_EMBEDDING_SCALARS:
             raise ValueError("embedding scalar count is invalid")
+        if self.semantic_manifest_sha256 != _semantic_manifest_sha256_from_documents(
+            self.documents
+        ):
+            raise ValueError("semantic manifest digest is invalid")
         if self.plan_sha256 != _plan_sha256(self):
             raise ValueError("plan digest is invalid")
         return self
@@ -579,6 +588,11 @@ class ExistingCandidateDescriptor(IngestionPlanModel):
     contract_version: Literal["1.0"]
     corpus: ExactCorpusReference
     plan_sha256: str
+
+    @field_validator("corpus", mode="before")
+    @classmethod
+    def validate_corpus(cls, value: object) -> ExactCorpusReference:
+        return _revalidate_exact_corpus(value)
 
     @field_validator("plan_sha256")
     @classmethod
@@ -590,6 +604,11 @@ class CandidatePlanDisposition(IngestionPlanModel):
     kind: Literal["new", "identical", "conflict"]
     corpus: ExactCorpusReference
     plan_sha256: str
+
+    @field_validator("corpus", mode="before")
+    @classmethod
+    def validate_corpus(cls, value: object) -> ExactCorpusReference:
+        return _revalidate_exact_corpus(value)
 
     @field_validator("plan_sha256")
     @classmethod
@@ -775,6 +794,25 @@ def _revalidate_instance[T: BaseModel](value: object, model: type[T]) -> T:
     return _safe_call(validate, "invalid_model")
 
 
+def _revalidate_exact_corpus(value: object) -> ExactCorpusReference:
+    def validate() -> ExactCorpusReference:
+        if type(value) is ExactCorpusReference:
+            extras = object.__getattribute__(value, "__pydantic_extra__")
+            if extras:
+                raise ValueError
+            values: object = {
+                field_name: getattr(value, field_name)
+                for field_name in ExactCorpusReference.model_fields
+            }
+        elif isinstance(value, Mapping):
+            values = dict(value)
+        else:
+            raise TypeError
+        return ExactCorpusReference.model_validate(values)
+
+    return _safe_call(validate, "invalid_model")
+
+
 def _strict_utf8_for_plan(value: str, code: IngestionPlanErrorCode) -> None:
     failed = False
     try:
@@ -798,6 +836,23 @@ def _semantic_manifest_sha256(
             "public": True,
         }
         for path, source in sorted(provenance.items(), key=lambda item: item[0].encode("utf-8"))
+    }
+    return _digest({"version": 1, "documents": documents})
+
+
+def _semantic_manifest_sha256_from_documents(
+    planned_documents: Sequence[PlannedDocument],
+) -> str:
+    documents = {
+        document.relative_path: {
+            "title": document.provenance.title,
+            "url": document.provenance.url,
+            "sha256": document.provenance.source_sha256,
+            "owner": document.provenance.owner,
+            "reviewed_at": document.provenance.reviewed_at.isoformat(),
+            "public": True,
+        }
+        for document in planned_documents
     }
     return _digest({"version": 1, "documents": documents})
 

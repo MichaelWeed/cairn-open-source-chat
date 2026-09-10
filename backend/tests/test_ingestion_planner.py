@@ -64,7 +64,6 @@ def no_ingestion_planner_io(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(Path, "iterdir", forbidden)
     monkeypatch.setattr(Path, "rglob", forbidden)
     monkeypatch.setattr(os, "walk", forbidden)
-    monkeypatch.setattr(os, "getenv", forbidden)
     monkeypatch.setattr(socket, "getaddrinfo", forbidden)
     monkeypatch.setattr(socket, "create_connection", forbidden)
     monkeypatch.setattr(socket.socket, "connect", forbidden)
@@ -72,6 +71,7 @@ def no_ingestion_planner_io(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.providers.gemini.GeminiProvider.stream", forbidden)
     monkeypatch.setattr("app.providers.ollama.OllamaProvider.stream", forbidden)
     monkeypatch.setattr("app.vectorstore.VectorStoreClient.__init__", forbidden)
+    monkeypatch.setattr(os, "getenv", forbidden)
 
 
 def _pdf_bytes(text: str) -> bytes:
@@ -1091,6 +1091,198 @@ def _canonical_digest(value: object) -> str:
         allow_nan=False,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _plan_digest(
+    plan: CandidateIngestionPlan,
+    *,
+    corpus: ExactCorpusReference | None = None,
+    semantic_manifest_sha256: str | None = None,
+    documents: Sequence[PlannedDocument] | None = None,
+) -> str:
+    selected_corpus = corpus or plan.corpus
+    selected_documents = tuple(documents or plan.documents)
+    return _canonical_digest(
+        {
+            "contract_version": plan.contract_version,
+            "corpus": selected_corpus.model_dump(mode="json"),
+            "embedding": plan.embedding.model_dump(mode="json"),
+            "semantic_manifest_sha256": (
+                semantic_manifest_sha256 or plan.semantic_manifest_sha256
+            ),
+            "documents": [
+                {
+                    "document_plan_sha256": document.document_plan_sha256,
+                    "chunk_ids": [chunk.chunk_id for chunk in document.chunks],
+                    "embedding_sha256s": [
+                        chunk.embedding_sha256 for chunk in document.chunks
+                    ],
+                }
+                for document in selected_documents
+            ],
+        }
+    )
+
+
+def _document_for_corpus(
+    document: PlannedDocument, corpus: ExactCorpusReference
+) -> PlannedDocument:
+    document_id = "doc_" + _canonical_digest(
+        {
+            "namespace": "cairn-document-v1",
+            "corpus_id": corpus.corpus_id,
+            "corpus_version": corpus.corpus_version,
+            "relative_path": document.relative_path,
+        }
+    )
+    chunks: list[PlannedChunk] = []
+    for chunk in document.chunks:
+        chunk_values = chunk.model_dump(round_trip=True)
+        chunk_values["document_id"] = document_id
+        chunk_values["chunk_id"] = "chk_" + _canonical_digest(
+            {
+                "namespace": "cairn-chunk-v1",
+                "document_id": document_id,
+                "chunk_index": chunk.chunk_index,
+                "text_sha256": chunk.text_sha256,
+            }
+        )
+        chunks.append(PlannedChunk.model_validate(chunk_values))
+
+    document_values = document.model_dump(round_trip=True)
+    document_values["document_id"] = document_id
+    document_values["chunks"] = tuple(chunks)
+    document_material = {
+        key: value for key, value in document_values.items() if key != "document_plan_sha256"
+    }
+    document_material["provenance"] = document.provenance.model_dump(mode="json")
+    document_material["chunks"] = [
+        {
+            **chunk.model_dump(mode="json", exclude={"embedding"}),
+            "embedding": [
+                (0.0 if scalar == 0.0 else scalar).hex() for scalar in chunk.embedding
+            ],
+        }
+        for chunk in chunks
+    ]
+    document_values["document_plan_sha256"] = _canonical_digest(document_material)
+    return PlannedDocument.model_validate(document_values)
+
+
+def _plan_values_for_corpus(
+    plan: CandidateIngestionPlan, corpus: ExactCorpusReference
+) -> dict[str, object]:
+    documents = tuple(_document_for_corpus(document, corpus) for document in plan.documents)
+    values = plan.model_dump(round_trip=True)
+    values["corpus"] = corpus
+    values["documents"] = documents
+    values["plan_sha256"] = _plan_digest(plan, corpus=corpus, documents=documents)
+    return values
+
+
+def test_plan_rejects_forged_semantic_manifest_with_recomputed_outer_digest() -> None:
+    plan = _plan()
+    forged_semantic = "f" * 64
+    values = plan.model_dump(round_trip=True)
+    values["semantic_manifest_sha256"] = forged_semantic
+    values["plan_sha256"] = _plan_digest(
+        plan, semantic_manifest_sha256=forged_semantic
+    )
+
+    _assert_invalid_model_is_content_free(
+        lambda: CandidateIngestionPlan.model_validate(values), forged_semantic
+    )
+
+
+@pytest.mark.parametrize(
+    "surface",
+    [
+        "constructor",
+        "model_validate",
+        "type_adapter",
+        "model_construct",
+        "construct",
+        "model_copy",
+        "copy",
+        "replace",
+    ],
+)
+def test_corpus_models_revalidate_dependency_owned_exact_reference(surface: str) -> None:
+    plan = _plan()
+    invalid_corpus = ExactCorpusReference.model_construct(
+        corpus_id="active", corpus_version="latest"
+    )
+    samples_and_updates: tuple[
+        tuple[IngestionPlanModel, dict[str, object]], ...
+    ] = (
+        (plan, _plan_values_for_corpus(plan, invalid_corpus)),
+        (
+            ExistingCandidateDescriptor(
+                contract_version="1.0",
+                corpus=plan.corpus,
+                plan_sha256=plan.plan_sha256,
+            ),
+            {"corpus": invalid_corpus},
+        ),
+        (
+            classify_candidate_plan(plan, None),
+            {"corpus": invalid_corpus},
+        ),
+    )
+
+    for sample, update in samples_and_updates:
+        model = type(sample)
+        values = sample.model_dump(round_trip=True) | update
+
+        def operation(
+            model: type[IngestionPlanModel] = model,
+            values: dict[str, object] = values,
+            sample: IngestionPlanModel = sample,
+            update: dict[str, object] = update,
+        ) -> object:
+            if surface == "constructor":
+                return model(**values)
+            if surface == "model_validate":
+                return model.model_validate(values)
+            if surface == "type_adapter":
+                return TypeAdapter(model).validate_python(values)
+            if surface == "model_construct":
+                return _construct_model(model, values)
+            if surface == "construct":
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", DeprecationWarning)
+                    return _construct_model(model, values, deprecated=True)
+            if surface == "model_copy":
+                return sample.model_copy(update=update)
+            if surface == "replace":
+                return _replace_model(sample, **update)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                return sample.copy(update=update)
+
+        _assert_invalid_model_is_content_free(operation, "active", "latest")
+
+
+def test_classification_revalidates_nested_exact_corpus_dependencies() -> None:
+    plan = _plan()
+    invalid_corpus = ExactCorpusReference.model_construct(
+        corpus_id="active", corpus_version="latest"
+    )
+    forged_plan = _plan()
+    object.__setattr__(forged_plan, "corpus", invalid_corpus)
+    forged_existing = ExistingCandidateDescriptor(
+        contract_version="1.0",
+        corpus=plan.corpus,
+        plan_sha256=plan.plan_sha256,
+    )
+    object.__setattr__(forged_existing, "corpus", invalid_corpus)
+
+    _assert_invalid_model_is_content_free(
+        lambda: classify_candidate_plan(forged_plan, None), "active", "latest"
+    )
+    _assert_invalid_model_is_content_free(
+        lambda: classify_candidate_plan(plan, forged_existing), "active", "latest"
+    )
 
 
 def test_plan_rejects_forged_document_namespace_with_recomputed_dependents() -> None:
