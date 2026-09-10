@@ -1,27 +1,27 @@
-"""Retrieval pipeline: pulls the relevant chunks out of the vector store
-(app/vectorstore.py, task 2.1) and turns them into the things the chat
-endpoint needs — a confidence-gated refusal decision (task 2.5), a
-`citations` SSE payload, and the fixed, delimited prompt block handed to
-the provider. See DEVELOPER_README.md §4 (contract) / §5
-(prompt-injection defense).
+"""Bounded local retrieval adapter and chat grounding helpers."""
 
-Defenses against a chunk's own text trying to break out of the `<chunk>`
-delimiter (task 4.4, adversarial suite) are deliberately out of scope here.
-"""
+import asyncio
+import math
+from collections.abc import Sequence
+from typing import Protocol, cast
 
-from dataclasses import dataclass
+from pydantic import ValidationError
 
-from app.api.contracts import CitationSource
-from app.vectorstore import DocumentCollection
+from app.api.contracts import RETRIEVED_CONTEXT_MAX_CHARS, CitationSource
+from app.retrieval_contracts import (
+    RETRIEVAL_CONTRACT_VERSION,
+    LocalActiveScope,
+    RetrievalError,
+    RetrievalProbe,
+    RetrievalRequest,
+    RetrievalResult,
+    RetrievalScope,
+)
+from app.retrieval_contracts import (
+    RetrievedChunk as RetrievedChunk,
+)
 
 DEFAULT_TOP_K = 4
-
-# The local index uses squared Euclidean distance, where lower means closer,
-# unbounded above, and its scale depends entirely on the embedding model in
-# use. 1.2 is a starting point for normalized-ish embeddings, not a
-# validated number: per DEVELOPER_README.md §6, tune this per corpus and
-# embedding model using the eval harness's correct-refusal-rate metric
-# (task 2.6) before trusting it in production.
 DEFAULT_MAX_DISTANCE = 1.2
 
 REFUSAL_MESSAGE = (
@@ -42,76 +42,231 @@ SYSTEM_PROMPT_HEADER = (
 )
 
 
-@dataclass(frozen=True)
-class RetrievedChunk:
-    document_id: str
-    source: str
-    chunk_index: int
-    text: str
-    distance: float
-    citation_title: str | None = None
-    citation_url: str | None = None
+class RetrievalCollection(Protocol):
+    def count(self) -> object: ...
+
+    def query(self, *, query_texts: Sequence[str], n_results: int) -> object: ...
+
+
+def _validated_local_request(request: object) -> RetrievalRequest:
+    validated: RetrievalRequest | None = None
+    try:
+        if isinstance(request, RetrievalRequest):
+            request = request.model_dump()
+        validated = RetrievalRequest.model_validate(request)
+    except (ValidationError, TypeError, ValueError):
+        pass
+    if validated is None:
+        raise RetrievalError("invalid_request") from None
+    if validated.contract_version != RETRIEVAL_CONTRACT_VERSION:
+        raise RetrievalError("invalid_request") from None
+    if not isinstance(validated.scope, LocalActiveScope):
+        raise RetrievalError("unsupported_scope") from None
+    if validated.distance_measure != "squared_l2":
+        raise RetrievalError("unsupported_scope") from None
+    return validated
+
+
+def _count(collection: RetrievalCollection) -> int:
+    count: object = None
+    failed = False
+    try:
+        count = collection.count()
+    except Exception:
+        failed = True
+    if failed:
+        raise RetrievalError("store_unavailable") from None
+    if type(count) is not int or count < 0:
+        raise RetrievalError("malformed_result") from None
+    return count
+
+
+def _query(collection: RetrievalCollection, request: RetrievalRequest, result_count: int) -> object:
+    raw: object = None
+    failed = False
+    try:
+        raw = collection.query(query_texts=[request.query], n_results=result_count)
+    except Exception:
+        failed = True
+    if failed:
+        raise RetrievalError("store_unavailable") from None
+    return raw
+
+
+def _validated_metadata(raw: object) -> dict[str, object]:
+    if type(raw) is not dict:
+        raise RetrievalError("malformed_result") from None
+    metadata: dict[str, object] = raw
+    keys = set(metadata)
+    base = {"document_id", "source", "chunk_index"}
+    with_citation = base | {"citation_title", "citation_url"}
+    if frozenset(keys) not in {frozenset(base), frozenset(with_citation)}:
+        raise RetrievalError("malformed_result") from None
+    if (
+        type(metadata["document_id"]) is not str
+        or type(metadata["source"]) is not str
+        or type(metadata["chunk_index"]) is not int
+    ):
+        raise RetrievalError("malformed_result") from None
+    if keys == with_citation and (
+        type(metadata["citation_title"]) is not str or type(metadata["citation_url"]) is not str
+    ):
+        raise RetrievalError("malformed_result") from None
+    return metadata
+
+
+def _validated_result(
+    raw: object, request: RetrievalRequest, expected_count: int
+) -> RetrievalResult:
+    if type(raw) is not dict:
+        raise RetrievalError("malformed_result") from None
+    result: dict[object, object] = raw
+    required_keys = {"ids", "documents", "metadatas", "distances"}
+    if set(result) != required_keys:
+        raise RetrievalError("malformed_result") from None
+
+    rows: list[list[object]] = []
+    for key in ("ids", "documents", "metadatas", "distances"):
+        outer = result[key]
+        if type(outer) is not list or len(outer) != 1 or type(outer[0]) is not list:
+            raise RetrievalError("malformed_result") from None
+        rows.append(outer[0])
+    ids, documents, metadatas, distances = rows
+    if len({len(ids), len(documents), len(metadatas), len(distances)}) != 1:
+        raise RetrievalError("malformed_result") from None
+    if len(ids) > expected_count:
+        raise RetrievalError("malformed_result") from None
+
+    chunks: list[RetrievedChunk] = []
+    previous_order: tuple[float, str] | None = None
+    for raw_id, text, raw_metadata, distance in zip(
+        ids, documents, metadatas, distances, strict=True
+    ):
+        if type(raw_id) is not str or type(text) is not str:
+            raise RetrievalError("malformed_result") from None
+        if type(distance) is not float:
+            raise RetrievalError("malformed_result") from None
+        numeric_distance = distance
+        if not math.isfinite(numeric_distance) or numeric_distance < 0:
+            raise RetrievalError("malformed_result") from None
+        metadata = _validated_metadata(raw_metadata)
+        document_id = cast(str, metadata["document_id"])
+        source = cast(str, metadata["source"])
+        chunk_index = cast(int, metadata["chunk_index"])
+        citation_title = cast(str | None, metadata.get("citation_title"))
+        citation_url = cast(str | None, metadata.get("citation_url"))
+        expected_id = f"{document_id}::chunk::{chunk_index}"
+        if raw_id != expected_id:
+            raise RetrievalError("malformed_result") from None
+        order = (numeric_distance, raw_id)
+        if previous_order is not None and order < previous_order:
+            raise RetrievalError("malformed_result") from None
+        previous_order = order
+        chunk: RetrievedChunk | None = None
+        try:
+            chunk = RetrievedChunk(
+                chunk_id=raw_id,
+                document_id=document_id,
+                source=source,
+                chunk_index=chunk_index,
+                text=text,
+                distance=numeric_distance,
+                citation_title=citation_title,
+                citation_url=citation_url,
+            )
+        except (ValidationError, TypeError, ValueError):
+            pass
+        if chunk is None:
+            raise RetrievalError("malformed_result") from None
+        chunks.append(chunk)
+    validated_result: RetrievalResult | None = None
+    try:
+        validated_result = RetrievalResult(
+            scope=request.scope,
+            distance_measure=request.distance_measure,
+            max_distance=request.max_distance,
+            chunks=tuple(chunks),
+        )
+    except (ValidationError, TypeError, ValueError):
+        pass
+    if validated_result is None:
+        raise RetrievalError("malformed_result") from None
+    return validated_result
+
+
+def _retrieve(collection: RetrievalCollection, request: object) -> RetrievalResult:
+    validated = _validated_local_request(request)
+    count = _count(collection)
+    if count == 0:
+        return RetrievalResult(
+            scope=validated.scope,
+            distance_measure=validated.distance_measure,
+            max_distance=validated.max_distance,
+            chunks=(),
+        )
+    result_count = min(validated.max_results, count)
+    return _validated_result(_query(collection, validated, result_count), validated, result_count)
+
+
+class LocalRetrievalAdapter:
+    """Retrieval protocol adapter for Cairn's active local SQLite collection."""
+
+    def __init__(self, collection: RetrievalCollection) -> None:
+        self._collection = collection
+
+    async def retrieve(self, request: RetrievalRequest) -> RetrievalResult:
+        await asyncio.sleep(0)
+        return _retrieve(self._collection, request)
+
+    async def check_readiness(self, scope: RetrievalScope) -> RetrievalProbe:
+        await asyncio.sleep(0)
+        if not isinstance(scope, LocalActiveScope):
+            raise RetrievalError("unsupported_scope") from None
+        validated_scope: LocalActiveScope | None = None
+        try:
+            validated_scope = LocalActiveScope.model_validate(scope.model_dump())
+        except (ValidationError, TypeError, ValueError):
+            pass
+        if validated_scope is None:
+            raise RetrievalError("invalid_request") from None
+        _count(self._collection)
+        return RetrievalProbe(
+            scope=validated_scope,
+            reachable=True,
+            store_ready=True,
+            exact_version_ready=False,
+        )
 
 
 def retrieve_chunks(
-    collection: DocumentCollection, query: str, top_k: int = DEFAULT_TOP_K
+    collection: RetrievalCollection, query: str, top_k: int = DEFAULT_TOP_K
 ) -> list[RetrievedChunk]:
-    """Query the collection for the `top_k` chunks closest to `query`.
-
-    Clamps `n_results` to the collection size and returns `[]` for an empty collection
-    rather than querying it at all.
-    """
-    count = collection.count()
-    if count == 0:
-        return []
-
-    result = collection.query(query_texts=[query], n_results=min(top_k, count))
-    documents = result["documents"][0] if result["documents"] else []
-    metadatas = result["metadatas"][0] if result["metadatas"] else []
-    distances = result["distances"][0] if result["distances"] else []
-
-    return [
-        RetrievedChunk(
-            document_id=str(metadata["document_id"]),
-            source=str(metadata["source"]),
-            chunk_index=int(metadata["chunk_index"]),
-            text=text,
-            distance=float(distance),
-            citation_title=(
-                str(metadata["citation_title"])
-                if isinstance(metadata.get("citation_title"), str)
-                else None
-            ),
-            citation_url=(
-                str(metadata["citation_url"])
-                if isinstance(metadata.get("citation_url"), str)
-                else None
-            ),
+    """Compatibility facade over the same strict local retrieval core."""
+    request: RetrievalRequest | None = None
+    try:
+        request = RetrievalRequest(
+            scope=LocalActiveScope(),
+            query=query,
+            max_results=top_k,
+            max_distance=DEFAULT_MAX_DISTANCE,
+            distance_measure="squared_l2",
         )
-        for text, metadata, distance in zip(documents, metadatas, distances, strict=True)
-    ]
+    except (ValidationError, TypeError, ValueError):
+        pass
+    if request is None:
+        raise RetrievalError("invalid_request") from None
+    return list(_retrieve(collection, request).chunks)
 
 
-def should_refuse(chunks: list[RetrievedChunk], max_distance: float = DEFAULT_MAX_DISTANCE) -> bool:
-    """The citation-required / low-confidence refusal gate (task 2.5).
-
-    Refuse — never call the provider — unless at least one retrieved chunk
-    is within `max_distance` of the query. This is deliberately the single
-    gate for both policies at once: whenever this returns `False`, `chunks`
-    is guaranteed non-empty, so an answer is never generated without at
-    least one citation to back it.
-    """
+def should_refuse(
+    chunks: Sequence[RetrievedChunk], max_distance: float = DEFAULT_MAX_DISTANCE
+) -> bool:
     if not chunks:
         return True
     return min(chunk.distance for chunk in chunks) > max_distance
 
 
-def build_citations(chunks: list[RetrievedChunk]) -> list[CitationSource]:
-    """One citation per distinct source document, in first-seen order.
-
-    A validated startup provenance manifest supplies public titles and URLs.
-    Direct programmatic ingestion retains an internal document reference.
-    """
+def build_citations(chunks: Sequence[RetrievedChunk]) -> list[CitationSource]:
     seen: dict[str, CitationSource] = {}
     for chunk in chunks:
         if chunk.document_id in seen:
@@ -124,12 +279,14 @@ def build_citations(chunks: list[RetrievedChunk]) -> list[CitationSource]:
     return list(seen.values())
 
 
-def build_context_block(chunks: list[RetrievedChunk]) -> str:
-    """The fixed, delimited prompt block a Provider grounds its reply on."""
+def build_context_block(chunks: Sequence[RetrievedChunk]) -> str:
     if not chunks:
         body = "(no relevant documents were found for this question)"
     else:
         body = "\n\n".join(
             f'<chunk source="{chunk.source}">\n{chunk.text}\n</chunk>' for chunk in chunks
         )
-    return f"{SYSTEM_PROMPT_HEADER}\n\n<retrieved-context>\n{body}\n</retrieved-context>"
+    context = f"{SYSTEM_PROMPT_HEADER}\n\n<retrieved-context>\n{body}\n</retrieved-context>"
+    if len(context) > RETRIEVED_CONTEXT_MAX_CHARS:
+        raise RetrievalError("context_too_large") from None
+    return context

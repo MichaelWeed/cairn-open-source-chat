@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,20 @@ def test_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.system_instruction == ""
     assert settings.max_output_tokens == 1500
     assert settings.max_output_chars == 6000
+    assert settings.retrieval_top_k == 4
+    assert settings.retrieval_max_distance == 1.2
+
+
+@pytest.mark.parametrize("value", [0, 7, True, 1.5, "1.5", "four"])
+def test_retrieval_top_k_is_a_bounded_integer(value: object) -> None:
+    with pytest.raises(ValidationError):
+        Settings(retrieval_top_k=value)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("value", [-0.1, True, math.nan, math.inf, 10**1000, "nan", "inf"])
+def test_retrieval_max_distance_is_finite_nonnegative(value: object) -> None:
+    with pytest.raises(ValidationError):
+        Settings(retrieval_max_distance=value)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -92,9 +107,23 @@ def test_generation_setting_defaults_match_env_example_and_compose(
     compose_environment = compose["services"]["backend"]["environment"]
 
     assert {key: env_values[key] for key in expected} == expected
-    assert {
-        key: compose_environment[key] for key in expected
-    } == {
+    assert {key: compose_environment[key] for key in expected} == {
+        key: f"${{{key}:-{value}}}" for key, value in expected.items()
+    }
+
+
+def test_retrieval_setting_defaults_match_env_example_and_compose() -> None:
+    settings = Settings()
+    expected = {
+        "RETRIEVAL_TOP_K": str(settings.retrieval_top_k),
+        "RETRIEVAL_MAX_DISTANCE": str(settings.retrieval_max_distance),
+    }
+    env_values = _dotenv_values(REPO_ROOT / ".env.example")
+    compose = yaml.safe_load((REPO_ROOT / "compose.yaml").read_text())
+    compose_environment = compose["services"]["backend"]["environment"]
+
+    assert {key: env_values[key] for key in expected} == expected
+    assert {key: compose_environment[key] for key in expected} == {
         key: f"${{{key}:-{value}}}" for key, value in expected.items()
     }
 
