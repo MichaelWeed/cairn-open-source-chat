@@ -22,7 +22,7 @@ class Compatibility(CapabilityModel):
     sse_events: Literal["1.0"]
     widget: Literal["0.1.0"]
     local_retrieval_store: Literal["1"]
-    local_corpus: Literal["1"]
+    local_corpus: Literal["2"]
 
 
 class Providers(CapabilityModel):

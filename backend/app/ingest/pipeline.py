@@ -7,6 +7,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Literal
 
+from app.embedding_types import Metadata
 from app.ingest.chunking import chunk_text
 from app.ingest.parsers import extract_text
 from app.vectorstore import DocumentCollection
@@ -29,6 +30,26 @@ def _chunk_ids(document_id: str, count: int) -> list[str]:
     return [f"{document_id}::chunk::{i}" for i in range(count)]
 
 
+def _chunk_metadatas(
+    *,
+    document_id: str,
+    filename: str,
+    count: int,
+    citation_title: str | None,
+    citation_url: str | None,
+) -> list[Metadata]:
+    if (citation_title is None) != (citation_url is None):
+        raise ValueError("citation title and URL must be provided together")
+    metadatas: list[Metadata] = [
+        {"document_id": document_id, "source": filename, "chunk_index": index}
+        for index in range(count)
+    ]
+    if citation_title is not None and citation_url is not None:
+        for metadata in metadatas:
+            metadata.update({"citation_title": citation_title, "citation_url": citation_url})
+    return metadatas
+
+
 def ingest_upload(
     *,
     db: sqlite3.Connection,
@@ -36,6 +57,8 @@ def ingest_upload(
     document_id: str,
     filename: str,
     content: bytes,
+    citation_title: str | None = None,
+    citation_url: str | None = None,
 ) -> IngestResult:
     """Ingest one uploaded file. Re-ingesting the same document_id with
     unchanged bytes is a no-op; changed bytes replace the old chunks."""
@@ -48,7 +71,15 @@ def ingest_upload(
 
     if previous_hash == new_hash:
         expected_ids = _chunk_ids(document_id, row[1])
-        if collection.get(ids=expected_ids)["ids"] == expected_ids:
+        expected_metadatas = _chunk_metadatas(
+            document_id=document_id,
+            filename=filename,
+            count=row[1],
+            citation_title=citation_title,
+            citation_url=citation_url,
+        )
+        stored = collection.get(ids=expected_ids)
+        if stored["ids"] == expected_ids and stored["metadatas"] == expected_metadatas:
             return IngestResult(document_id=document_id, status="unchanged", chunk_count=row[1])
 
     text = extract_text(filename, content)
@@ -58,10 +89,13 @@ def ingest_upload(
         ids_to_delete=_chunk_ids(document_id, row[1]) if row is not None else [],
         ids=_chunk_ids(document_id, len(chunks)),
         documents=chunks,
-        metadatas=[
-            {"document_id": document_id, "source": filename, "chunk_index": i}
-            for i in range(len(chunks))
-        ],
+        metadatas=_chunk_metadatas(
+            document_id=document_id,
+            filename=filename,
+            count=len(chunks),
+            citation_title=citation_title,
+            citation_url=citation_url,
+        ),
     )
 
     with db:

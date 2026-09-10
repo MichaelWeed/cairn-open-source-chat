@@ -26,7 +26,7 @@ EXPECTED_MANIFEST: dict[str, Any] = {
         "sse_events": "1.0",
         "widget": "0.1.0",
         "local_retrieval_store": "1",
-        "local_corpus": "1",
+        "local_corpus": "2",
     },
     "capabilities": {
         "providers": {
@@ -45,7 +45,7 @@ EXPECTED_MANIFEST: dict[str, Any] = {
         },
         "corpus": {
             "local_directory": "available",
-            "reviewed_manifest": "planned",
+            "reviewed_manifest": "available",
             "immutable_versions": "planned",
         },
         "widget": {

@@ -1,4 +1,6 @@
+import hashlib
 import io
+import json
 import sqlite3
 from pathlib import Path
 
@@ -10,6 +12,7 @@ from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from app.config import Settings
 from app.db import bootstrap
+from app.ingest.parsers import SUPPORTED_EXTENSIONS
 from app.ingest.pipeline import ingest_upload
 from app.ingest.startup import CorpusIngestSummary, CorpusStartupError, corpus_paths, ingest_corpus
 from app.main import create_app
@@ -39,6 +42,27 @@ def _pdf_bytes(text: str) -> bytes:
     return output.getvalue()
 
 
+def _write_provenance(corpus: Path) -> None:
+    documents: dict[str, dict[str, object]] = {}
+    for path in sorted(
+        path
+        for path in corpus.rglob("*")
+        if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS
+    ):
+        relative_path = path.relative_to(corpus).as_posix()
+        documents[relative_path] = {
+            "title": relative_path,
+            "url": f"https://docs.example.com/{relative_path}",
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "owner": "Test documentation owner",
+            "reviewed_at": "2026-09-08",
+            "public": True,
+        }
+    (corpus / "provenance.json").write_text(
+        json.dumps({"version": 1, "documents": documents}), encoding="utf-8"
+    )
+
+
 def test_corpus_paths_rejects_missing_or_empty_supported_corpus(tmp_path: Path) -> None:
     with pytest.raises(CorpusStartupError, match="does not exist"):
         corpus_paths(tmp_path / "missing")
@@ -59,6 +83,7 @@ def test_ingest_corpus_uses_the_given_handles_for_markdown_and_pdf(
     nested.mkdir(parents=True)
     (nested / "returns.md").write_text("# Returns\n\nReturns are accepted within 30 days.")
     (corpus / "warranty.pdf").write_bytes(_pdf_bytes("Warranty coverage lasts one year."))
+    _write_provenance(corpus)
 
     settings = Settings(database_path=tmp_path / "cairn.db", chroma_path=tmp_path / "chroma")
     db = bootstrap(settings.database_path)
@@ -86,6 +111,7 @@ def test_ingest_corpus_removes_stale_corpus_vectors_and_metadata(
     removed = corpus / "removed.md"
     present.write_text("Present corpus content")
     removed.write_text("Removed corpus content")
+    _write_provenance(corpus)
     settings = Settings(database_path=tmp_path / "cairn.db", chroma_path=tmp_path / "chroma")
     db = bootstrap(settings.database_path)
     collection = get_document_collection(get_vector_client(settings), settings)
@@ -99,6 +125,7 @@ def test_ingest_corpus_removes_stale_corpus_vectors_and_metadata(
             content=b"Non-corpus content",
         )
         removed.unlink()
+        _write_provenance(corpus)
 
         ingest_corpus(db=db, collection=collection, corpus_path=corpus)
 
@@ -121,6 +148,7 @@ def test_ingest_corpus_removes_emptied_corpus_vectors_and_metadata(
     emptied = corpus / "emptied.md"
     present.write_text("Present corpus content")
     emptied.write_text("Retrievable former content")
+    _write_provenance(corpus)
     settings = Settings(database_path=tmp_path / "cairn.db", chroma_path=tmp_path / "chroma")
     db = bootstrap(settings.database_path)
     collection = get_document_collection(get_vector_client(settings), settings)
@@ -134,6 +162,7 @@ def test_ingest_corpus_removes_emptied_corpus_vectors_and_metadata(
             content=b"Non-corpus content",
         )
         emptied.write_text("")
+        _write_provenance(corpus)
 
         ingest_corpus(db=db, collection=collection, corpus_path=corpus)
 
@@ -159,12 +188,14 @@ def test_ingest_corpus_reconciles_renamed_path(
     corpus.mkdir()
     original = corpus / "original.md"
     original.write_text("Renamed corpus content")
+    _write_provenance(corpus)
     settings = Settings(database_path=tmp_path / "cairn.db", chroma_path=tmp_path / "chroma")
     db = bootstrap(settings.database_path)
     collection = get_document_collection(get_vector_client(settings), settings)
     try:
         ingest_corpus(db=db, collection=collection, corpus_path=corpus)
         original.rename(corpus / "renamed.md")
+        _write_provenance(corpus)
 
         ingest_corpus(db=db, collection=collection, corpus_path=corpus)
 
@@ -186,12 +217,14 @@ def test_ingest_corpus_does_not_reconcile_when_current_ingestion_fails(
     stale = corpus / "stale.md"
     current.write_text("Current corpus content")
     stale.write_text("Stale corpus content")
+    _write_provenance(corpus)
     settings = Settings(database_path=tmp_path / "cairn.db", chroma_path=tmp_path / "chroma")
     db = bootstrap(settings.database_path)
     collection = get_document_collection(get_vector_client(settings), settings)
     try:
         ingest_corpus(db=db, collection=collection, corpus_path=corpus)
         stale.unlink()
+        _write_provenance(corpus)
 
         def fail_current_ingestion(**_: object) -> object:
             raise RuntimeError("current ingestion failed")
@@ -218,12 +251,14 @@ def test_ingest_corpus_propagates_stale_vector_deletion_failure_before_metadata_
     stale = corpus / "stale.md"
     current.write_text("Current corpus content")
     stale.write_text("Stale corpus content")
+    _write_provenance(corpus)
     settings = Settings(database_path=tmp_path / "cairn.db", chroma_path=tmp_path / "chroma")
     db = bootstrap(settings.database_path)
     collection = get_document_collection(get_vector_client(settings), settings)
     try:
         ingest_corpus(db=db, collection=collection, corpus_path=corpus)
         stale.unlink()
+        _write_provenance(corpus)
 
         def fail_vector_delete(*, ids: list[str]) -> None:
             assert ids == ["corpus:stale.md::chunk::0"]

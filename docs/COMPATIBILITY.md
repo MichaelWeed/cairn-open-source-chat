@@ -22,7 +22,7 @@ validation.
     "sse_events": "1.0",
     "widget": "0.1.0",
     "local_retrieval_store": "1",
-    "local_corpus": "1"
+    "local_corpus": "2"
   },
   "capabilities": {
     "providers": {
@@ -41,7 +41,7 @@ validation.
     },
     "corpus": {
       "local_directory": "available",
-      "reviewed_manifest": "planned",
+      "reviewed_manifest": "available",
       "immutable_versions": "planned"
     },
     "widget": {
@@ -63,6 +63,16 @@ validation.
 }
 ```
 <!-- capabilities-manifest:end -->
+
+## Local corpus compatibility 2
+
+Local corpus compatibility 2 requires every `CORPUS_PATH` directory to include a
+version 1 `provenance.json` that covers each mounted Markdown and PDF document.
+Version 1 accepted document directories without this manifest. Before upgrading,
+operators must add the reviewed public title, canonical HTTP(S) URL, exact-byte
+SHA-256, owner, review date, and `public: true` attestation described in
+[CORPUS-PROVENANCE.md](CORPUS-PROVENANCE.md). Symlinked documents and manifests are
+rejected; mount regular files read-only.
 
 ## Upgrade rules before 1.0
 
