@@ -121,8 +121,12 @@ canonical inventory only after full comparison. Its fixed collections are
 `cairn_corpus_candidates_v1`, `cairn_corpus_documents_v1`,
 `cairn_corpus_chunks_v1`, and `cairn_corpus_attestations_v1`. Candidate and
 attestation keys are derived from the exact corpus reference, document keys are M7
-document IDs, and chunk keys use the M6 bounded chunk-key helper. KAN-45
-lifecycle, trust policy, readiness, and active-pointer work remain planned.
+document IDs, and chunk keys use the M6 bounded chunk-key helper. A distinct
+signer-free verification service accepts an exact corpus, externally selected
+identity, and verify-only verifier, then returns immutable content-free evidence
+from a fresh complete durable readback. It does not select trust or lifecycle
+state. KAN-45 lifecycle, trust policy, readiness, and active-pointer work remain
+planned.
 
 The Gemini adapter imports its SDK only after explicit selection. It maps history
 roles, keeps retrieved context and the current visitor question as separate JSON
@@ -157,7 +161,9 @@ not a bug fix.
   development boundary. It performs header-first create-only writes, exact
   read-confirm replay, full document/chunk readback, framed inventory hashing, and
   immutable attestation last. A failed operation may leave an unattested prefix;
-  it never cleans up or promotes that prefix. Promotion/readiness belongs to KAN-45.
+  it never cleans up or promotes that prefix. Its signer-free verifier repeats the
+  exact durable readback and returns identity-bound evidence without signing or
+  writing. Promotion/readiness and trusted identity selection belong to KAN-45.
 * **Contracts change only with their consumers.** The wire format is a frozen
   Pydantic model; changing it requires updating widget, tests, and documentation in
   the same change. See [ADR-0002](adr/0002-frozen-wire-contracts.md).

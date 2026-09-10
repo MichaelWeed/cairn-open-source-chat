@@ -59,8 +59,11 @@ message is never added to the retrievable corpus.
   explicitly injected service can send reviewed candidate metadata, chunk text,
   vectors, and an attestation envelope to the fixed exact-scope collections. It
   never logs record values, hashes, signer key IDs, signatures, credentials, or SDK
-  responses. Cairn ships no signing key or production signing implementation, and
-  validation makes no credential lookup or live write.
+  responses, and encoded-size agreement is operation-local rather than retained in
+  a content-derived cache. The signer-free verification service rereads durable
+  records and returns only immutable content-free evidence. Cairn ships no signing
+  key or production signing implementation, and validation makes no credential
+  lookup or live write.
 
 ## Backups
 

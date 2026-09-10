@@ -1,7 +1,7 @@
 import importlib
 import socket
 from collections.abc import AsyncGenerator, Mapping
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -12,8 +12,10 @@ from app.ingest.candidate_firestore import (
 from app.ingest.candidate_persistence import (
     CANDIDATE_COLLECTION,
     CANDIDATE_READ_PAGE_SIZE,
+    CandidateRecordKind,
     CandidateStoreFailure,
     CandidateStoreRecord,
+    _CandidateStoreMalformed,
 )
 from app.retrieval_contracts import ExactCorpusReference
 from app.retrieval_firestore import FIRESTORE_CHUNKS_COLLECTION
@@ -56,9 +58,7 @@ class _FakeHelpers:
 
 class _FakeCommitRequest:
     def __init__(self, *, database: str, writes: tuple[_FakeWrite, ...]) -> None:
-        material = database.encode() + b"".join(
-            write._pb.SerializeToString() for write in writes
-        )
+        material = database.encode() + b"".join(write._pb.SerializeToString() for write in writes)
         self._pb = _FakeProto(material)
 
 
@@ -239,6 +239,23 @@ def _store(client: Client) -> FirestoreSdkCandidateStore:
     return FirestoreSdkCandidateStore(client, sdk=firestore_v1, helpers=_helpers)
 
 
+def _encoded_size(
+    store: FirestoreSdkCandidateStore,
+    kind: CandidateRecordKind,
+    records: tuple[CandidateStoreRecord, ...],
+) -> int:
+    return store.encoded_create_base_size(kind) + sum(
+        store.encoded_record_sizes(record)[1] for record in records
+    )
+
+
+def _encoded_sha256s(
+    store: FirestoreSdkCandidateStore,
+    records: tuple[CandidateStoreRecord, ...],
+) -> tuple[str, ...]:
+    return tuple(store.encoded_record_sizes(record)[2] for record in records)
+
+
 def _header() -> CandidateStoreRecord:
     return CandidateStoreRecord(
         kind="candidate",
@@ -288,14 +305,26 @@ async def test_exact_size_create_read_and_vector_round_trip() -> None:
     store = _store(client)
     header = _header()
     chunk = _chunk()
-    assert 0 < store.encoded_document_size(header) < 1_048_576
-    assert 0 < store.encoded_create_size("candidate", (header,)) < 8_388_608
-    await store.create_many("candidate", (header,), timeout_seconds=7)
+    assert 0 < store.encoded_record_sizes(header)[0] < 1_048_576
+    header_size = _encoded_size(store, "candidate", (header,))
+    assert 0 < header_size < 8_388_608
+    await store.create_many_checked(
+        "candidate",
+        (header,),
+        expected_encoded_size=header_size,
+        expected_write_sha256s=_encoded_sha256s(store, (header,)),
+        timeout_seconds=7,
+    )
     assert await store.get("candidate", header.key, timeout_seconds=7) == header
 
-    store.encoded_document_size(chunk)
-    store.encoded_create_size("chunk", (chunk,))
-    await store.create_many("chunk", (chunk,), timeout_seconds=7)
+    chunk_size = _encoded_size(store, "chunk", (chunk,))
+    await store.create_many_checked(
+        "chunk",
+        (chunk,),
+        expected_encoded_size=chunk_size,
+        expected_write_sha256s=_encoded_sha256s(store, (chunk,)),
+        timeout_seconds=7,
+    )
     assert await store.get("chunk", chunk.key, timeout_seconds=7) == chunk
     assert client.calls[-1] == (
         "get",
@@ -304,6 +333,50 @@ async def test_exact_size_create_read_and_vector_round_trip() -> None:
         None,
         7,
     )
+    retained = repr(store.__dict__)
+    assert header.key not in retained
+    assert chunk.key not in retained
+    assert "content" not in retained
+
+
+def test_linear_size_contributions_equal_one_exact_multi_write_commit() -> None:
+    store = _store(Client())
+    first = _header()
+    second = CandidateStoreRecord(
+        kind="candidate", key="cand1-" + "b" * 64, value=dict(first.value)
+    )
+    records = (first, second)
+    assert _encoded_size(store, "candidate", records) == store._commit_size(
+        store._writes("candidate", records)
+    )
+
+
+@pytest.mark.asyncio
+async def test_same_length_encoded_byte_drift_is_rejected_before_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Client()
+    store = _store(client)
+    header = _header()
+    expected_size = _encoded_size(store, "candidate", (header,))
+    expected_sha256s = _encoded_sha256s(store, (header,))
+    original = store._write_value
+
+    def drift(record: CandidateStoreRecord) -> dict[str, object]:
+        value = original(record)
+        value["corpus_id"] = "forged-docs"
+        return value
+
+    monkeypatch.setattr(store, "_write_value", drift)
+    with pytest.raises(_CandidateStoreMalformed):
+        await store.create_many_checked(
+            "candidate",
+            (header,),
+            expected_encoded_size=expected_size,
+            expected_write_sha256s=expected_sha256s,
+            timeout_seconds=3,
+        )
+    assert client.records == {}
 
 
 @pytest.mark.asyncio
@@ -313,18 +386,29 @@ async def test_create_requires_prevalidated_exact_bytes_and_normalizes_conflict(
     client = Client()
     store = _store(client)
     header = _header()
-    with pytest.raises(CandidateStoreFailure) as uncached:
-        await store.create_many("candidate", (header,), timeout_seconds=3)
-    assert uncached.value.code == "permanent"
+    with pytest.raises(_CandidateStoreMalformed):
+        await store.create_many_checked(
+            "candidate",
+            (header,),
+            expected_encoded_size=0,
+            expected_write_sha256s=_encoded_sha256s(store, (header,)),
+            timeout_seconds=3,
+        )
 
-    store.encoded_create_size("candidate", (header,))
+    encoded_size = _encoded_size(store, "candidate", (header,))
     monkeypatch.setattr(
         "app.ingest.candidate_firestore.importlib.import_module",
         lambda _: exceptions,
     )
     client.failure = exceptions.AlreadyExists("fixture")
     with pytest.raises(CandidateStoreFailure) as conflict:
-        await store.create_many("candidate", (header,), timeout_seconds=3)
+        await store.create_many_checked(
+            "candidate",
+            (header,),
+            expected_encoded_size=encoded_size,
+            expected_write_sha256s=_encoded_sha256s(store, (header,)),
+            timeout_seconds=3,
+        )
     assert conflict.value.code == "conflict"
 
 
@@ -338,12 +422,24 @@ async def test_get_many_restores_requested_order_and_close_is_idempotent() -> No
     )
     for record in (first, second):
         client.records[(CANDIDATE_COLLECTION, record.key)] = dict(record.value)
-    assert await store.get_many(
-        "candidate", (first.key, second.key), timeout_seconds=5
-    ) == (first, second)
+    assert await store.get_many("candidate", (first.key, second.key), timeout_seconds=5) == (
+        first,
+        second,
+    )
     await store.aclose()
     await store.aclose()
     assert client.closed == 1
+
+
+@pytest.mark.asyncio
+async def test_malformed_sdk_snapshots_have_distinct_fixed_classification() -> None:
+    client = Client()
+    store = _store(client)
+    header = _header()
+    client.records[(CANDIDATE_COLLECTION, header.key)] = cast(Any, ["not-a-mapping"])
+    with pytest.raises(_CandidateStoreMalformed) as caught:
+        await store.get("candidate", header.key, timeout_seconds=3)
+    assert repr(caught.value.__cause__) == "None"
 
 
 @pytest.mark.asyncio
@@ -357,9 +453,7 @@ async def test_page_uses_exact_filters_name_order_and_201_lookahead() -> None:
             **dict(record.value),
             "embedding": firestore_v1.vector.Vector([1.0, 0.0]),
         }
-    page = await store.list_page(
-        "chunk", corpus, None, CANDIDATE_READ_PAGE_SIZE, timeout_seconds=9
-    )
+    page = await store.list_page("chunk", corpus, None, CANDIDATE_READ_PAGE_SIZE, timeout_seconds=9)
     assert len(page.records) == 200
     assert page.next_after_key == page.records[-1].key
     assert ("order_by", "__name__") in client.calls

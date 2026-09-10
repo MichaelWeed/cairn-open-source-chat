@@ -65,8 +65,11 @@ this stage.
   rejects extras or changes, and writes the attestation last. Batch count, encoded
   request bytes, document bytes, dimensions, pagination, timeouts, and retries are
   bounded. Errors are fixed and content-free, and SDK logging remains disabled.
-  The component accepts injected signer/verifier behavior but ships no key,
-  credential loader, KMS client, production algorithm, or trust store.
+  Exact encoded-size agreement is computed linearly and kept operation-local. A
+  separate signer-free verifier accepts an exact corpus, externally selected
+  identity, and verify-only verifier and returns only identity-bound, content-free
+  evidence from a complete durable readback. The component ships no key, credential
+  loader, KMS client, production algorithm, trust selection, or trust store.
 * **Supply chain.** `uv.lock`/`package-lock.json` with hashes; CycloneDX SBOM regenerated and
   diffed against the committed one on every `make validate` run; `osv-scanner` (lockfiles) and
   `grype` (built images) gates; container images pinned by digest; a 14-day dependency cooldown

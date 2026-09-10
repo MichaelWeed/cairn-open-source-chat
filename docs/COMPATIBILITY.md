@@ -130,10 +130,13 @@ material make a complete candidate plan deterministic across retries and process
 hash seeds. Planning does not persist or activate a candidate.
 
 The internal candidate persistence contract adds create-or-confirm storage, exact
-readback, canonical inventory hashing, and injected attestation verification.
-Therefore `immutable_versions` is `development_only`. It is not wired to startup or
-an endpoint and supplies no real signer or trust policy. Lifecycle, ready state,
-active pointers, promotion, rollback, and hosted readiness remain planned.
+readback, canonical inventory hashing, and injected attestation verification. Its
+separate signer-free verifier accepts an exact corpus, externally selected identity,
+and verify-only verifier and returns immutable content-free evidence. Therefore
+`immutable_versions` is `development_only`. It is not wired to startup or an
+endpoint and supplies no real signer, trusted identity selection, or lifecycle
+policy. Ready state, active pointers, promotion, rollback, and hosted readiness
+remain planned.
 
 The public chat API remains `1.0`, SSE remains `1.1`, local corpus remains `2`, and
 local retrieval store remains `1`. Existing deployments require no migration or

@@ -18,11 +18,13 @@ from app.ingest.candidate_persistence import (
     CANDIDATE_READ_LOOKAHEAD_SIZE,
     CANDIDATE_READ_PAGE_SIZE,
     DOCUMENT_COLLECTION,
+    FIRESTORE_DOCUMENT_MAX_BYTES,
     CandidateRecordKind,
     CandidateStoreFailure,
     CandidateStorePage,
     CandidateStoreRecord,
     StrictStoreValue,
+    _CandidateStoreMalformed,
 )
 from app.retrieval_contracts import ExactCorpusReference
 from app.retrieval_firestore import FIRESTORE_CHUNKS_COLLECTION, FIRESTORE_DATABASE_ID
@@ -51,7 +53,6 @@ class FirestoreSdkCandidateStore:
         self._sdk = sdk
         self._helpers = helpers
         self._closed = False
-        self._encoded_sizes: dict[tuple[str, tuple[str, ...], str], int] = {}
 
     def _reference(self, kind: CandidateRecordKind, key: str) -> Any:
         return cast(Any, self._client).collection(_COLLECTIONS[kind]).document(key)
@@ -83,59 +84,67 @@ class FirestoreSdkCandidateStore:
             writes.append(generated[0])
         return tuple(writes)
 
-    def _fingerprint(
-        self,
-        kind: CandidateRecordKind,
-        records: tuple[CandidateStoreRecord, ...],
-        writes: tuple[Any, ...],
-    ) -> tuple[str, tuple[str, ...], str]:
-        digest = hashlib.sha256()
-        for write in writes:
-            material = cast(bytes, write._pb.SerializeToString())
-            digest.update(len(material).to_bytes(8, "big"))
-            digest.update(material)
-        return kind, tuple(record.key for record in records), digest.hexdigest()
+    def _commit_size(self, writes: tuple[Any, ...]) -> int:
+        request = cast(Any, self._sdk).types.CommitRequest(
+            database=cast(Any, self._client)._database_string,
+            writes=writes,
+        )
+        return cast(int, request._pb.ByteSize())
+
+    def _write_sha256(self, write: Any) -> str:
+        material = cast(Any, write)._pb.SerializeToString()
+        if type(material) is not bytes:
+            raise _CandidateStoreMalformed() from None
+        return hashlib.sha256(material).hexdigest()
 
     def encoded_document_size(self, record: CandidateStoreRecord) -> int:
-        try:
-            write = self._writes(record.kind, (record,))[0]
-            return cast(int, write.update._pb.ByteSize())
-        except CandidateStoreFailure:
-            raise
-        except Exception:
-            raise CandidateStoreFailure("permanent") from None
+        return self.encoded_record_sizes(record)[0]
 
     def encoded_create_size(
         self, kind: CandidateRecordKind, records: tuple[CandidateStoreRecord, ...]
     ) -> int:
         try:
-            writes = self._writes(kind, records)
-            request = cast(Any, self._sdk).types.CommitRequest(
-                database=cast(Any, self._client)._database_string,
-                writes=writes,
-            )
-            size = cast(int, request._pb.ByteSize())
-            self._encoded_sizes[self._fingerprint(kind, records, writes)] = size
-            return size
-        except CandidateStoreFailure:
+            return self._commit_size(self._writes(kind, records))
+        except (_CandidateStoreMalformed, CandidateStoreFailure):
+            raise
+        except Exception:
+            raise CandidateStoreFailure("permanent") from None
+
+    def encoded_create_base_size(self, kind: CandidateRecordKind) -> int:
+        if kind not in _COLLECTIONS:
+            raise CandidateStoreFailure("permanent") from None
+        try:
+            return self._commit_size(())
+        except Exception:
+            raise CandidateStoreFailure("permanent") from None
+
+    def encoded_record_sizes(self, record: CandidateStoreRecord) -> tuple[int, int, str]:
+        try:
+            write = self._writes(record.kind, (record,))[0]
+            document_size = cast(int, write.update._pb.ByteSize())
+            contribution = self._commit_size((write,)) - self._commit_size(())
+            if document_size < 0 or contribution < 0:
+                raise CandidateStoreFailure("permanent") from None
+            return document_size, contribution, self._write_sha256(write)
+        except (_CandidateStoreMalformed, CandidateStoreFailure):
             raise
         except Exception:
             raise CandidateStoreFailure("permanent") from None
 
     def _read_value(self, kind: CandidateRecordKind, raw: object) -> Mapping[str, object]:
         if type(raw) is not dict:
-            raise CandidateStoreFailure("permanent") from None
+            raise _CandidateStoreMalformed() from None
         value = dict(cast(dict[str, object], raw))
         if kind == "chunk":
             embedding = value.get("embedding")
             vector_type = cast(Any, self._sdk).vector.Vector
             if type(embedding) is not vector_type:
-                raise CandidateStoreFailure("permanent") from None
+                raise _CandidateStoreMalformed() from None
             vector = getattr(embedding, "_value", None)
             if not isinstance(vector, tuple) or any(
                 type(item) is not float or not math.isfinite(item) for item in vector
             ):
-                raise CandidateStoreFailure("permanent") from None
+                raise _CandidateStoreMalformed() from None
             value["embedding"] = tuple(0.0 if item == 0.0 else item for item in vector)
         return value
 
@@ -152,22 +161,20 @@ class FirestoreSdkCandidateStore:
                 key=key,
                 value=cast(Mapping[str, StrictStoreValue], self._read_value(kind, raw)),
             )
-        except CandidateStoreFailure:
+        except (_CandidateStoreMalformed, CandidateStoreFailure):
             raise
         except Exception:
-            raise CandidateStoreFailure("permanent") from None
+            raise _CandidateStoreMalformed() from None
 
     async def get(
         self, kind: CandidateRecordKind, key: str, *, timeout_seconds: int
     ) -> CandidateStoreRecord | None:
         try:
-            snapshot = await self._reference(kind, key).get(
-                retry=None, timeout=timeout_seconds
-            )
+            snapshot = await self._reference(kind, key).get(retry=None, timeout=timeout_seconds)
             return self._snapshot_record(kind, snapshot)
         except asyncio.CancelledError:
             raise
-        except CandidateStoreFailure:
+        except (_CandidateStoreMalformed, CandidateStoreFailure):
             raise
         except Exception as error:
             raise _normalized_sdk_error(error) from None
@@ -188,14 +195,59 @@ class FirestoreSdkCandidateStore:
             async for snapshot in snapshots:
                 key = cast(Any, snapshot).id
                 if type(key) is not str or key not in keys or key in by_key:
-                    raise CandidateStoreFailure("permanent") from None
+                    raise _CandidateStoreMalformed() from None
                 by_key[key] = self._snapshot_record(kind, snapshot)
             if set(by_key) != set(keys):
-                raise CandidateStoreFailure("permanent") from None
+                raise _CandidateStoreMalformed() from None
             return tuple(by_key[key] for key in keys)
         except asyncio.CancelledError:
             raise
-        except CandidateStoreFailure:
+        except (_CandidateStoreMalformed, CandidateStoreFailure):
+            raise
+        except Exception as error:
+            raise _normalized_sdk_error(error) from None
+
+    async def create_many_checked(
+        self,
+        kind: CandidateRecordKind,
+        records: tuple[CandidateStoreRecord, ...],
+        *,
+        expected_encoded_size: int,
+        expected_write_sha256s: tuple[str, ...],
+        timeout_seconds: int,
+    ) -> None:
+        try:
+            if (
+                type(expected_encoded_size) is not int
+                or expected_encoded_size < 0
+                or type(expected_write_sha256s) is not tuple
+                or len(expected_write_sha256s) != len(records)
+                or any(
+                    type(value) is not str
+                    or len(value) != 64
+                    or any(character not in "0123456789abcdef" for character in value)
+                    for value in expected_write_sha256s
+                )
+            ):
+                raise CandidateStoreFailure("permanent") from None
+            batch = cast(Any, self._client).batch()
+            for record in records:
+                batch.create(self._reference(kind, record.key), self._write_value(record))
+            writes = tuple(batch._write_pbs)
+            if (
+                len(writes) != len(records)
+                or any(
+                    cast(int, write.update._pb.ByteSize()) > FIRESTORE_DOCUMENT_MAX_BYTES
+                    for write in writes
+                )
+                or self._commit_size(writes) != expected_encoded_size
+                or tuple(self._write_sha256(write) for write in writes) != expected_write_sha256s
+            ):
+                raise _CandidateStoreMalformed() from None
+            await batch.commit(retry=None, timeout=timeout_seconds)
+        except asyncio.CancelledError:
+            raise
+        except (_CandidateStoreMalformed, CandidateStoreFailure):
             raise
         except Exception as error:
             raise _normalized_sdk_error(error) from None
@@ -207,28 +259,15 @@ class FirestoreSdkCandidateStore:
         *,
         timeout_seconds: int,
     ) -> None:
-        try:
-            writes = self._writes(kind, records)
-            fingerprint = self._fingerprint(kind, records, writes)
-            expected_size = self._encoded_sizes.get(fingerprint)
-            request = cast(Any, self._sdk).types.CommitRequest(
-                database=cast(Any, self._client)._database_string,
-                writes=writes,
-            )
-            if expected_size is None or request._pb.ByteSize() != expected_size:
-                raise CandidateStoreFailure("permanent") from None
-            batch = cast(Any, self._client).batch()
-            for record in records:
-                batch.create(self._reference(kind, record.key), self._write_value(record))
-            if tuple(batch._write_pbs) != writes:
-                raise CandidateStoreFailure("permanent") from None
-            await batch.commit(retry=None, timeout=timeout_seconds)
-        except asyncio.CancelledError:
-            raise
-        except CandidateStoreFailure:
-            raise
-        except Exception as error:
-            raise _normalized_sdk_error(error) from None
+        agreements = tuple(self.encoded_record_sizes(record) for record in records)
+        await self.create_many_checked(
+            kind,
+            records,
+            expected_encoded_size=self.encoded_create_base_size(kind)
+            + sum(agreement[1] for agreement in agreements),
+            expected_write_sha256s=tuple(agreement[2] for agreement in agreements),
+            timeout_seconds=timeout_seconds,
+        )
 
     async def list_page(
         self,
@@ -257,31 +296,27 @@ class FirestoreSdkCandidateStore:
                 .order_by("__name__")
             )
             if after_key is not None:
-                query = query.start_after(
-                    {"__name__": self._reference(kind, after_key)}
-                )
+                query = query.start_after({"__name__": self._reference(kind, after_key)})
             snapshots = await query.limit(CANDIDATE_READ_LOOKAHEAD_SIZE).get(
                 retry=None, timeout=timeout_seconds
             )
             if len(snapshots) > CANDIDATE_READ_LOOKAHEAD_SIZE:
-                raise CandidateStoreFailure("permanent") from None
+                raise _CandidateStoreMalformed() from None
             converted = tuple(
                 record
                 for snapshot in snapshots
                 if (record := self._snapshot_record(kind, snapshot)) is not None
             )
             if len(converted) != len(snapshots):
-                raise CandidateStoreFailure("permanent") from None
+                raise _CandidateStoreMalformed() from None
             records = converted[:CANDIDATE_READ_PAGE_SIZE]
             next_after = (
-                records[-1].key
-                if len(converted) == CANDIDATE_READ_LOOKAHEAD_SIZE
-                else None
+                records[-1].key if len(converted) == CANDIDATE_READ_LOOKAHEAD_SIZE else None
             )
             return CandidateStorePage(records=records, next_after_key=next_after)
         except asyncio.CancelledError:
             raise
-        except CandidateStoreFailure:
+        except (_CandidateStoreMalformed, CandidateStoreFailure):
             raise
         except Exception as error:
             raise _normalized_sdk_error(error) from None

@@ -201,11 +201,15 @@ creates by read-confirm before retrying.
 
 The module ships no signer, key loader, credential setting, KMS client, or trust
 policy. Tests use an injected deterministic fixture that is not cryptography. A
-read-only verification seam accepts a separately selected verifier and performs
-the same complete readback, inventory, payload, and signature checks without
-signing or writing. KAN-45 must supply trusted signing policy and lifecycle rules
-before any candidate can become ready or active. All persistence tests are offline
-and deny providers, sockets, credentials, and production factories.
+separate signer-free verification service accepts an exact corpus, externally
+selected signer identity, and verify-only verifier. It performs the same complete
+readback, inventory, payload, envelope, and signature checks without signing or
+writing. Its immutable, content-free evidence includes the exact corpus, plan and
+semantic-manifest hashes, embedding identity and dimensions, record counts,
+inventory and payload hashes, and signer algorithm and key IDs. KAN-45 must supply
+trusted identity selection and lifecycle rules before any candidate can become
+ready or active. All persistence tests are offline and deny providers, sockets,
+credentials, and production factories.
 
 **Config plumbing:** compose only interpolates `.env` into `compose.yaml` — it never passes `.env` to the container by itself. Every knob in `.env.example` is therefore forwarded explicitly in the `environment:` block of `compose.yaml`, with defaults mirroring `backend/app/config.py`. Add new settings in all three places.
 
