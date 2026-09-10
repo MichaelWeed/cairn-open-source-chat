@@ -318,19 +318,62 @@ async function stopBrowser(child, cdp, closed) {
   if (!(await settlesWithin(closed, 3_000))) {
     child.kill("SIGKILL");
     if (!(await settlesWithin(closed, 3_000))) {
-      throw new Error("browser did not stop after bounded graceful and forced shutdown");
+      throw new Error("browser did not stop after bounded graceful and forced shutdown", {
+        cause: gracefulCloseError,
+      });
     }
   }
 
   if (cdp !== undefined) {
     cdp.close();
     if (!(await settlesWithin(cdp.closed, 3_000))) {
-      throw new Error("DevTools socket did not close after browser shutdown");
+      throw new Error("DevTools socket did not close after browser shutdown", {
+        cause: gracefulCloseError,
+      });
     }
   }
-  if (gracefulCloseError !== undefined) {
-    throw gracefulCloseError;
-  }
+}
+
+async function verifyBrowserShutdownContract() {
+  let resolveProcessClose;
+  let resolveSocketClose;
+  const processClosed = new Promise((resolve) => {
+    resolveProcessClose = resolve;
+  });
+  const socketClosed = new Promise((resolve) => {
+    resolveSocketClose = resolve;
+  });
+  const signals = [];
+  const child = {
+    exitCode: null,
+    signalCode: null,
+    kill(signal) {
+      signals.push(signal);
+    },
+  };
+  const closeBeforeAcknowledgement = new Error(
+    "DevTools closed before Browser.close completed",
+  );
+  const cdp = {
+    closed: socketClosed,
+    close() {},
+    send(method) {
+      assert.equal(method, "Browser.close");
+      return new Promise((_, reject) => {
+        queueMicrotask(() => {
+          child.exitCode = 0;
+          resolveSocketClose();
+          resolveProcessClose();
+          reject(closeBeforeAcknowledgement);
+        });
+      });
+    },
+  };
+
+  await stopBrowser(child, cdp, processClosed);
+  assert.equal(child.exitCode, 0, "close-before-ack fixture must model a clean exit");
+  assert.deepEqual(signals, [], "a clean close-before-ack must not send a signal");
+  console.log("widget browser shutdown contract tests passed");
 }
 
 async function runBrowser(browser, fixturePath, temporaryDirectory, profileName) {
@@ -420,6 +463,7 @@ async function runBrowser(browser, fixturePath, temporaryDirectory, profileName)
 
 async function main() {
   await verifyCleanupRetryContract();
+  await verifyBrowserShutdownContract();
   const browser = await browserPath();
   const bundle = await build({
     entryPoints: [new URL("../src/index.ts", import.meta.url).pathname],
