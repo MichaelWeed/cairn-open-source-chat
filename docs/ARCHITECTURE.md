@@ -63,7 +63,7 @@ Three properties of this diagram carry most of the design weight:
 | Config | `backend/app/config.py` | Built |
 | Demo page | `backend/app/static/demo/` | Built. Separate static demo UI, not the embeddable widget |
 | Evaluation harness | `eval/` | Built. One committed report |
-| Embeddable widget | `widget/src/` | Built. Generic `<cairn-chat>` custom element with a shadow-DOM chat UI; `api-url` and `assistant-name` are its supported attributes |
+| Embeddable widget | `widget/src/` | Built. Generic `<cairn-chat>` custom element with atomic production configuration, first-open capability negotiation, bounded in-page history, privacy/handoff links, content-free events, CSP nonce support, themes, and responsive accessibility; see [WIDGET.md](WIDGET.md) |
 | Tool registry, escalation | — | **Not built** |
 | Guardrail middleware, adversarial suite | `backend/tests/adversarial/` | **Not built.** Directory holds `.gitkeep` |
 | Admin surfaces and authentication | — | **Not built.** Nothing to authenticate against |

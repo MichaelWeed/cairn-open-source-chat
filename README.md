@@ -12,9 +12,10 @@ its configured confidence threshold. The supported default path uses local Ollam
 models, so an operator can keep the service and its data in their own infrastructure.
 
 **Developer preview / pre-release.** Today you can run the cited local demo and
-use the generic `<cairn-chat>` custom element. It provides a shadow-DOM chat UI,
-accepts `api-url` and `assistant-name`, and streams cited answers over SSE. Human
-handoff, order-status deep links, an admin experience, the guardrail pipeline, and
+use the generic `<cairn-chat>` custom element. It provides a production-configurable
+shadow-DOM chat UI, strict capability negotiation, and cited SSE answers. An
+optional operator-owned support link is available after refusal or terminal chat
+failure; built-in ticket creation, order-status deep links, an admin experience, the guardrail pipeline, and
 any author-hosted service are planned, not available behavior. An optional Gemini
 generation adapter is available for explicit opt-in use; it is excluded from the
 local default install and does not establish production or hosted readiness.
@@ -54,6 +55,7 @@ that Cairn provides order-status integrations today.
 
 * [DEVELOPER_README.md](DEVELOPER_README.md) — full technical guide: setup, configuration, architecture, API, security, evaluation, development, and operations.
 * [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) — machine-readable capability discovery, current compatibility versions, and pre-1.0 upgrade rules.
+* [docs/WIDGET.md](docs/WIDGET.md) - production widget attributes, events, privacy, CSP, CORS, accessibility, and migration guidance.
 * [docs/CORPUS-PROVENANCE.md](docs/CORPUS-PROVENANCE.md) - versioned startup manifest and public citation contract.
 * [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/adr/](docs/adr/) — system shape, built-versus-planned boundaries, and decisions.
 * [docs/SECURITY.md](docs/SECURITY.md) and [docs/PRIVACY.md](docs/PRIVACY.md) — security status, vulnerability reporting, and data handling.

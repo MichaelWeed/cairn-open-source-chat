@@ -1,21 +1,42 @@
 import {
-  SseDecoder,
+  BoundedSseDecoder,
+  SseDecodeError,
+  CAPABILITY_DEADLINE_SECONDS,
+  CHAT_RESPONSE_MAX_BYTES,
+  CONFIGURATION_ERROR,
+  MESSAGE_MAX_CODE_POINTS,
   boundedHistory,
-  chatRequestPayload,
+  capabilityEndpoint,
+  cancelAndReleaseReader,
+  cancelUnreadBody,
   chatEndpoint,
+  chatRequestPayload,
+  codePointLength,
   completedHistory,
-  retryOnce,
+  parseWidgetConfiguration,
+  readBoundedJsonResponse,
   safeCitationUrl,
+  streamDeadlineRemaining,
+  validateCapabilityManifest,
+  validateChatEventBatch,
+  newChatAttemptState,
   type ChatStreamEvent,
+  type ChatAttemptState,
   type ChatTurn,
   type Citation,
   type DoneReason,
-  type StreamAttemptResult,
+  type WidgetConfiguration,
 } from "./protocol";
 
-export const CAIRN_WIDGET_VERSION = "0.1.0";
+export const CAIRN_WIDGET_VERSION = "0.2.0";
 
-let widgetCount = 0;
+const CAPABILITY_ERROR = "This Cairn service is not compatible with this widget.";
+const NETWORK_ERROR = "Cairn could not be reached. Please try again.";
+const PROTOCOL_ERROR = "Cairn returned an invalid response. Please try again later.";
+const SESSION_KEY = "cairn-chat-session-id";
+
+type WidgetState = "closed" | "checking" | "ready" | "sending" | "terminal";
+type ErrorKind = "configuration" | "compatibility" | "network" | "protocol" | "service";
 
 interface AssistantExchange {
   article: HTMLElement;
@@ -24,34 +45,93 @@ interface AssistantExchange {
   status: HTMLElement;
   text: string;
   finishReason: DoneReason | null;
+  citationCount: number;
 }
+
+type AttemptResult =
+  | { kind: "done"; finishReason: DoneReason; citationCount: number }
+  | { kind: "service"; message: string; retryable: boolean }
+  | { kind: "network" }
+  | { kind: "protocol" }
+  | { kind: "aborted" };
+
+interface TransportClock {
+  now: () => number;
+  setTimeout: (callback: () => void, milliseconds: number) => ReturnType<typeof setTimeout>;
+  clearTimeout: (handle: ReturnType<typeof setTimeout>) => void;
+}
+
+type DeadlineResult<T> =
+  | { kind: "value"; value: T }
+  | { kind: "timeout" }
+  | { kind: "aborted" };
+
+const browserTransportClock: TransportClock = {
+  now: () => performance.now(),
+  setTimeout: (callback, milliseconds) => setTimeout(callback, milliseconds),
+  clearTimeout: (handle) => clearTimeout(handle),
+};
+
+const nativeNonce = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "nonce");
+
+let widgetCount = 0;
 
 export class CairnChat extends HTMLElement {
   private readonly root = this.attachShadow({ mode: "open" });
   private readonly instanceId = `cairn-chat-${++widgetCount}`;
-  private controller: AbortController | null = null;
-  private history: ChatTurn[] = [];
   private initialized = false;
+  private state: WidgetState = "closed";
+  private generation = 0;
+  private configuration: Readonly<WidgetConfiguration> | null = null;
+  private compatibleBase: string | null = null;
+  private compatibilityController: AbortController | null = null;
+  private chatController: AbortController | null = null;
+  private activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  private activeAssistant: AssistantExchange | null = null;
+  private history: ChatTurn[] = [];
   private sessionId = "";
+  private reportedConfigurationGeneration = -1;
+  private currentHandoffReason: "refused" | "error" | null = null;
+  private styleElement: HTMLStyleElement | null = null;
+  private suppressNonceAttributeChange = false;
+  private transportClock: TransportClock = browserTransportClock;
   private launcher!: HTMLButtonElement;
   private panel!: HTMLElement;
   private heading!: HTMLElement;
   private closeButton!: HTMLButtonElement;
   private input!: HTMLTextAreaElement;
+  private counter!: HTMLElement;
   private sendButton!: HTMLButtonElement;
+  private clearButton!: HTMLButtonElement;
   private form!: HTMLFormElement;
   private messages!: HTMLElement;
   private emptyState!: HTMLElement;
   private error!: HTMLElement;
+  private privacyLink!: HTMLAnchorElement;
+  private handoffLink!: HTMLAnchorElement;
+
+  get nonce(): string {
+    return nativeNonce?.get?.call(this) as string | undefined ?? this.getAttribute("nonce") ?? "";
+  }
+
+  set nonce(value: string) {
+    const normalized = String(value);
+    this.suppressNonceAttributeChange = true;
+    try {
+      if (nativeNonce?.set !== undefined) nativeNonce.set.call(this, normalized);
+      else this.setAttribute("nonce", normalized);
+    } finally {
+      this.suppressNonceAttributeChange = false;
+    }
+    if (this.initialized) this.syncConfiguration(normalized);
+  }
 
   static get observedAttributes(): string[] {
-    return ["api-url", "assistant-name"];
+    return ["api-url", "assistant-name", "theme", "privacy-url", "handoff-url", "nonce"];
   }
 
   connectedCallback(): void {
-    if (this.initialized) {
-      return;
-    }
+    if (this.initialized) return;
     this.initialized = true;
     this.sessionId = getSessionId();
     this.render();
@@ -59,97 +139,60 @@ export class CairnChat extends HTMLElement {
   }
 
   disconnectedCallback(): void {
-    this.controller?.abort();
+    this.abortWork();
+    this.generation += 1;
   }
 
-  attributeChangedCallback(): void {
-    if (!this.initialized) {
+  attributeChangedCallback(name: string, _oldValue: string | null, _newValue: string | null): void {
+    if (!this.initialized || this.suppressNonceAttributeChange) return;
+    if (name !== "nonce") {
+      this.syncConfiguration();
       return;
     }
-    this.heading.textContent = this.assistantName;
-    this.syncConfiguration();
-  }
-
-  private get assistantName(): string {
-    return this.getAttribute("assistant-name")?.trim() || "Cairn";
+    // Browsers update the nonce IDL property after the reflected-attribute callback.
+    queueMicrotask(() => {
+      if (this.initialized && !this.suppressNonceAttributeChange) {
+        this.syncConfiguration(this.nonce ?? "");
+      }
+    });
   }
 
   private render(): void {
-    this.root.innerHTML = `
-      <style>
-        :host { bottom: 1.25rem; color: #1b1e1a; display: block; font-family: Inter, ui-sans-serif, system-ui, sans-serif; position: fixed; right: 1.25rem; z-index: 2147483000; }
-        *, *::before, *::after { box-sizing: border-box; }
-        button, textarea { font: inherit; }
-        button { cursor: pointer; }
-        button:focus-visible, textarea:focus-visible, a:focus-visible { outline: 3px solid #3e6b4f; outline-offset: 3px; }
-        .launcher { align-items: center; background: #3e6b4f; border: 0; border-radius: 999px; box-shadow: 0 12px 30px rgb(27 30 26 / 24%); color: #f4faf6; display: flex; font-weight: 700; gap: .5rem; min-height: 3.25rem; padding: .75rem 1rem; }
-        .launcher:hover { background: #315940; }
-        .panel { background: #fff; border: 1px solid #e2ded4; border-radius: 1rem; bottom: 4.1rem; box-shadow: 0 18px 48px rgb(27 30 26 / 23%); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: min(38rem, calc(100vh - 6.5rem)); overflow: hidden; position: absolute; right: 0; width: min(25rem, calc(100vw - 2.5rem)); }
-        .panel[hidden] { display: none; }
-        header { align-items: center; background: #eef1ec; border-bottom: 1px solid #e2ded4; display: flex; justify-content: space-between; padding: .875rem 1rem; }
-        .title { font-size: 1rem; font-weight: 750; margin: 0; }
-        .close { background: transparent; border: 0; border-radius: .375rem; color: #384238; font-size: 1.25rem; height: 2rem; line-height: 1; width: 2rem; }
-        .close:hover { background: #dce5dc; }
-        .messages { display: flex; flex-direction: column; gap: .75rem; min-height: 0; overflow-y: auto; padding: 0 1rem; }
-        .empty { color: #5e665d; font-size: .925rem; line-height: 1.5; margin: auto 0; text-align: center; }
-        article { align-self: flex-start; max-width: 92%; }
-        article:first-of-type { margin-top: 1rem; }
-        article:last-of-type { margin-bottom: 1rem; }
-        .message { border-radius: .75rem; line-height: 1.5; overflow-wrap: anywhere; padding: .7rem .8rem; white-space: pre-wrap; word-break: break-word; }
-        .user { align-self: flex-end; }
-        .user .message { background: #3e6b4f; color: #f4faf6; }
-        .assistant .message { background: #eef1ec; color: #1b1e1a; }
-        .assistant.refusal .message { background: #f8f3e8; border: 1px solid #e6d5a8; }
-        .stream-status { color: #5e665d; display: block; font-size: .8rem; margin: .4rem .15rem 0; }
-        .citations { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; }
-        .citation { background: #f7f6f2; border: 1px solid #d9d5cb; border-radius: 999px; color: #315940; display: inline-block; font-size: .78rem; max-width: 100%; overflow-wrap: anywhere; padding: .25rem .5rem; text-decoration: none; }
-        .citation:hover { background: #e7eee7; }
-        .citation.inert { color: #5e665d; }
-        form { border-top: 1px solid #e2ded4; display: grid; gap: .55rem; padding: .75rem; }
-        label { color: #4f574e; font-size: .8rem; font-weight: 650; }
-        textarea { border: 1px solid #bdb8ae; border-radius: .6rem; color: #1b1e1a; min-height: 3rem; padding: .55rem .65rem; resize: vertical; width: 100%; }
-        textarea:disabled { background: #f0eee9; cursor: not-allowed; }
-        .actions { align-items: center; display: flex; gap: .5rem; justify-content: space-between; }
-        .hint { color: #6b7268; font-size: .75rem; line-height: 1.3; }
-        .send { background: #3e6b4f; border: 0; border-radius: .5rem; color: #f4faf6; font-weight: 700; min-height: 2.35rem; padding: .45rem .75rem; }
-        .send:disabled { background: #92a392; cursor: not-allowed; }
-        .error { background: #fdecea; border-top: 1px solid #efc3bd; color: #8c211b; font-size: .84rem; line-height: 1.4; margin: 0; padding: .65rem .75rem; }
-        .error[hidden] { display: none; }
-        @media (max-width: 480px) { :host { bottom: .75rem; right: .75rem; } .panel { bottom: 4rem; height: calc(100vh - 5.25rem); width: calc(100vw - 1.5rem); } }
-        @media (prefers-color-scheme: dark) { :host { color: #eef2ec; } .panel { background: #20251f; border-color: #495045; box-shadow: 0 18px 48px rgb(0 0 0 / 45%); } header, .assistant .message { background: #2c352b; border-color: #495045; color: #eef2ec; } .close { color: #dbe7da; } .close:hover { background: #3a4739; } .empty, .stream-status, .hint { color: #b9c0b6; } textarea { background: #182018; border-color: #596355; color: #eef2ec; } textarea:disabled { background: #293028; } form { border-color: #495045; } label { color: #d2d9d0; } .citation { background: #273026; border-color: #536052; color: #9ed2a8; } .citation:hover { background: #354335; } .citation.inert { color: #c4cbc0; } .assistant.refusal .message { background: #3c3526; border-color: #827144; } .error { background: #472722; border-color: #704039; color: #ffd7d2; } }
-        @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; } }
-      </style>
-      <button class="launcher" id="launcher" type="button" aria-expanded="false" aria-controls="${this.instanceId}-panel"><span aria-hidden="true">●</span><span>Ask Cairn</span></button>
+    const markup = this.ownerDocument.createElement("template");
+    markup.innerHTML = `
+      <button class="launcher" id="launcher" type="button" aria-expanded="false" aria-controls="${this.instanceId}-panel"><span aria-hidden="true">●</span><span class="launcher-label">Ask Cairn</span></button>
       <section class="panel" id="${this.instanceId}-panel" role="dialog" aria-modal="false" aria-labelledby="${this.instanceId}-title" hidden>
         <header><p class="title" id="${this.instanceId}-title"></p><button class="close" id="close" type="button" aria-label="Close chat">×</button></header>
-        <div class="messages" id="messages" role="log" aria-live="polite" aria-relevant="additions text"><p class="empty" id="empty">Ask a question about the documents your operator has connected.</p></div>
-        <div><form id="form"><label for="${this.instanceId}-input">Message</label><textarea id="${this.instanceId}-input" maxlength="500" rows="3" placeholder="Ask a question about your docs"></textarea><div class="actions"><span class="hint">Enter to send · Shift+Enter for a new line</span><button class="send" id="send" type="submit">Send</button></div></form><p class="error" id="error" role="alert" hidden></p></div>
-      </section>
-    `;
+        <div class="messages" id="messages" role="log" aria-label="Conversation with Cairn" aria-live="polite" aria-relevant="additions text" aria-busy="false"><p class="empty" id="empty">Ask a question about the documents your operator has connected.</p></div>
+        <div class="tail"><form id="form"><label for="${this.instanceId}-input">Message</label><textarea id="${this.instanceId}-input" rows="2" aria-describedby="${this.instanceId}-counter" placeholder="Ask a question about your docs"></textarea><div class="composer-meta"><span class="hint">Enter to send · Shift+Enter for a new line</span><span class="counter" id="${this.instanceId}-counter" role="status" aria-live="polite">0 / 500</span></div><div class="actions"><button class="clear" id="clear" type="button">Clear chat</button><button class="send" id="send" type="submit">Send</button></div></form><p class="error" id="error" role="alert" hidden></p><a class="handoff" id="handoff" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" hidden>Contact support</a><footer><p class="disclosure">Messages go to this site’s Cairn service. History stays on this page, and Cairn does not store a server transcript.</p><a class="privacy" id="privacy" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" hidden>Privacy details</a></footer></div>
+      </section>`;
+    this.root.append(markup.content.cloneNode(true));
 
-    this.launcher = this.requireElement<HTMLButtonElement>("launcher");
-    this.panel = this.requireElement<HTMLElement>(`${this.instanceId}-panel`);
-    this.heading = this.requireElement<HTMLElement>(`${this.instanceId}-title`);
-    this.closeButton = this.requireElement<HTMLButtonElement>("close");
-    this.input = this.requireElement<HTMLTextAreaElement>(`${this.instanceId}-input`);
-    this.sendButton = this.requireElement<HTMLButtonElement>("send");
-    this.form = this.requireElement<HTMLFormElement>("form");
-    this.messages = this.requireElement<HTMLElement>("messages");
-    this.emptyState = this.requireElement<HTMLElement>("empty");
-    this.error = this.requireElement<HTMLElement>("error");
-    this.heading.textContent = this.assistantName;
+    this.launcher = this.requireElement("launcher");
+    this.panel = this.requireElement(`${this.instanceId}-panel`);
+    this.heading = this.requireElement(`${this.instanceId}-title`);
+    this.closeButton = this.requireElement("close");
+    this.input = this.requireElement(`${this.instanceId}-input`);
+    this.counter = this.requireElement(`${this.instanceId}-counter`);
+    this.sendButton = this.requireElement("send");
+    this.clearButton = this.requireElement("clear");
+    this.form = this.requireElement("form");
+    this.messages = this.requireElement("messages");
+    this.emptyState = this.requireElement("empty");
+    this.error = this.requireElement("error");
+    this.privacyLink = this.requireElement("privacy");
+    this.handoffLink = this.requireElement("handoff");
 
-    this.launcher.addEventListener("click", () => this.open());
-    this.closeButton.addEventListener("click", () => this.close());
+    this.launcher.addEventListener("click", () => void this.open());
+    this.closeButton.addEventListener("click", () => this.close("button"));
+    this.clearButton.addEventListener("click", () => this.clearChat());
     this.form.addEventListener("submit", (event) => {
       event.preventDefault();
       void this.send();
     });
+    this.input.addEventListener("input", () => this.updateCounter());
     this.input.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        this.close();
-      } else if (event.key === "Enter" && !event.shiftKey) {
+      if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
         this.form.requestSubmit();
       }
@@ -157,169 +200,375 @@ export class CairnChat extends HTMLElement {
     this.panel.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        this.close();
+        this.close("escape");
       }
     });
+    this.handoffLink.addEventListener("click", (event) => {
+      if (this.currentHandoffReason === null) {
+        event.preventDefault();
+        return;
+      }
+      const accepted = this.dispatchHostEvent(
+        "cairn-handoff",
+        { version: "1.0", reason: this.currentHandoffReason },
+        true,
+      );
+      if (!accepted) event.preventDefault();
+    });
+    this.updateCounter();
   }
 
-  private syncConfiguration(): void {
-    const valid = chatEndpoint(this.getAttribute("api-url")) !== null;
-    this.input.disabled = !valid;
-    this.sendButton.disabled = !valid || this.controller !== null;
-    if (!valid) {
-      this.showError("Cairn needs a valid http(s) api-url before it can answer.");
+  private syncConfiguration(nonceOverride?: string): void {
+    const priorConfiguration = this.configuration;
+    const priorBase = priorConfiguration?.apiBase ?? null;
+    const visibleNonce = this.nonce ?? "";
+    const nonceValue = (
+      nonceOverride !== undefined
+        ? nonceOverride
+        : visibleNonce !== ""
+          ? visibleNonce
+          : this.styleElement?.nonce ?? ""
+    ).trim();
+    const result = parseWidgetConfiguration((name) => this.getAttribute(name), nonceValue);
+    if (!result.ok) {
+      if (this.styleElement === null) this.updateStyleNonce("");
+      this.concealHostNonce();
+      this.configuration = null;
+      this.generation += 1;
+      this.abortWork();
+      this.compatibleBase = null;
+      this.setState(this.panel.hidden ? "closed" : "terminal");
+      this.showError(CONFIGURATION_ERROR);
+      this.hideHandoff();
       this.launcher.setAttribute("aria-label", "Cairn chat configuration error");
-    } else {
-      this.clearError();
-      this.launcher.setAttribute("aria-label", `Chat with ${this.assistantName}`);
+      if (!this.panel.hidden) this.reportConfigurationError();
+      return;
+    }
+
+    const next = result.value;
+    if (priorBase !== null && priorBase !== next.apiBase) {
+      this.generation += 1;
+      this.abortWork();
+      this.compatibleBase = null;
+    }
+    this.configuration = next;
+    this.heading.textContent = next.assistantName;
+    this.messages.setAttribute("aria-label", `Conversation with ${next.assistantName}`);
+    this.launcher.querySelector(".launcher-label")!.textContent = `Ask ${next.assistantName}`;
+    this.launcher.setAttribute("aria-label", `Chat with ${next.assistantName}`);
+    this.setAttribute("data-theme", next.theme);
+    this.updateStyleNonce(nonceValue);
+    this.concealHostNonce();
+    this.setSafeLink(this.privacyLink, next.privacyUrl);
+    if (this.currentHandoffReason !== null) this.setSafeLink(this.handoffLink, next.handoffUrl);
+    const requiresNegotiation = priorConfiguration === null || priorBase !== next.apiBase;
+    if (!requiresNegotiation) return;
+    this.clearError();
+    if (!this.panel.hidden) {
+      this.setState(this.compatibleBase === next.apiBase ? "ready" : "checking");
+      if (this.compatibleBase !== next.apiBase) void this.checkCompatibility();
     }
   }
 
-  private open(): void {
+  private async open(): Promise<void> {
+    if (!this.panel.hidden) return;
     this.panel.hidden = false;
     this.launcher.setAttribute("aria-expanded", "true");
-    queueMicrotask(() => this.input.focus());
+    this.launcher.setAttribute("aria-hidden", "true");
+    this.dispatchHostEvent("cairn-open", { version: "1.0" });
+    if (this.configuration === null) {
+      this.setState("terminal");
+      this.showError(CONFIGURATION_ERROR);
+      this.reportConfigurationError();
+      this.closeButton.focus();
+      return;
+    }
+    if (this.compatibleBase === this.configuration.apiBase) {
+      this.setState("ready");
+      queueMicrotask(() => {
+        if (!this.panel.hidden && this.state === "ready") this.input.focus();
+      });
+      return;
+    }
+    this.setState("checking");
+    this.closeButton.focus();
+    await this.checkCompatibility();
   }
 
-  private close(): void {
-    this.controller?.abort();
+  private close(reason: "button" | "escape"): void {
+    if (this.panel.hidden) return;
+    this.generation += 1;
+    this.abortWork();
     this.panel.hidden = true;
+    this.setState("closed");
     this.launcher.setAttribute("aria-expanded", "false");
-    this.launcher.focus();
+    this.launcher.removeAttribute("aria-hidden");
+    queueMicrotask(() => {
+      if (this.panel.hidden) this.launcher.focus();
+    });
+    this.dispatchHostEvent("cairn-close", { version: "1.0", reason });
+  }
+
+  private async checkCompatibility(): Promise<void> {
+    const config = this.configuration;
+    if (config === null || this.compatibilityController !== null) return;
+    const generation = this.generation;
+    const controller = new AbortController();
+    this.compatibilityController = controller;
+    const started = this.transportClock.now();
+    let response: Response;
+    try {
+      const fetchResult = await withDeadline(fetch(capabilityEndpoint(config.apiBase), {
+        method: "GET",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+        signal: controller.signal,
+      }), CAPABILITY_DEADLINE_SECONDS * 1_000, this.transportClock, controller.signal);
+      if (fetchResult.kind === "timeout") {
+        controller.abort();
+        if (this.isCurrent(generation, config.apiBase)) this.compatibilityFailure("network");
+        if (this.compatibilityController === controller) this.compatibilityController = null;
+        return;
+      }
+      if (fetchResult.kind === "aborted") {
+        if (this.compatibilityController === controller) this.compatibilityController = null;
+        return;
+      }
+      response = fetchResult.value;
+    } catch {
+      if (this.isCurrent(generation, config.apiBase)) this.compatibilityFailure("network");
+      if (this.compatibilityController === controller) this.compatibilityController = null;
+      return;
+    }
+    try {
+      if (!this.isCurrent(generation, config.apiBase)) {
+        cancelUnreadBody(response.body);
+        return;
+      }
+      const manifest = await readBoundedJsonResponse(response, undefined, async (reader) => {
+        const remaining = CAPABILITY_DEADLINE_SECONDS * 1_000 -
+          (this.transportClock.now() - started);
+        const readResult = await withDeadline(
+          reader.read(), remaining, this.transportClock, controller.signal,
+        );
+        if (readResult.kind === "value") return readResult.value;
+        if (readResult.kind === "timeout") controller.abort();
+        return null;
+      });
+      if (!this.isCurrent(generation, config.apiBase) || controller.signal.aborted) return;
+      if (!validateCapabilityManifest(manifest)) {
+        this.compatibilityFailure("compatibility");
+        return;
+      }
+      this.compatibleBase = config.apiBase;
+      this.clearError();
+      this.setState("ready");
+      if (!this.panel.hidden && this.root.activeElement === this.closeButton) this.input.focus();
+    } catch {
+      if (!this.isCurrent(generation, config.apiBase)) return;
+      this.compatibilityFailure(controller.signal.aborted ? "network" : "compatibility");
+    } finally {
+      if (this.compatibilityController === controller) this.compatibilityController = null;
+    }
+  }
+
+  private compatibilityFailure(kind: "compatibility" | "network"): void {
+    this.compatibleBase = null;
+    this.setState("terminal");
+    this.showError(kind === "compatibility" ? CAPABILITY_ERROR : NETWORK_ERROR);
+    this.dispatchHostEvent("cairn-error", { version: "1.0", kind, retryable: kind === "network" });
   }
 
   private async send(): Promise<void> {
-    if (this.controller !== null) {
-      return;
-    }
-    const endpoint = chatEndpoint(this.getAttribute("api-url"));
-    if (endpoint === null) {
-      this.syncConfiguration();
-      return;
-    }
+    const config = this.configuration;
+    if (
+      config === null ||
+      this.compatibleBase !== config.apiBase ||
+      this.chatController !== null ||
+      (this.state !== "ready" && this.state !== "terminal")
+    ) return;
     const message = this.input.value.trim();
-    if (message === "") {
+    const messageLength = codePointLength(message);
+    if (message === "" || messageLength > MESSAGE_MAX_CODE_POINTS) {
+      this.updateCounter();
+      if (messageLength > MESSAGE_MAX_CODE_POINTS) this.showError("Messages must be 500 characters or fewer.");
       return;
     }
 
+    const history = boundedHistory(this.history);
+    const payload = chatRequestPayload(this.sessionId, message, history);
+    const endpoint = chatEndpoint(config.apiBase);
+    if (endpoint === null) return;
+    const generation = this.generation;
+    const controller = new AbortController();
+    this.chatController = controller;
     this.clearError();
+    this.hideHandoff();
     this.appendMessage(message);
     this.input.value = "";
+    this.updateCounter();
     const assistant = this.appendAssistant();
-    const controller = new AbortController();
-    this.controller = controller;
-    this.input.disabled = true;
-    this.sendButton.disabled = true;
+    this.activeAssistant = assistant;
+    this.setState("sending");
 
     try {
-      const history = boundedHistory(this.history);
-      const result = await retryOnce(
-        () => this.streamAttempt(endpoint, message, history, controller, assistant),
-        () => this.resetAssistant(assistant),
-      );
-      if (result.kind === "done" && assistant.finishReason !== null) {
-        this.history = completedHistory(
-          this.history,
-          message,
-          assistant.text,
-          assistant.finishReason,
-        );
-      } else if (result.kind === "error") {
-        this.failExchange(assistant, result.message);
+      const isCurrent = () => this.isCurrent(generation, config.apiBase) && !controller.signal.aborted;
+      let result = await this.streamAttempt(endpoint, payload, controller, assistant, isCurrent);
+      if (result.kind === "service" && result.retryable && this.isCurrent(generation, config.apiBase)) {
+        this.resetAssistant(assistant);
+        result = await this.streamAttempt(endpoint, payload, controller, assistant, isCurrent);
+      }
+      if (!this.isCurrent(generation, config.apiBase)) return;
+      if (result.kind === "done") {
+        this.history = completedHistory(this.history, message, assistant.text, result.finishReason);
+        this.setState("terminal");
+        if (result.finishReason === "refused") this.showHandoff("refused");
+        this.dispatchHostEvent("cairn-complete", { version: "1.0", finishReason: result.finishReason, citationCount: result.citationCount });
+      } else if (result.kind !== "aborted") {
+        const kind: ErrorKind = result.kind === "service" ? "service" : result.kind;
+        const messageText = result.kind === "service" ? result.message : result.kind === "network" ? NETWORK_ERROR : PROTOCOL_ERROR;
+        this.failExchange(assistant, messageText);
+        this.setState("terminal");
+        this.showHandoff("error");
+        this.dispatchHostEvent("cairn-error", { version: "1.0", kind, retryable: result.kind === "service" ? result.retryable : result.kind === "network" });
       }
     } finally {
-      if (this.controller === controller) {
-        this.controller = null;
-        this.input.disabled = false;
-        this.sendButton.disabled = false;
-      }
+      if (this.chatController === controller) this.chatController = null;
+      if (this.activeAssistant === assistant) this.activeAssistant = null;
+      if ((this.state as WidgetState) === "sending") this.setState("ready");
     }
   }
 
   private async streamAttempt(
     endpoint: string,
-    message: string,
-    history: ChatTurn[],
+    payload: ReturnType<typeof chatRequestPayload>,
     controller: AbortController,
     assistant: AssistantExchange,
-  ): Promise<StreamAttemptResult<void>> {
+    isCurrent: () => boolean = () => !controller.signal.aborted,
+  ): Promise<AttemptResult> {
+    const started = this.transportClock.now();
+    let lastCompleteRecord = started;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
     try {
-      const response = await fetch(endpoint, {
+      const fetchResult = await withDeadline(fetch(endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(chatRequestPayload(this.sessionId, message, history)),
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+        body: JSON.stringify(payload),
         signal: controller.signal,
-      });
-      if (!response.ok || response.body === null) {
-        throw new Error("The chat service did not return a response.");
+      }), streamDeadlineRemaining(
+        started, lastCompleteRecord, this.transportClock.now(),
+      ), this.transportClock, controller.signal);
+      if (fetchResult.kind === "timeout") {
+        controller.abort();
+        return { kind: "protocol" };
       }
-
-      const decoder = new SseDecoder();
-      const textDecoder = new TextDecoder();
-      const reader = response.body.getReader();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          break;
-        }
-        const error = this.handleEvents(decoder.push(textDecoder.decode(value, { stream: true })), assistant);
-        if (error !== null) {
-          return error;
-        }
-      }
-      for (const events of [decoder.push(textDecoder.decode()), decoder.finish()]) {
-        const error = this.handleEvents(events, assistant);
-        if (error !== null) {
-          return error;
-        }
-      }
-      if (assistant.article.dataset.complete === "true") {
-        return { kind: "done", value: undefined };
-      }
-      return {
-        kind: "error",
-        message: "The connection was interrupted before Cairn could finish. Please try again.",
-        retryable: false,
-      };
-    } catch (error) {
-      if (controller.signal.aborted) {
+      if (fetchResult.kind === "aborted") return { kind: "aborted" };
+      const response = fetchResult.value;
+      if (!isCurrent()) {
+        cancelUnreadBody(response.body);
         return { kind: "aborted" };
       }
-      return { kind: "error", message: userSafeError(error), retryable: false };
+      const declaredLength = response.headers.get("content-length");
+      if (!response.ok) {
+        cancelUnreadBody(response.body);
+        return { kind: "network" };
+      }
+      if (response.body === null) return { kind: "network" };
+      if (declaredLength !== null) {
+        const length = Number(declaredLength);
+        if (!Number.isSafeInteger(length) || length < 0 || length > CHAT_RESPONSE_MAX_BYTES) {
+          cancelUnreadBody(response.body);
+          return { kind: "protocol" };
+        }
+      }
+
+      reader = response.body.getReader();
+      this.activeReader = reader;
+      const decoder = new BoundedSseDecoder();
+      const streamState = newChatAttemptState();
+      for (;;) {
+        const now = this.transportClock.now();
+        const remaining = streamDeadlineRemaining(started, lastCompleteRecord, now);
+        if (remaining <= 0) {
+          controller.abort();
+          return { kind: "protocol" };
+        }
+        const readResult = await withDeadline(
+          reader.read(), remaining, this.transportClock, controller.signal,
+        );
+        if (readResult.kind === "timeout") {
+          controller.abort();
+          return { kind: "protocol" };
+        }
+        if (readResult.kind === "aborted" || !isCurrent()) return { kind: "aborted" };
+        const read = readResult.value;
+        if (read.done) {
+          decoder.finish();
+          if (streamDeadlineRemaining(
+            started, lastCompleteRecord, this.transportClock.now(),
+          ) <= 0) {
+            controller.abort();
+            return { kind: "protocol" };
+          }
+          return streamState.terminal ? this.completedResult(assistant, streamState) : { kind: "protocol" };
+        }
+        const events = decoder.push(read.value);
+        if (!isCurrent()) return { kind: "aborted" };
+        if (decoder.validRecordsCompleted > 0) {
+          lastCompleteRecord = this.transportClock.now();
+        }
+        if (!validateChatEventBatch(events, streamState)) return { kind: "protocol" };
+        for (const event of events) {
+          if (!isCurrent()) return { kind: "aborted" };
+          if (streamDeadlineRemaining(
+            started, lastCompleteRecord, this.transportClock.now(),
+          ) <= 0) {
+            controller.abort();
+            return { kind: "protocol" };
+          }
+          if (event.type === "ping") continue;
+          const result = this.applyEvent(event, assistant);
+          if (result !== null) return result;
+        }
+      }
+    } catch (error) {
+      if (controller.signal.aborted) return { kind: "aborted" };
+      return error instanceof SseDecodeError ? { kind: "protocol" } : { kind: "network" };
+    } finally {
+      if (reader !== null) {
+        cancelAndReleaseReader(reader);
+      }
+      if (this.activeReader === reader) this.activeReader = null;
     }
   }
 
-  private handleEvents(
-    events: ChatStreamEvent[],
-    assistant: AssistantExchange,
-  ): Extract<StreamAttemptResult<void>, { kind: "error" }> | null {
-    for (const event of events) {
-      if (event.type === "status") {
-        assistant.status.textContent = event.label;
-      } else if (event.type === "chunk") {
-        assistant.text += event.delta;
-        assistant.content.textContent = assistant.text;
-      } else if (event.type === "citations") {
-        this.appendCitations(assistant.citations, event.sources);
-      } else if (event.type === "error") {
-        this.failExchange(assistant, event.message);
-        return { kind: "error", message: event.message, retryable: event.retryable };
-      } else if (event.type === "done") {
-        assistant.finishReason = event.finishReason;
-        assistant.article.dataset.complete = "true";
-        assistant.status.textContent =
-          event.finishReason === "refused"
-            ? "Cairn could not find a confident answer."
-            : event.finishReason === "limit"
-              ? "Answer reached its length limit."
-              : event.finishReason === "cancelled"
-                ? "Answer cancelled."
-                : "Answer complete";
-        if (event.finishReason === "refused") {
-          assistant.article.classList.add("refusal");
-        }
-      }
+  private completedResult(assistant: AssistantExchange, state: ChatAttemptState): AttemptResult {
+    if (assistant.finishReason === null) return { kind: "protocol" };
+    return { kind: "done", finishReason: assistant.finishReason, citationCount: state.citationCount };
+  }
+
+  private applyEvent(event: ChatStreamEvent, assistant: AssistantExchange): AttemptResult | null {
+    if (event.type === "status") assistant.status.textContent = event.label;
+    else if (event.type === "chunk") {
+      assistant.text += event.delta;
+      assistant.content.textContent = assistant.text;
+    } else if (event.type === "citations") {
+      assistant.citationCount = event.sources.length;
+      this.appendCitations(assistant.citations, event.sources);
+    } else if (event.type === "error") return { kind: "service", message: event.message, retryable: event.retryable };
+    else if (event.type === "done") {
+      assistant.finishReason = event.finishReason;
+      assistant.article.dataset.complete = "true";
+      assistant.status.textContent = event.finishReason === "refused" ? "Cairn could not find a confident answer." : event.finishReason === "limit" ? "Answer reached its length limit." : event.finishReason === "cancelled" ? "Answer cancelled." : "Answer complete";
+      if (event.finishReason === "refused") assistant.article.classList.add("refusal");
+      return { kind: "done", finishReason: event.finishReason, citationCount: assistant.citationCount };
     }
+    this.scrollMessages();
     return null;
   }
 
@@ -349,7 +598,7 @@ export class CairnChat extends HTMLElement {
     article.append(content, citations, status);
     this.messages.append(article);
     this.scrollMessages();
-    return { article, content, citations, status, text: "", finishReason: null };
+    return { article, content, citations, status, text: "", finishReason: null, citationCount: 0 };
   }
 
   private appendCitations(container: HTMLElement, sources: Citation[]): void {
@@ -366,19 +615,17 @@ export class CairnChat extends HTMLElement {
         link.href = target;
         link.target = "_blank";
         link.rel = "noopener noreferrer";
+        link.referrerPolicy = "no-referrer";
         link.textContent = source.title;
         container.append(link);
       }
     }
-    this.scrollMessages();
   }
 
   private failExchange(assistant: AssistantExchange, message: string): void {
     assistant.article.classList.add("failed");
     assistant.status.textContent = "Answer unavailable";
-    if (assistant.text === "") {
-      assistant.content.textContent = "Cairn could not complete that answer.";
-    }
+    if (assistant.text === "") assistant.content.textContent = "Cairn could not complete that answer.";
     this.showError(message);
     this.scrollMessages();
   }
@@ -391,11 +638,62 @@ export class CairnChat extends HTMLElement {
     assistant.status.textContent = "Retrying Cairn…";
     assistant.text = "";
     assistant.finishReason = null;
+    assistant.citationCount = 0;
     this.clearError();
-    this.scrollMessages();
+  }
+
+  private clearChat(): void {
+    this.generation += 1;
+    this.abortWork();
+    this.history = [];
+    this.messages.querySelectorAll("article").forEach((article) => article.remove());
+    this.emptyState.hidden = false;
+    this.clearError();
+    this.hideHandoff();
+    this.sessionId = rotateSessionId();
+    this.setState(this.panel.hidden ? "closed" : this.compatibleBase !== null ? "ready" : "checking");
+    this.dispatchHostEvent("cairn-clear", { version: "1.0" });
+    if (!this.panel.hidden && this.state === "ready") this.input.focus();
+    else if (!this.panel.hidden) {
+      this.closeButton.focus();
+      void this.checkCompatibility();
+    } else this.launcher.focus();
+  }
+
+  private abortWork(): void {
+    this.compatibilityController?.abort();
+    this.chatController?.abort();
+    if (this.activeAssistant !== null && this.activeAssistant.finishReason === null) {
+      this.activeAssistant.status.textContent = "Answer cancelled.";
+    }
+    this.compatibilityController = null;
+    this.chatController = null;
+    const reader = this.activeReader;
+    this.activeReader = null;
+    if (reader !== null) cancelAndReleaseReader(reader);
+    if (this.initialized) this.messages.setAttribute("aria-busy", "false");
+  }
+
+  private setState(state: WidgetState): void {
+    this.state = state;
+    const compatible = this.configuration !== null && this.compatibleBase === this.configuration.apiBase;
+    const sending = state === "sending";
+    this.input.disabled = !compatible || sending;
+    this.sendButton.disabled = !compatible || sending;
+    this.clearButton.disabled = false;
+    this.messages.setAttribute("aria-busy", String(sending));
+    if (state === "checking") this.emptyState.textContent = "Checking service compatibility…";
+    else if (this.history.length === 0 && this.messages.querySelector("article") === null) this.emptyState.textContent = "Ask a question about the documents your operator has connected.";
+  }
+
+  private updateCounter(): void {
+    const count = codePointLength(this.input.value);
+    this.counter.textContent = `${count} / ${MESSAGE_MAX_CODE_POINTS}`;
+    this.input.setAttribute("aria-invalid", String(count > MESSAGE_MAX_CODE_POINTS));
   }
 
   private showError(message: string): void {
+    this.error.textContent = "";
     this.error.textContent = message;
     this.error.hidden = false;
   }
@@ -405,41 +703,182 @@ export class CairnChat extends HTMLElement {
     this.error.hidden = true;
   }
 
+  private showHandoff(reason: "refused" | "error"): void {
+    const target = this.configuration?.handoffUrl ?? null;
+    if (target === null) return;
+    this.currentHandoffReason = reason;
+    this.setSafeLink(this.handoffLink, target);
+  }
+
+  private hideHandoff(): void {
+    this.currentHandoffReason = null;
+    this.setSafeLink(this.handoffLink, null);
+  }
+
+  private setSafeLink(link: HTMLAnchorElement, target: string | null): void {
+    if (target === null) {
+      link.hidden = true;
+      link.removeAttribute("href");
+    } else {
+      link.href = target;
+      link.hidden = false;
+    }
+  }
+
+  private updateStyleNonce(nonce: string): void {
+    const style = this.ownerDocument.createElement("style");
+    if (nonce !== "") style.nonce = nonce;
+    style.textContent = WIDGET_CSS;
+    if (this.styleElement === null) this.root.prepend(style);
+    else this.styleElement.replaceWith(style);
+    this.styleElement = style;
+  }
+
+  private concealHostNonce(): void {
+    if (!this.hasAttribute("nonce") || this.getAttribute("nonce") === "") return;
+    this.suppressNonceAttributeChange = true;
+    try {
+      this.setAttribute("nonce", "");
+    } finally {
+      this.suppressNonceAttributeChange = false;
+    }
+  }
+
+  private reportConfigurationError(): void {
+    if (this.reportedConfigurationGeneration === this.generation) return;
+    this.reportedConfigurationGeneration = this.generation;
+    this.dispatchHostEvent("cairn-error", { version: "1.0", kind: "configuration", retryable: false });
+  }
+
+  private dispatchHostEvent(name: string, detail: object, cancelable = false): boolean {
+    return this.dispatchEvent(new CustomEvent(name, { detail, bubbles: true, composed: true, cancelable }));
+  }
+
+  private isCurrent(generation: number, apiBase: string): boolean {
+    return this.isConnected && this.generation === generation && this.configuration?.apiBase === apiBase;
+  }
+
   private scrollMessages(): void {
     this.messages.scrollTop = this.messages.scrollHeight;
   }
 
   private requireElement<T extends Element>(id: string): T {
     const element = this.root.getElementById(id);
-    if (element === null) {
-      throw new Error(`Widget template is missing ${id}.`);
-    }
+    if (element === null) throw new Error(`Widget template is missing ${id}.`);
     return element as unknown as T;
   }
 }
 
+function withDeadline<T>(
+  promise: Promise<T>,
+  milliseconds: number,
+  clock: TransportClock,
+  signal: AbortSignal,
+): Promise<DeadlineResult<T>> {
+  if (signal.aborted) return Promise.resolve({ kind: "aborted" });
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const settle = (result: DeadlineResult<T>): void => {
+      if (settled) return;
+      settled = true;
+      clock.clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      resolve(result);
+    };
+    const onAbort = (): void => settle({ kind: "aborted" });
+    const timer = clock.setTimeout(
+      () => settle({ kind: "timeout" }), Math.max(0, milliseconds),
+    );
+    signal.addEventListener("abort", onAbort, { once: true });
+    void promise.then(
+      (value) => settle({ kind: "value", value }),
+      (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        clock.clearTimeout(timer);
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 function getSessionId(): string {
-  const key = "cairn-chat-session-id";
   try {
-    const existing = sessionStorage.getItem(key);
-    if (existing !== null && existing !== "") {
-      return existing;
-    }
-    const id = crypto.randomUUID();
-    sessionStorage.setItem(key, id);
-    return id;
+    const existing = sessionStorage.getItem(SESSION_KEY);
+    if (existing !== null && existing !== "") return existing;
+    return rotateSessionId();
   } catch {
     return crypto.randomUUID();
   }
 }
 
-function userSafeError(error: unknown): string {
-  if (error instanceof Error && error.message === "The chat response ended before it was complete.") {
-    return "The connection was interrupted before Cairn could finish. Please try again.";
+function rotateSessionId(): string {
+  const id = crypto.randomUUID();
+  try {
+    sessionStorage.removeItem(SESSION_KEY);
+    sessionStorage.setItem(SESSION_KEY, id);
+  } catch {
+    return id;
   }
-  return "Cairn could not complete that answer. Please try again.";
+  return id;
 }
 
-if (!customElements.get("cairn-chat")) {
-  customElements.define("cairn-chat", CairnChat);
-}
+const WIDGET_CSS = `
+  :host { --cairn-bg: #ffffff; --cairn-surface: #eef1ec; --cairn-text: #1b1e1a; --cairn-muted: #515b50; --cairn-border: #d4d8cf; --cairn-accent: #315940; --cairn-accent-text: #f4faf6; bottom: max(1.25rem, env(safe-area-inset-bottom, 0px)); color: var(--cairn-text); display: block; font-family: Inter, ui-sans-serif, system-ui, sans-serif; max-width: calc(100vw - 2.5rem - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)); position: fixed; right: max(1.25rem, env(safe-area-inset-right, 0px)); z-index: 2147483000; }
+  :host([data-theme="dark"]) { --cairn-bg: #20251f; --cairn-surface: #2c352b; --cairn-text: #eef2ec; --cairn-muted: #c2c9bf; --cairn-border: #596355; --cairn-accent: #9ed2a8; --cairn-accent-text: #142018; }
+  *, *::before, *::after { box-sizing: border-box; }
+  button, textarea { font: inherit; }
+  button, a { min-height: 44px; min-width: 44px; }
+  button { cursor: pointer; }
+  button:active { transform: translateY(1px); }
+  button:focus-visible, textarea:focus-visible, a:focus-visible { outline: 3px solid var(--cairn-accent); outline-offset: 2px; }
+  .launcher { align-items: center; background: var(--cairn-accent); border: 0; border-radius: 999px; box-shadow: 0 12px 30px rgb(27 30 26 / 24%); color: var(--cairn-accent-text); display: flex; font-weight: 700; gap: .5rem; max-width: 100%; min-height: 52px; padding: .75rem 1rem; }
+  .launcher[aria-expanded="true"] { opacity: 0; pointer-events: none; }
+  .launcher-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .launcher:hover, .send:hover { filter: brightness(.9); }
+  .panel { background: var(--cairn-bg); border: 1px solid var(--cairn-border); border-radius: 1rem; bottom: calc(4.1rem + env(safe-area-inset-bottom, 0px)); box-shadow: 0 18px 48px rgb(27 30 26 / 23%); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: min(38rem, calc(100vh - 6.5rem - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px))); height: min(38rem, calc(100dvh - 6.5rem - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px))); max-width: calc(100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)); overflow: hidden; position: absolute; right: 0; width: min(25rem, calc(100vw - 2.5rem - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px))); }
+  .panel[hidden], [hidden] { display: none !important; }
+  header { align-items: center; background: var(--cairn-surface); border-bottom: 1px solid var(--cairn-border); display: flex; justify-content: space-between; padding: .55rem .75rem; }
+  .title { font-size: 1rem; font-weight: 750; margin: 0; overflow-wrap: anywhere; }
+  .close { background: transparent; border: 0; border-radius: .375rem; color: var(--cairn-text); font-size: 1.25rem; height: 44px; line-height: 1; width: 44px; }
+  .close:hover, .clear:hover { background: var(--cairn-surface); }
+  .messages { display: flex; flex-direction: column; gap: .75rem; min-height: 0; overflow-y: auto; padding: 0 1rem; }
+  .empty { color: var(--cairn-muted); font-size: .925rem; line-height: 1.5; margin: auto 0; text-align: center; }
+  article { align-self: flex-start; max-width: 92%; }
+  article:first-of-type { margin-top: 1rem; }
+  article:last-of-type { margin-bottom: 1rem; }
+  .message { border-radius: .75rem; line-height: 1.5; overflow-wrap: anywhere; padding: .7rem .8rem; white-space: pre-wrap; word-break: break-word; }
+  .user { align-self: flex-end; }
+  .user .message { background: #315940; color: #f4faf6; }
+  .assistant .message { background: var(--cairn-surface); color: var(--cairn-text); }
+  .assistant.refusal .message { background: #f8f3e8; border: 1px solid #9a7b2f; color: #2e2719; }
+  :host([data-theme="dark"]) .assistant.refusal .message { background: #3c3526; border-color: #a99557; color: #fff7df; }
+  .stream-status { color: var(--cairn-muted); display: block; font-size: .8rem; margin: .4rem .15rem 0; }
+  .citations { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; }
+  .citation { align-items: center; background: var(--cairn-bg); border: 1px solid var(--cairn-border); border-radius: .5rem; color: var(--cairn-accent); display: inline-flex; font-size: .78rem; max-width: 100%; overflow-wrap: anywhere; padding: .4rem .55rem; text-decoration: none; }
+  .citation:hover { background: var(--cairn-surface); }
+  .citation.inert { color: var(--cairn-muted); min-height: auto; min-width: auto; }
+  .tail { background: var(--cairn-bg); border-top: 1px solid var(--cairn-border); max-height: 21rem; min-height: 0; overflow-y: auto; }
+  form { display: grid; gap: .4rem; padding: .55rem .75rem .45rem; }
+  label { color: var(--cairn-text); font-size: .8rem; font-weight: 650; }
+  textarea { background: var(--cairn-bg); border: 1px solid #737c70; border-radius: .6rem; color: var(--cairn-text); min-height: 48px; padding: .5rem .6rem; resize: vertical; width: 100%; }
+  textarea:disabled { background: var(--cairn-surface); cursor: not-allowed; }
+  .composer-meta, .actions { align-items: center; display: flex; gap: .5rem; justify-content: space-between; }
+  .hint, .counter { color: var(--cairn-muted); font-size: .75rem; line-height: 1.3; }
+  .send { background: var(--cairn-accent); border: 0; border-radius: .5rem; color: var(--cairn-accent-text); font-weight: 700; min-height: 44px; padding: .45rem .85rem; }
+  .send:disabled, .clear:disabled { cursor: not-allowed; opacity: .58; }
+  .clear { background: transparent; border: 1px solid var(--cairn-border); border-radius: .5rem; color: var(--cairn-text); padding: .4rem .65rem; }
+  .error { background: #fdecea; border-block: 1px solid #d98c83; color: #751c17; font-size: .84rem; line-height: 1.4; margin: 0; padding: .55rem .75rem; }
+  :host([data-theme="dark"]) .error { background: #472722; border-color: #a7665d; color: #ffd7d2; }
+  .handoff { align-items: center; background: var(--cairn-accent); color: var(--cairn-accent-text); display: flex; font-weight: 700; justify-content: center; margin: .5rem .75rem; padding: .55rem .75rem; text-decoration: none; }
+  footer { align-items: center; display: flex; gap: .5rem; justify-content: space-between; padding: .4rem .75rem .55rem; }
+  .disclosure { color: var(--cairn-muted); font-size: .69rem; line-height: 1.35; margin: 0; max-width: 18rem; }
+  .privacy { align-items: center; color: var(--cairn-accent); display: inline-flex; font-size: .75rem; padding: .25rem; text-align: center; }
+  @media (max-width: 480px) { :host { bottom: max(.75rem, env(safe-area-inset-bottom, 0px)); right: max(.75rem, env(safe-area-inset-right, 0px)); } .panel { bottom: calc(4rem + env(safe-area-inset-bottom, 0px)); height: calc(100vh - 5.5rem - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)); height: calc(100dvh - 5.5rem - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)); width: calc(100vw - 1.5rem - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)); } .hint { max-width: 12rem; } }
+  @media (prefers-color-scheme: dark) { :host([data-theme="auto"]) { --cairn-bg: #20251f; --cairn-surface: #2c352b; --cairn-text: #eef2ec; --cairn-muted: #c2c9bf; --cairn-border: #596355; --cairn-accent: #9ed2a8; --cairn-accent-text: #142018; } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; } }
+  @media (forced-colors: active) { .launcher, .send, .clear, .close, textarea, a, .panel, .message, .error { border: 1px solid CanvasText; forced-color-adjust: auto; } button:focus-visible, textarea:focus-visible, a:focus-visible { outline-color: Highlight; } }
+`;
+
+if (!customElements.get("cairn-chat")) customElements.define("cairn-chat", CairnChat);

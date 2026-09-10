@@ -19,6 +19,13 @@ this stage.
   `Origin` header before any chat request is processed; FastAPI's `CORSMiddleware` enforces the
   same list for browser preflight/response headers. Requests with no `Origin` header (non-browser
   clients) aren't blocked by this check — it's a browser-embedding control, not authentication.
+* **Production widget boundary.** The packaged widget validates one atomic
+  configuration, negotiates exact static capabilities before chat, omits
+  credentials and referrers, bounds hostile capability/SSE responses, keeps host
+  events content-free, reparses safe links, and supports strict per-response CSP
+  nonces without `unsafe-inline`. See [WIDGET.md](WIDGET.md). This does not supply
+  authentication, signed widget tokens, deployment-wide budgets, TLS, or provider
+  readiness.
 * **Rate limiting.** Per-IP and per-session token buckets (`app/ratelimit.py`), checked before any
   provider call. In-memory and single-process — see DEVELOPER_README.md §9 "Concurrency, one
   instance" for the exact scope of that (multiple replicas each enforce their own limit

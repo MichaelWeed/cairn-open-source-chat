@@ -8,6 +8,8 @@ the durable design authorities, while [docs/PUBLIC-AVAILABILITY.md](docs/PUBLIC-
 records the delivered public-availability outcome and open tracking decision D4.
 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) records the exact packaged capability
 manifest, compatibility versions, and pre-1.0 upgrade rules.
+[docs/WIDGET.md](docs/WIDGET.md) is the canonical production widget configuration,
+event, privacy, CSP, CORS, accessibility, and migration guide.
 
 ---
 
@@ -36,8 +38,10 @@ The built developer-preview slice is the FastAPI chat endpoint, a local SQLite f
 vector index and SQLite metadata state, in-process Markdown/PDF ingestion, Ollama,
 optional Gemini, and echo providers, retrieval/refusal/citations, an optional
 development-only Firestore retrieval adapter, the `/demo` page, and the generic
-`<cairn-chat>` custom element with a shadow-DOM chat UI and `api-url` and
-`assistant-name` attributes. The admin surface, hosted operations, tools, and
+`<cairn-chat>` custom element with a production-configurable shadow-DOM chat UI,
+first-open capability negotiation, bounded page-lifetime history, safe optional
+privacy/handoff links, themes, and content-free host events. The admin surface,
+hosted operations, tools, and
 guardrail pipeline are planned.
 
 `GET /api/v1/capabilities` returns the static packaged capability manifest. Use it
@@ -118,6 +122,9 @@ engine, resolved corpus, origin allowlist, Cairn URL, exact two-line generic emb
 and `make live-down`. The stack runs detached; `make live-down` stops it without
 deleting the named application or model volumes. A page served from any other
 origin must be added to `ORIGIN_ALLOWLIST` before its widget can call Cairn.
+See [Production widget configuration](docs/WIDGET.md) for the exact six attributes,
+event details, nonce policy, 0.2.0 compatibility check, clear behavior, and the
+distinction between the packaged configuration boundary and deployment readiness.
 
 ### Container plumbing smoke test
 
