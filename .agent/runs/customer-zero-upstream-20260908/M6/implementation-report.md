@@ -6,6 +6,10 @@ READY_FOR_REVIEW
 
 - Base: `d65d86c46d8c0e0096c61893a28afb62673ade27`
 - Implementation commit: `90ac01e7e304111d3dfae9a61f7ce273cef3fd59`
+- Mainline integrated: `0cfe87fc10997f6f28cf009b7101ede58f6eeb22`
+- Normal merge commit: `c3a5671940a5a3bb4d0de2313a720754da828517`
+- Readiness repair commit: `fc2a6661a695fdf3529a6d7d8a93a165a9fe1c8e`
+- Privacy/offline-guard repair commit: `fa170863e6330d04dd85edea3de524a7fb6de239`
 - Branch: `mara/KAN-47b-firestore-retrieval`
 - Push: not performed
 
@@ -93,6 +97,49 @@ Per control-lane instruction, `make firestore-image-check`, `make
 gemini-image-check`, `make image-scan`, and full `make validate` were not run in this
 lane. Their Makefile definitions and image/SBOM inputs are prepared for the shared
 review gate.
+
+## Current-main integration and readiness repair
+
+The M4 provider usage/accounting mainline was integrated through a normal two-parent
+merge. The one privacy-document conflict was resolved cumulatively. Automatic code
+merges were reviewed semantically: retrieval refusal returns before provider stream
+construction and accounting; grounded generation filters internal usage records;
+the absolute public ping deadline, cancellation cleanup, and frozen SSE payloads are
+preserved; and capability schema 1.1 contains both development-only hosted durable
+retrieval and available provider usage/cost accounting.
+
+Independent review then identified that `FirestoreSdkVectorClient.readiness_get`
+fell through after a successful SDK read. The added negative control produced three
+failures at the success fallthrough assertion for empty, nonempty, and deliberately
+malformed completed results. The repair returns immediately after any completed
+bounded limit-1 read and continues to normalize transport failures content-free.
+Wrapper tests also prove exact projection, limit, timeout, `retry=None`, cleanup,
+and absence of raw error cause/context.
+
+Post-repair integration evidence, all status 0:
+
+- focused config/retrieval/chat/provider/accounting/capability suite with Gemini and
+  Firestore extras: `466 passed`, one pre-existing Starlette warning;
+- Ruff: `All checks passed!`;
+- mypy: `Success: no issues found in 32 source files`;
+- default, Firestore-only, Gemini-only, and combined locked profile syncs;
+- `uv lock --check`, followed by restoration of the default environment.
+
+The final privacy repair replaces raw Settings validation failures with a
+`ValidationError`-compatible, content-free representation. Direct construction,
+all three `model_validate` entry points, and all three equivalent `TypeAdapter`
+entry points now detach rejected input, context, cause, and provider identifiers.
+Per-call `extra=allow`, `ignore`, and `forbid` cannot retain unknown content and
+preserve the Settings contract's ignore behavior. The adversarial matrix covers 24
+surface/override combinations plus direct construction; all 49 privacy and valid
+path cases pass.
+
+The shared and Firestore-specific no-external fixtures now have direct proof that
+their Gemini, Ollama, production Firestore factory, socket, DNS, and optional ADC
+denials execute. The cumulative final focused suite reports `569 passed` with one
+pre-existing Starlette warning. Ruff reports `All checks passed!`, mypy reports
+`Success: no issues found in 32 source files`, all four locked profiles sync, and
+`uv lock --check` passes before the default environment is restored.
 
 ## Self-review
 
