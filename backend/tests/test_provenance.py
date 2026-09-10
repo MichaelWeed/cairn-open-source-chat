@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from app.config import Settings
 from app.db import bootstrap
 from app.ingest.pipeline import ingest_upload
+from app.ingest.provenance import parse_provenance_manifest
 from app.ingest.startup import CorpusStartupError, ingest_corpus
 from app.main import create_app
 from app.providers.echo import EchoProvider
@@ -52,6 +53,21 @@ def _entry(content: bytes, **overrides: object) -> dict[str, object]:
 def _write_manifest(corpus: Path, documents: dict[str, dict[str, object]]) -> None:
     (corpus / "provenance.json").write_text(
         json.dumps({"version": 1, "documents": documents}), encoding="utf-8"
+    )
+
+
+def test_pure_manifest_parser_matches_the_filesystem_wrapper(tmp_path: Path) -> None:
+    from app.ingest.provenance import load_provenance_manifest
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    content = b"Reviewed content"
+    documents = {"reviewed.md": content}
+    manifest = json.dumps({"version": 1, "documents": {"reviewed.md": _entry(content)}}).encode()
+    (corpus / "provenance.json").write_bytes(manifest)
+
+    assert parse_provenance_manifest(manifest, documents) == load_provenance_manifest(
+        corpus, documents
     )
 
 
@@ -256,9 +272,7 @@ def test_invalid_provenance_fails_before_ingestion(
     assert db.execute("SELECT COUNT(*) FROM documents").fetchone() == (0,)
 
 
-def test_manifested_startup_preserves_public_citation_metadata(
-    tmp_path: Path, env: Env
-) -> None:
+def test_manifested_startup_preserves_public_citation_metadata(tmp_path: Path, env: Env) -> None:
     corpus = tmp_path / "corpus"
     corpus.mkdir()
     content = b"Returns are accepted within 30 days."

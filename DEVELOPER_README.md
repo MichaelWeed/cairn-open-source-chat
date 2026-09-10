@@ -52,6 +52,17 @@ Design invariants and current limits:
   future admin reindex) writes through `app.state.document_collection`, which owns a
   SQLite flat index at `CHROMA_PATH/cairn-vectors-v1.sqlite3`. Legacy Chroma files
   are not read, changed, or migrated. Re-ingestion is explicit.
+* **Candidate planning is offline and pure.** `app.ingest.planner` accepts one
+  validated version 1 manifest, the exact same-read document bytes, an exact
+  `ExactCorpusReference`, an embedding identity/dimension pair, and an injected
+  synchronous embedding function. Contract 1.0 sorts paths by UTF-8 bytes,
+  normalizes with `cairn-nfc-lf-v1`, chunks with
+  `cairn-boundary-chunks-v1:size=800:overlap=100`, and emits a complete frozen plan
+  with stable IDs and SHA-256 digests. Inputs are bounded to 1,024 documents, 8 MiB
+  per document, 64 MiB total source text, 16,384 chunks per document, 65,536 chunks
+  total, 4,096 embedding dimensions, and 8,388,608 vector scalars. The planner does
+  not read files, contact providers or stores, persist data, or change lifecycle;
+  immutable candidate persistence and activation remain planned.
 
 ## 2. Developer Preview Quick Start
 

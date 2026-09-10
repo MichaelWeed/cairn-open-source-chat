@@ -109,6 +109,20 @@ identifiers, provenance URLs, result count, and assembled context are bounded.
 Malformed or oversized results take the existing content-free refusal path without
 partial citations or a provider call.
 
+## Internal ingestion-plan contract 1.0
+
+The pure ingestion planner consumes in-memory version 1 manifest bytes, exact
+same-read document bytes, an exact corpus reference, and an injected offline
+embedding function. Its `1.0` algorithm identities and bounded canonical SHA-256
+material make a complete candidate plan deterministic across retries and process
+hash seeds. Planning does not persist or activate a candidate.
+
+This internal addition changes no public request, SSE event, capability value,
+version 1 provenance manifest, local corpus compatibility, or local retrieval-store
+schema. Existing deployments require no migration or reindex. Exact-version storage,
+readback attestation, and lifecycle remain planned, so `immutable_versions` remains
+`planned` in the packaged capability manifest.
+
 ## Chat compatibility 1.0 and SSE compatibility 1.1
 
 The public chat request keeps the same four keys and does not require a version

@@ -57,6 +57,7 @@ Three properties of this diagram carry most of the design weight:
 | Vector store | `backend/app/vectorstore.py` | Built. SQLite flat index, version 1, see [ADR-0007](adr/0007-sqlite-flat-vector-index.md) |
 | Retrieval protocol + local adapter + refusal | `backend/app/retrieval_contracts.py`, `backend/app/retrieval.py` | Built. Contract 1.0; `local_active` SQLite only |
 | Ingestion pipeline | `backend/app/ingest/` | Built; mounted startup requires a versioned provenance manifest, while direct callable ingestion retains internal citations |
+| Immutable candidate planner | `backend/app/ingest/planner.py` | Built internally. Pure contract 1.0 planning only; persistence and lifecycle remain planned |
 | Rate limiting | `backend/app/ratelimit.py` | Built. In-process, single-instance |
 | Metadata store | `backend/app/db/` | Built. SQLite, WAL |
 | Config | `backend/app/config.py` | Built |
@@ -106,6 +107,15 @@ writing either SQLite store. Verified public titles and canonical HTTP(S) URLs t
 in existing chunk metadata and emerge through the frozen citation response. Direct
 programmatic ingestion has no public-source attestation and keeps an internal
 `document://` reference. See [CORPUS-PROVENANCE.md](CORPUS-PROVENANCE.md).
+
+Separately, the internal ingestion planner can receive the already validated
+manifest bytes and exact same-read document byte snapshots with an exact corpus ID
+and version. It performs deterministic extraction, LF/NFC normalization, existing
+boundary-aware chunking, fixed-size positional embedding batches, and canonical
+identity/digest construction without filesystem, network, database, vector-store,
+or provider access. It returns one complete frozen candidate plan or fails closed;
+it does not alter the current mounted startup pipeline. KAN-49b storage/readback and
+KAN-45 lifecycle/active-pointer work remain planned.
 
 The Gemini adapter imports its SDK only after explicit selection. It maps history
 roles, keeps retrieved context and the current visitor question as separate JSON

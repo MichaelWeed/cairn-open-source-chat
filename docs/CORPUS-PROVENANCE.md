@@ -66,6 +66,21 @@ Changing only a verified title or URL refreshes stored chunk metadata on the nex
 startup, even when the document bytes have not changed. Removing or renaming a file
 requires the same manifest change in that mounted corpus version.
 
+## Deterministic candidate planning
+
+The same validated version 1 manifest can also feed Cairn's internal offline
+candidate planner together with the exact same-read document byte objects. The
+planner preserves title, URL, owner, review date, public attestation, and each exact
+source-byte SHA-256 while deriving stable document/chunk identities and a complete
+frozen plan for one exact corpus ID and version. It performs no file, network,
+provider, database, or vector-store access on its own.
+
+The semantic manifest SHA-256 is distinct from each entry's source-byte SHA-256. It
+canonically binds manifest version, sorted relative paths, and all six entry values,
+so JSON whitespace and object-key order do not matter while any provenance or source
+hash change does. This planning step does not persist, publish, activate, update, or
+delete a corpus candidate.
+
 ## Citation behavior and boundary
 
 Manifested startup documents use the verified `title` and `url` in the existing
