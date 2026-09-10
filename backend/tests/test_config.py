@@ -18,8 +18,16 @@ def _dotenv_values(path: Path) -> dict[str, str]:
     }
 
 
-def test_defaults() -> None:
+def test_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
     settings = Settings()
+    assert settings.deployment_mode == "development"
+    assert settings.provider == "echo"
+    assert settings.embedding_provider == "fake"
+    assert settings.gemini_api_key is None
+    assert settings.gemini_model == "gemini-3.8-flash"
+    assert settings.gemini_timeout_seconds == 30.0
+    assert settings.gemini_max_retries == 1
     assert settings.ollama_base_url == "http://localhost:11434"
     assert settings.chat_message_max_chars == 500
     assert settings.cairn_port == 8080
@@ -41,9 +49,40 @@ def test_generation_settings_respect_contract_maxima(field: str, value: object) 
         Settings.model_validate({field: value})
 
 
-def test_generation_setting_defaults_match_env_example_and_compose() -> None:
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("gemini_model", "latest"),
+        ("gemini_model", "gemini-3.8-flash "),
+        ("gemini_model", ""),
+        ("gemini_timeout_seconds", 0),
+        ("gemini_timeout_seconds", 181),
+        ("gemini_timeout_seconds", float("inf")),
+        ("gemini_timeout_seconds", float("nan")),
+        ("gemini_max_retries", -1),
+        ("gemini_max_retries", 2),
+    ],
+)
+def test_gemini_settings_reject_values_outside_frozen_bounds(
+    field: str, value: object
+) -> None:
+    with pytest.raises(ValidationError):
+        Settings.model_validate({field: value})
+
+
+def test_generation_setting_defaults_match_env_example_and_compose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
     settings = Settings()
     expected = {
+        "DEPLOYMENT_MODE": settings.deployment_mode,
+        "PROVIDER": settings.provider,
+        "EMBEDDING_PROVIDER": settings.embedding_provider,
+        "GEMINI_API_KEY": "",
+        "GEMINI_MODEL": settings.gemini_model,
+        "GEMINI_TIMEOUT_SECONDS": str(settings.gemini_timeout_seconds),
+        "GEMINI_MAX_RETRIES": str(settings.gemini_max_retries),
         "SYSTEM_INSTRUCTION": settings.system_instruction,
         "MAX_OUTPUT_TOKENS": str(settings.max_output_tokens),
         "MAX_OUTPUT_CHARS": str(settings.max_output_chars),
@@ -57,6 +96,11 @@ def test_generation_setting_defaults_match_env_example_and_compose() -> None:
         key: compose_environment[key] for key in expected
     } == {
         key: f"${{{key}:-{value}}}" for key, value in expected.items()
+    }
+
+    assert env_values["CAIRN_INSTALL_GEMINI"] == "false"
+    assert compose["services"]["backend"]["build"]["args"] == {
+        "CAIRN_INSTALL_GEMINI": "${CAIRN_INSTALL_GEMINI:-false}"
     }
 
 

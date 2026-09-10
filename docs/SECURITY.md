@@ -39,6 +39,12 @@ this stage.
   enforced by code convention and review today, not by a runtime filter. A future contributor who
   passes chat or document content into a log call's `extra={}` won't be stopped by anything
   mechanical yet.
+* **Optional Gemini boundary.** The SDK is absent from the default install and is
+  imported only after explicit provider selection. `GEMINI_API_KEY` is a trimmed,
+  server-side runtime secret and never a build argument. Production configuration
+  fails closed unless generation is Ollama or Gemini and embeddings are Ollama.
+  Retrieved support context is sent as untrusted JSON data, not as a system
+  instruction, and Gemini errors and logs retain only normalized content-free fields.
 * **Supply chain.** `uv.lock`/`package-lock.json` with hashes; CycloneDX SBOM regenerated and
   diffed against the committed one on every `make validate` run; `osv-scanner` (lockfiles) and
   `grype` (built images) gates; container images pinned by digest; a 14-day dependency cooldown
@@ -76,5 +82,7 @@ this stage.
   allows only the app's own origin (`http://localhost:$CAIRN_PORT`).
 * Run `make verify` at install time and on the weekly cadence documented in DEVELOPER_README.md §4
   — nothing else will alert you to CVEs disclosed after you installed.
-* No hosted provider exists today. If one is implemented later, understand that chat message
-  content would leave your infrastructure to that provider — see [docs/PRIVACY.md](PRIVACY.md).
+* Keep the local Ollama default unless you intentionally accept the Gemini data
+  boundary. Selecting Gemini sends bounded chat inputs and retrieved support
+  context to Google; see [docs/PRIVACY.md](PRIVACY.md). The provider-local probe is
+  not part of `/readyz`, so optional adapter availability is not production readiness.

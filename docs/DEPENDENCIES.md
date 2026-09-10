@@ -18,6 +18,11 @@ Per `CLAUDE.md`: every new dependency gets a one-line justification here at the 
 * **pypdf**: PDF text extraction for upload ingestion (task 2.2); pinned to 6.18.0, the fixed floor for the indirect-object-header advisory. Released 2026-09-07, it has an owner-approved KAN-72 exact-pair early-release approval that applies only until the normal 14-day cooldown expires.
 * **pyyaml**: declared directly because `eval/run_eval.py` imports it to load `eval/questions/*.yaml`.
 * **types-pyyaml** (dev) — type stubs so `mypy --strict` can check `eval/run_eval.py`'s `yaml.safe_load` usage.
+* **google-genai** (optional `gemini` extra) — Google's maintained Python client supplies the bounded async Gemini generation and model-probe transport; local Echo and Ollama installs do not require it. Its existing `google-auth` transitive is constrained to 2.57.0 so the lockfile remains outside the dependency cooldown.
+
+The default backend SBOM and image are generated without optional extras. The
+separate Gemini-profile SBOM and image gate use `uv sync --locked --extra gemini`;
+both profiles are reproducible from the same lockfile and scanned by validation.
 
 ## Widget (`widget/package-lock.json`)
 

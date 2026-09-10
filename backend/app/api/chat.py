@@ -25,6 +25,7 @@ from app.api.contracts import (
     StatusEvent,
 )
 from app.providers.base import Provider
+from app.providers.gemini import GeminiProviderError
 from app.retrieval import (
     DEFAULT_MAX_DISTANCE,
     DEFAULT_TOP_K,
@@ -154,6 +155,19 @@ async def chat_event_stream(
             close = getattr(provider_events, "aclose", None)
             if close is not None:
                 await close()
+    except GeminiProviderError as exc:
+        logger.error(
+            "provider stream failed",
+            extra={
+                "event": "provider_stream_failed",
+                "provider": "gemini",
+                "code": exc.code,
+                "retryable": exc.retryable,
+                "attempt_count": exc.attempt_count,
+            },
+        )
+        yield ErrorEvent(code=exc.code, message=exc.message, retryable=exc.retryable)
+        return
     except Exception as exc:
         logger.error(
             "provider stream failed",

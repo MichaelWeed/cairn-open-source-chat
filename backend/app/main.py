@@ -1,9 +1,10 @@
+import importlib
 import logging
-import os
 import sqlite3
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import cast
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -73,24 +74,50 @@ class ChatRequestBodyLimitMiddleware:
 
 
 def _default_provider(settings: Settings) -> Provider:
-    # No provider registry yet (that's Phase 5's admin surface). PROVIDER
-    # lets the demo page (task 1.8) exercise both round trips: `echo`
-    # (default — offline, deterministic) or `ollama`.
-    if os.environ.get("PROVIDER", "echo").lower() == "ollama":
+    if settings.provider == "ollama":
         return OllamaProvider(base_url=settings.ollama_base_url, model=settings.ollama_model)
-    return EchoProvider()
+    if settings.provider == "echo":
+        return EchoProvider()
+    if settings.provider == "gemini":
+        api_key = settings.gemini_api_key
+        if api_key is None:
+            raise RuntimeError("GEMINI_API_KEY is required when PROVIDER=gemini")
+        try:
+            gemini_module = importlib.import_module("app.providers.gemini")
+        except ModuleNotFoundError:
+            raise RuntimeError(
+                "Gemini provider requires the optional 'gemini' dependency profile"
+            ) from None
+        factory = cast(Callable[..., Provider], gemini_module.create_gemini_provider)
+        return factory(
+            api_key=api_key.get_secret_value(),
+            model=settings.gemini_model,
+            timeout_seconds=settings.gemini_timeout_seconds,
+            max_retries=settings.gemini_max_retries,
+        )
+    raise RuntimeError("Unsupported generation provider configuration")
+
+
+async def _close_owned_provider(provider: Provider) -> None:
+    close = getattr(provider, "aclose", None)
+    if close is not None:
+        await close()
 
 
 def create_app(settings: Settings | None = None, provider: Provider | None = None) -> FastAPI:
     configure_logging()
     settings = settings or get_settings()
+    owns_provider = provider is None
+    selected_provider = _default_provider(settings) if provider is None else provider
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.corpus_ready = False
-        app.state.db = bootstrap(settings.database_path)
+        db: sqlite3.Connection | None = None
         vector_client = None
         try:
+            db = bootstrap(settings.database_path)
+            app.state.db = db
             vector_client = get_vector_client(settings)
             app.state.vector_client = vector_client
             app.state.document_collection = get_document_collection(
@@ -116,7 +143,12 @@ def create_app(settings: Settings | None = None, provider: Provider | None = Non
                 if vector_client is not None:
                     vector_client.close()
             finally:
-                app.state.db.close()
+                try:
+                    if db is not None:
+                        db.close()
+                finally:
+                    if owns_provider:
+                        await _close_owned_provider(selected_provider)
             raise
         logger.info(
             "app started",
@@ -131,11 +163,15 @@ def create_app(settings: Settings | None = None, provider: Provider | None = Non
             try:
                 vector_client.close()
             finally:
-                app.state.db.close()
+                try:
+                    app.state.db.close()
+                finally:
+                    if owns_provider:
+                        await _close_owned_provider(selected_provider)
 
     app = FastAPI(title="Cairn", lifespan=lifespan)
     app.state.settings = settings
-    app.state.provider = provider or _default_provider(settings)
+    app.state.provider = selected_provider
     app.state.ip_rate_limiter = RateLimiter(
         settings.rate_limit_ip_capacity, settings.rate_limit_ip_refill_per_minute
     )

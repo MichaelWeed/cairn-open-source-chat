@@ -39,9 +39,11 @@ message is never added to the retrievable corpus.
 * **Ollama (default, local).** Chat message text and retrieved context go to the Ollama process
   named in `OLLAMA_BASE_URL`. If that's running in your own compose stack / infrastructure, nothing
   leaves your environment.
-* **Any future hosted, OpenAI-compatible provider** would send chat message text and retrieved
-  context to that third party. Only `EchoProvider` and `OllamaProvider` are implemented today;
-  there is no hosted provider to configure in the current build.
+* **Gemini (optional, hosted).** When explicitly selected, the current chat message,
+  up to five bounded history turns, the server instruction, and retrieved support
+  context leave the operator's infrastructure for Google. Public widget context,
+  session IDs, client IPs, and database paths are not included in that provider
+  request. Cairn still does not persist chat transcripts or Gemini usage metadata.
 
 ## Backups
 
