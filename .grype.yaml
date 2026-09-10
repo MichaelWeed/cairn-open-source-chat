@@ -18,3 +18,11 @@ ignore:
     reason: >-
       Fixed only in Python 3.15.0b3 (beta) — no stable release exists.
       Re-check on 3.15 GA.
+  - vulnerability: CVE-2026-17084
+    reason: >-
+      Fixed only in Python 3.15.0rc2 (release candidate); no stable release
+      exists. Re-check when 3.15 is GA or a 3.13.x/3.14.x backport lands.
+  - vulnerability: CVE-2026-15806
+    reason: >-
+      Fixed only in Python 3.15.0rc2 (release candidate); no stable release
+      exists. Re-check when 3.15 is GA or a 3.13.x/3.14.x backport lands.

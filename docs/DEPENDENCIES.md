@@ -39,7 +39,7 @@ Not a lockfile, but pinned the same way for the same reason — recorded here af
 * **`apt-get upgrade`** at build time, layered on top of the pinned base digest — picks up Debian's current security patches (fixed several `perl-base`/`libc`-family CVEs that were stale in the pinned base layer).
 * **`pip`, `wheel`, `setuptools==83.0.0`** upgraded before installing `uv` — the base image's bundled versions had known CVEs; setuptools 83.0.0 also clears GHSA-h35f-9h28-mq5c (released 2026-07-04).
 * **`uv==0.11.30`** — pinned past 0.9.13 (the local dev toolchain's version, independent of this) to retain the GHSA-4gg8-gxpx-9rph fix and bundle fixed `quinn-proto` 0.11.15 (released 2026-07-20).
-* **`.grype.yaml`** documents four remaining exceptions: CVEs fixed only in Python 3.15 alpha/beta/unreleased builds — not appropriate to chase by running pre-release Python in production. Re-check on 3.15 GA.
+* **`.grype.yaml`** documents six remaining exceptions: CVEs fixed only in Python 3.15 alpha, beta, release-candidate, or otherwise unreleased builds. Running pre-release Python in production is not appropriate; re-check each exception on its stated Python 3.15 GA or stable backport condition.
 
 ## Tooling (not in a lockfile — installed via Homebrew locally, via CI steps in `.github/workflows/validate.yml`)
 
