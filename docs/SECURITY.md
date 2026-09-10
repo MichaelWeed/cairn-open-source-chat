@@ -77,6 +77,14 @@ this stage.
   identity, and verify-only verifier and returns only identity-bound, content-free
   evidence from a complete durable readback. The component ships no key, credential
   loader, KMS client, production algorithm, trust selection, or trust store.
+* **Corpus lifecycle trust and transaction boundary.** The development-only registry
+  accepts one immutable caller-owned trust policy, borrows M8's signer-free full
+  verifier, and revalidates exact content-free evidence before ready registration or
+  active changes. Ready state, active-pointer CAS, rollback, and inactive logical
+  removal commit state plus one create-only audit in the same transaction. Store keys
+  are domain-separated hashes, SDK retries are disabled, and ambiguous commits are
+  read-confirmed before the sole optional service retry. No production trust policy,
+  key loader, physical delete, repair, provider call, or application route is added.
 * **Supply chain.** `uv.lock`/`package-lock.json` with hashes; CycloneDX SBOM regenerated and
   diffed against the committed one on every `make validate` run; `osv-scanner` (lockfiles) and
   `grype` (built images) gates; container images pinned by digest; a 14-day dependency cooldown
@@ -99,9 +107,10 @@ this stage.
   to the client (task 4.3).
 * **No daily abuse budget cap or signed widget token** (task 4.5) — only the per-IP/session token
   buckets above.
-* **No trusted candidate promotion policy.** Candidate attestation exists only as a
-  development seam. KAN-45 must select trusted signer identities, verify the M8
-  read-only evidence, and define ready/active transitions, rollback, and removal.
+* **No production candidate trust policy or activation route.** The internal lifecycle
+  seam defines strict ready/active transitions, rollback, and logical removal around an
+  injected immutable trust policy. Cairn does not ship a production policy, configure
+  trusted signer identities, or expose lifecycle mutation through startup, HTTP, or UI.
 * **No HTTP ingestion endpoint.** `ingest_upload()` (task 2.2) exists as a callable but nothing
   routes an HTTP request to it yet (task 2.7). Today, the only way content enters the vector store
   is a direct function call (tests, or an operator-run script) — there's no attacker-reachable

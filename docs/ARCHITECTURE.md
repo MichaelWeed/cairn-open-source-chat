@@ -57,7 +57,7 @@ Three properties of this diagram carry most of the design weight:
 | Vector store | `backend/app/vectorstore.py` | Built. SQLite flat index, version 1, see [ADR-0007](adr/0007-sqlite-flat-vector-index.md) |
 | Retrieval protocol + adapters + refusal | `backend/app/retrieval_contracts.py`, `backend/app/retrieval.py`, `backend/app/retrieval_firestore.py` | Built. Contract 1.0; default `local_active` SQLite plus optional development-only exact-scope Firestore reads |
 | Ingestion pipeline | `backend/app/ingest/` | Built; mounted startup requires a versioned provenance manifest, while direct callable ingestion retains internal citations |
-| Immutable candidate planner and persistence | `backend/app/ingest/planner.py`, `backend/app/ingest/candidate_persistence.py`, `backend/app/ingest/candidate_firestore.py` | Built internally for development. Pure plan plus create-or-confirm storage, full readback, and attestation; readiness and lifecycle remain planned |
+| Immutable candidate planner, persistence, and lifecycle registry | `backend/app/ingest/planner.py`, `backend/app/ingest/candidate_persistence.py`, `backend/app/ingest/candidate_firestore.py`, `backend/app/corpus_lifecycle.py`, `backend/app/corpus_lifecycle_firestore.py` | Built internally for development. Pure plan, create-or-confirm storage, full attestation readback, ready state, exact active-pointer CAS, rollback, logical removal, and immutable audits; no production trust policy or application wiring |
 | Rate limiting | `backend/app/ratelimit.py` | Built. In-process, single-instance |
 | Metadata store | `backend/app/db/` | Built. SQLite, WAL |
 | Config | `backend/app/config.py` | Built |
@@ -125,8 +125,11 @@ document IDs, and chunk keys use the M6 bounded chunk-key helper. A distinct
 signer-free verification service accepts an exact corpus, externally selected
 identity, and verify-only verifier, then returns immutable content-free evidence
 from a fresh complete durable readback. It does not select trust or lifecycle
-state. KAN-45 lifecycle, trust policy, readiness, and active-pointer work remain
-planned.
+state. The separate lifecycle registry borrows that verifier, captures one injected
+immutable trust-policy snapshot, and records only strict content-free evidence. Ready
+registration, promotion, rollback, and inactive terminal logical removal use exact
+state-plus-audit transactions. It is not selected by production configuration and is
+not part of the chat or mounted startup path.
 
 The Gemini adapter imports its SDK only after explicit selection. It maps history
 roles, keeps retrieved context and the current visitor question as separate JSON

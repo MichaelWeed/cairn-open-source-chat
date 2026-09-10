@@ -28,7 +28,7 @@ will be one gating chat answers, even once Phase 5's admin auth ships.
 | Ingested documents (the operator's knowledge base) | Chunk text + embeddings in the local SQLite vector index (`CHROMA_PATH`/`cairn-vectors-v1.sqlite3`); per-document metadata (`id`, `source`, `content_hash`, `chunk_count`, `ingested_at` - no raw content) in SQLite's `documents` table. Legacy Chroma files are untouched and are not read. | Until re-ingested or (once task 5.3 ships) deleted via the admin content surface. |
 | Structured logs | stdout, JSON. By convention (not a mechanical filter — see docs/SECURITY.md), never includes message bodies or document content: latency, guardrail stage outcomes, error codes, query counts only. | Whatever your log aggregation/host retains. |
 | Provider usage metadata | Bounded token counts, provider/model identifiers, attempt number, and optional service tier are normalized in memory. They are excluded from public SSE and are not persisted or logged by the built path. | Request lifetime only. |
-| Immutable candidate records | In development-only injected persistence, reviewed document metadata, chunk text, embeddings, and a signature envelope are stored under one exact corpus ID/version. The attestation binds content hashes, signer identifiers, and a signature but contains no chat data, credential, key, actor, timestamp, or environment value. | M8 is create-only and defines no deletion or retention policy; KAN-45 owns lifecycle and logical removal. |
+| Immutable candidate and lifecycle records | In development-only injected persistence, reviewed document metadata, chunk text, embeddings, and a signature envelope are stored under one exact corpus ID/version. Separate lifecycle records retain only content-free hashes, counts, embedding/signer identity, exact state, pointer, and immutable audits. | Candidate records have no deletion policy. Lifecycle removal is terminal and logical only; it does not delete candidate content or audits. |
 | Metrics | Not implemented yet. The design intent (DEVELOPER_README.md §5) is counters and topic labels only, never message content — recorded here so the commitment is visible before the code exists. | N/A |
 | Escalation tickets | Not implemented yet (task 3.4). Will be off by default when it ships. | N/A |
 
@@ -70,6 +70,12 @@ message is never added to the retrievable corpus.
   records and returns only immutable content-free evidence. Cairn ships no signing
   key or production signing implementation, and validation makes no credential
   lookup or live write.
+* **Corpus lifecycle registry (optional, development/test only).** An explicitly
+  injected immutable trust policy gates ready state and exact active-pointer changes.
+  Lifecycle documents and audits contain no content, provenance, vector, signature,
+  actor, time, request, path, URL, project, database, credential, or key material.
+  Logical removal retains evidence and all audits; there is no TTL, garbage collector,
+  physical delete, or automatic rollback.
 
 ## Backups
 
