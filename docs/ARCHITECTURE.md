@@ -56,7 +56,7 @@ Three properties of this diagram carry most of the design weight:
 | Provider adapters | `backend/app/providers/` | Built: echo, Ollama |
 | Embeddings | `backend/app/embeddings/` | Built: fake, Ollama |
 | Vector store | `backend/app/vectorstore.py` | Built. SQLite flat index, version 1, see [ADR-0007](adr/0007-sqlite-flat-vector-index.md) |
-| Retrieval + refusal | `backend/app/retrieval.py` | Built |
+| Retrieval protocol + local adapter + refusal | `backend/app/retrieval_contracts.py`, `backend/app/retrieval.py` | Built. Contract 1.0; `local_active` SQLite only |
 | Ingestion pipeline | `backend/app/ingest/` | Built; mounted startup requires a versioned provenance manifest, while direct callable ingestion retains internal citations |
 | Rate limiting | `backend/app/ratelimit.py` | Built. In-process, single-instance |
 | Metadata store | `backend/app/db/` | Built. SQLite, WAL |
@@ -82,15 +82,21 @@ Built and tested today, in order:
    `Origin` is not blocked by it, and the security documentation says so.
 3. **Rate limiting.** Per-IP and per-session token buckets, checked before any
    provider call, so an abusive client cannot burn inference capacity.
-4. **Retrieval.** The query is embedded and the vector store returns the closest
-   chunks with distances.
+4. **Retrieval.** Chat builds a bounded version 1.0 retrieval request for the
+   `local_active` scope. The async adapter yields once for cancellation and then the
+   local SQLite implementation embeds the exact query and returns the closest
+   squared-L2 chunks. The adapter validates result shape, stable chunk identity,
+   ordering, bounds, and provenance before returning any row. Exact immutable
+   corpus references are part of the internal protocol but are not implemented by
+   this local adapter, so they fail closed before store access.
 5. **The refusal gate.** If the closest chunk exceeds the distance threshold, the
    request is refused *mechanically* and **the provider is never called**. This
    ordering is the substance of the no-hallucination claim: the cheapest and most
    reliable way to not fabricate an answer is to not ask the model.
-6. **Prompt assembly.** Surviving chunks are wrapped in a delimited
+6. **Prompt assembly.** Surviving chunks are wrapped in a bounded, delimited
    `<retrieved-context>` block with instructions that its contents are untrusted
-   data, not instructions.
+   data, not instructions. Oversized context refuses before citations or provider
+   work; chunks are never silently truncated or dropped.
 7. **Streaming.** The endpoint builds one validated, server-owned provider request.
    Public context metadata does not enter its instructions or retrieved context.
    Provider chunks and total output are bounded before the endpoint emits `status`,

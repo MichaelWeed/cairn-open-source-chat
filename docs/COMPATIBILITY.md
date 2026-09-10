@@ -89,6 +89,22 @@ Capability state is descriptive, not a runtime health signal. `available` means 
 feature is built for its documented path, `development_only` identifies deterministic
 development/test implementations, and `planned` means callers must not depend on it.
 
+## Internal retrieval contract 1.0
+
+The provider-independent retrieval request and result models are versioned `1.0`.
+The built adapter accepts only `local_active` with local corpus compatibility 2 and
+squared-L2 distance. Exact corpus ID and version references are validated but remain
+unsupported by the local store; they fail before any store read. This protocol layer
+requires no data migration for local retrieval store schema 1 or local corpus
+compatibility 2. It does not rename or reinterpret the existing SQLite index, ingestion
+metadata, public chat request, SSE events, or capability manifest.
+
+Retrieval settings fail fast: `RETRIEVAL_TOP_K` is an integer from 1 through 6 and
+`RETRIEVAL_MAX_DISTANCE` is finite and non-negative. Store output, chunk text,
+identifiers, provenance URLs, result count, and assembled context are bounded.
+Malformed or oversized results take the existing content-free refusal path without
+partial citations or a provider call.
+
 ## Chat compatibility 1.0 and SSE compatibility 1.1
 
 The public chat request keeps the same four keys and does not require a version

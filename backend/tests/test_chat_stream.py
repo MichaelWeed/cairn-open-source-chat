@@ -7,13 +7,22 @@ from starlette.types import Message, Scope, Send
 
 from app.api.chat import _sse_response, chat_event_stream, stream_with_pings
 from app.api.contracts import (
+    RETRIEVED_CONTEXT_MAX_CHARS,
     ChatEvent,
     ChatMessageRequest,
     ProviderChunk,
     ProviderGenerationRequest,
 )
 from app.providers.base import Provider
-from app.vectorstore import DocumentCollection
+from app.retrieval import LocalRetrievalAdapter, build_context_block
+from app.retrieval_contracts import (
+    LocalActiveScope,
+    RetrievalProbe,
+    RetrievalRequest,
+    RetrievalResult,
+    RetrievalScope,
+    RetrievedChunk,
+)
 
 
 class _GroundedCollection:
@@ -22,10 +31,15 @@ class _GroundedCollection:
 
     def query(self, **_: object) -> dict[str, list[list[object]]]:
         return {
+            "ids": [["doc-1::chunk::0"]],
             "documents": [["grounding"]],
             "metadatas": [[{"document_id": "doc-1", "source": "source.md", "chunk_index": 0}]],
             "distances": [[0.0]],
         }
+
+
+def _grounded_adapter() -> LocalRetrievalAdapter:
+    return LocalRetrievalAdapter(_GroundedCollection())
 
 
 class _LifecycleProvider(Provider):
@@ -128,7 +142,7 @@ async def test_chat_event_stream_closes_provider_after_output_limit() -> None:
         async for event in chat_event_stream(
             provider,
             ChatMessageRequest(session_id="s1", message="hi"),
-            cast(DocumentCollection, _GroundedCollection()),
+            _grounded_adapter(),
             max_output_chars=5,
         )
     ]
@@ -145,7 +159,7 @@ async def test_closing_chat_event_stream_closes_provider() -> None:
         chat_event_stream(
             provider,
             ChatMessageRequest(session_id="s1", message="hi"),
-            cast(DocumentCollection, _GroundedCollection()),
+            _grounded_adapter(),
             ping_interval=60,
         ),
     )
@@ -163,7 +177,7 @@ async def test_sse_response_send_failure_closes_provider() -> None:
         chat_event_stream(
             provider,
             ChatMessageRequest(session_id="s1", message="hi"),
-            cast(DocumentCollection, _GroundedCollection()),
+            _grounded_adapter(),
             ping_interval=60,
         )
     )
@@ -186,7 +200,7 @@ async def test_sse_response_disconnect_cancellation_closes_provider() -> None:
         chat_event_stream(
             provider,
             ChatMessageRequest(session_id="s1", message="hi"),
-            cast(DocumentCollection, _GroundedCollection()),
+            _grounded_adapter(),
             ping_interval=60,
         )
     )
@@ -231,10 +245,141 @@ async def test_provider_failure_log_excludes_provider_content(
         async for event in chat_event_stream(
             _SensitiveInvalidProvider(),
             ChatMessageRequest(session_id="s1", message="hi"),
-            cast(DocumentCollection, _GroundedCollection()),
+            _grounded_adapter(),
         )
     ]
 
     assert events[-1].type == "error"
     assert "provider stream failed" in caplog.text
     assert "provider-response-sentinel" not in caplog.text
+
+
+class _StaticAdapter:
+    def __init__(self, result: RetrievalResult) -> None:
+        self.result = result
+        self.requests: list[RetrievalRequest] = []
+
+    async def retrieve(self, request: RetrievalRequest) -> RetrievalResult:
+        self.requests.append(request)
+        return self.result
+
+    async def check_readiness(self, scope: RetrievalScope) -> RetrievalProbe:
+        return RetrievalProbe(
+            scope=scope,
+            reachable=True,
+            store_ready=True,
+            exact_version_ready=False,
+        )
+
+
+class _CountingProvider(Provider):
+    def __init__(self) -> None:
+        self.calls = 0
+        self.last_request: ProviderGenerationRequest | None = None
+
+    async def stream(self, request: ProviderGenerationRequest) -> AsyncIterator[ProviderChunk]:
+        self.calls += 1
+        self.last_request = request
+        yield ProviderChunk(delta="ok")
+
+
+def _result_with_context_length(target: int) -> RetrievalResult:
+    chunks = [
+        RetrievedChunk(
+            chunk_id=f"doc-{index}::chunk::0",
+            document_id=f"doc-{index}",
+            source=f"{index}.md",
+            chunk_index=0,
+            text="x",
+            distance=float(index) / 10,
+        )
+        for index in range(4)
+    ]
+    remaining = target - len(build_context_block(chunks))
+    assert remaining >= 0
+    expanded: list[RetrievedChunk] = []
+    for chunk in chunks:
+        extra = min(remaining, 2_999)
+        remaining -= extra
+        expanded.append(chunk.model_copy(update={"text": chunk.text + "x" * extra}))
+    assert remaining == 0
+    return RetrievalResult(
+        scope=LocalActiveScope(),
+        distance_measure="squared_l2",
+        max_distance=1.0,
+        chunks=tuple(expanded),
+    )
+
+
+async def test_context_at_exact_limit_reaches_provider_after_citations() -> None:
+    provider = _CountingProvider()
+    adapter = _StaticAdapter(_result_with_context_length(RETRIEVED_CONTEXT_MAX_CHARS))
+
+    events = [
+        event
+        async for event in chat_event_stream(
+            provider,
+            ChatMessageRequest(session_id="s1", message="hi"),
+            adapter,
+        )
+    ]
+
+    assert [event.type for event in events] == [
+        "status",
+        "citations",
+        "status",
+        "chunk",
+        "done",
+    ]
+    assert provider.calls == 1
+    assert provider.last_request is not None
+    assert len(provider.last_request.retrieved_context) == RETRIEVED_CONTEXT_MAX_CHARS
+    assert adapter.requests[0].query == "hi"
+
+
+async def test_oversized_context_refuses_before_citations_or_provider(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    provider = _CountingProvider()
+    adapter = _StaticAdapter(_result_with_context_length(RETRIEVED_CONTEXT_MAX_CHARS + 1))
+
+    events = [
+        event
+        async for event in chat_event_stream(
+            provider,
+            ChatMessageRequest(session_id="session-secret", message="query-secret"),
+            adapter,
+        )
+    ]
+
+    assert [event.type for event in events] == ["status", "status", "chunk", "done"]
+    assert events[-1].finish_reason == "refused"  # type: ignore[union-attr]
+    assert provider.calls == 0
+    assert len([record for record in caplog.records if record.message == "retrieval failed"]) == 1
+    assert caplog.records[-1].retrieval_error_code == "context_too_large"  # type: ignore[attr-defined]
+    assert "query-secret" not in caplog.text
+    assert "session-secret" not in caplog.text
+
+
+class _ExplodingAdapter(_StaticAdapter):
+    async def retrieve(self, request: RetrievalRequest) -> RetrievalResult:
+        raise RuntimeError("adapter-secret")
+
+
+async def test_unexpected_adapter_failure_is_content_free_and_skips_provider(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    provider = _CountingProvider()
+    adapter = _ExplodingAdapter(_result_with_context_length(1_000))
+    events = [
+        event
+        async for event in chat_event_stream(
+            provider,
+            ChatMessageRequest(session_id="s1", message="hi"),
+            adapter,
+        )
+    ]
+    assert events[-1].finish_reason == "refused"  # type: ignore[union-attr]
+    assert provider.calls == 0
+    assert caplog.records[-1].retrieval_error_code == "malformed_result"  # type: ignore[attr-defined]
+    assert "adapter-secret" not in caplog.text

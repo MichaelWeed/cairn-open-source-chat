@@ -62,16 +62,35 @@ def test_retrieve_chunks_clamps_top_k_to_collection_size(collection: DocumentCol
             {"document_id": "doc-2", "source": "b.md", "chunk_index": 0},
         ],
     )
-    chunks = retrieve_chunks(collection, "chunk text", top_k=10)
+    chunks = retrieve_chunks(collection, "chunk text", top_k=6)
     assert len(chunks) == 2
 
 
 def test_build_citations_dedupes_by_document_preserving_order() -> None:
     chunks = [
-        RetrievedChunk(document_id="doc-2", source="b.md", chunk_index=0, text="b", distance=0.1),
-        RetrievedChunk(document_id="doc-1", source="a.md", chunk_index=0, text="a", distance=0.2),
         RetrievedChunk(
-            document_id="doc-2", source="b.md", chunk_index=1, text="b again", distance=0.3
+            chunk_id="doc-2::chunk::0",
+            document_id="doc-2",
+            source="b.md",
+            chunk_index=0,
+            text="b",
+            distance=0.1,
+        ),
+        RetrievedChunk(
+            chunk_id="doc-1::chunk::0",
+            document_id="doc-1",
+            source="a.md",
+            chunk_index=0,
+            text="a",
+            distance=0.2,
+        ),
+        RetrievedChunk(
+            chunk_id="doc-2::chunk::1",
+            document_id="doc-2",
+            source="b.md",
+            chunk_index=1,
+            text="b again",
+            distance=0.3,
         ),
     ]
     citations = build_citations(chunks)
@@ -94,7 +113,12 @@ def test_build_context_block_no_chunks_notes_absence() -> None:
 def test_build_context_block_wraps_chunks_with_untrusted_markers() -> None:
     chunks = [
         RetrievedChunk(
-            document_id="doc-1", source="faq.md", chunk_index=0, text="30 days", distance=0.1
+            chunk_id="doc-1::chunk::0",
+            document_id="doc-1",
+            source="faq.md",
+            chunk_index=0,
+            text="30 days",
+            distance=0.1,
         )
     ]
     block = build_context_block(chunks)
@@ -111,26 +135,68 @@ def test_should_refuse_true_for_no_chunks() -> None:
 
 def test_should_refuse_false_when_a_chunk_is_within_threshold() -> None:
     chunks = [
-        RetrievedChunk(document_id="doc-1", source="a.md", chunk_index=0, text="a", distance=0.9),
-        RetrievedChunk(document_id="doc-2", source="b.md", chunk_index=0, text="b", distance=5.0),
+        RetrievedChunk(
+            chunk_id="doc-1::chunk::0",
+            document_id="doc-1",
+            source="a.md",
+            chunk_index=0,
+            text="a",
+            distance=0.9,
+        ),
+        RetrievedChunk(
+            chunk_id="doc-2::chunk::0",
+            document_id="doc-2",
+            source="b.md",
+            chunk_index=0,
+            text="b",
+            distance=5.0,
+        ),
     ]
     assert should_refuse(chunks, max_distance=1.2) is False
 
 
 def test_should_refuse_true_when_best_chunk_exceeds_threshold() -> None:
     chunks = [
-        RetrievedChunk(document_id="doc-1", source="a.md", chunk_index=0, text="a", distance=1.3),
-        RetrievedChunk(document_id="doc-2", source="b.md", chunk_index=0, text="b", distance=5.0),
+        RetrievedChunk(
+            chunk_id="doc-1::chunk::0",
+            document_id="doc-1",
+            source="a.md",
+            chunk_index=0,
+            text="a",
+            distance=1.3,
+        ),
+        RetrievedChunk(
+            chunk_id="doc-2::chunk::0",
+            document_id="doc-2",
+            source="b.md",
+            chunk_index=0,
+            text="b",
+            distance=5.0,
+        ),
     ]
     assert should_refuse(chunks, max_distance=1.2) is True
 
 
 def test_should_refuse_uses_default_threshold_when_unspecified() -> None:
     close_chunk = [
-        RetrievedChunk(document_id="doc-1", source="a.md", chunk_index=0, text="a", distance=0.1)
+        RetrievedChunk(
+            chunk_id="doc-1::chunk::0",
+            document_id="doc-1",
+            source="a.md",
+            chunk_index=0,
+            text="a",
+            distance=0.1,
+        )
     ]
     far_chunk = [
-        RetrievedChunk(document_id="doc-1", source="a.md", chunk_index=0, text="a", distance=99.0)
+        RetrievedChunk(
+            chunk_id="doc-1::chunk::0",
+            document_id="doc-1",
+            source="a.md",
+            chunk_index=0,
+            text="a",
+            distance=99.0,
+        )
     ]
     assert should_refuse(close_chunk) is False
     assert should_refuse(far_chunk) is True
