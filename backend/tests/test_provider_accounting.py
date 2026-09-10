@@ -1,4 +1,6 @@
 import json
+import warnings
+from collections.abc import Callable
 from datetime import date
 from decimal import Decimal
 from typing import Any, Literal, cast
@@ -473,6 +475,179 @@ def _assert_content_free_error(
     rendered = _content_free_error_rendering(error)
     for secret in secrets:
         assert secret not in rendered
+
+
+def _accounting_model(model_name: str) -> Any:
+    record = price_provider_attempt(_attempt())
+    models = {
+        "snapshot": _snapshot(),
+        "attempt": _attempt(),
+        "record": record,
+        "aggregate": aggregate_provider_costs((record,), target_attempt_count=1),
+    }
+    return models[model_name]
+
+
+def _accounting_model_rendering(model: Any) -> str:
+    return (
+        repr(model)
+        + json.dumps(model.model_dump(mode="json"), sort_keys=True)
+        + repr(model.__dict__)
+        + repr(model.__pydantic_extra__)
+        + repr(model.model_fields_set)
+    )
+
+
+def _assert_bypass_surface_rejected(
+    operation: Callable[[], Any],
+    accepted: Any,
+    *secrets: str,
+) -> None:
+    result: Any | None = None
+    error: ProviderAccountingError | None = None
+    try:
+        result = operation()
+    except ProviderAccountingError as caught:
+        error = caught
+
+    if error is None:
+        assert result is not None
+        rendered = _accounting_model_rendering(result)
+        for secret in secrets:
+            assert secret not in rendered
+        pytest.fail("accounting validation bypass returned an unvalidated model")
+
+    _assert_content_free_error(error, *secrets)
+    accepted_rendering = _accounting_model_rendering(accepted)
+    for secret in secrets:
+        assert secret not in accepted_rendering
+
+
+BypassSurface = Literal[
+    "model_copy",
+    "model_construct",
+    "copy",
+    "construct",
+    "replace",
+]
+
+
+def _invoke_bypass_surface(
+    accepted: Any,
+    surface: BypassSurface,
+    update: dict[str, object],
+) -> Any:
+    if surface == "model_copy":
+        return accepted.model_copy(update=update)
+    if surface == "model_construct":
+        return type(accepted).model_construct(
+            **{**accepted.model_dump(round_trip=True), **update}
+        )
+    if surface == "replace":
+        return accepted.__replace__(**update)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        if surface == "copy":
+            return accepted.copy(update=update)
+        return type(accepted).construct(
+            **{**accepted.model_dump(round_trip=True), **update}
+        )
+
+
+@pytest.mark.parametrize("model_name", ["snapshot", "attempt", "record", "aggregate"])
+@pytest.mark.parametrize(
+    "surface", ["model_copy", "model_construct", "copy", "construct", "replace"]
+)
+@pytest.mark.parametrize("mutation", ["unknown", "invalid_known"])
+def test_accounting_copy_and_construct_surfaces_cannot_bypass_strict_validation(
+    model_name: str,
+    surface: BypassSurface,
+    mutation: Literal["unknown", "invalid_known"],
+) -> None:
+    accepted = _accounting_model(model_name)
+    secret = f"{model_name}-{surface}-{mutation}-secret-sentinel"
+    update: dict[str, object]
+    if mutation == "unknown":
+        update = {"message": secret}
+    else:
+        update = {"schema_version": secret}
+
+    _assert_bypass_surface_rejected(
+        lambda: _invoke_bypass_surface(accepted, surface, update),
+        accepted,
+        secret,
+    )
+
+
+@pytest.mark.parametrize("model_name", ["snapshot", "attempt", "record", "aggregate"])
+@pytest.mark.parametrize("surface", ["model_construct", "construct"])
+def test_construct_fields_set_cannot_retain_unknown_content(
+    model_name: str,
+    surface: Literal["model_construct", "construct"],
+) -> None:
+    accepted = _accounting_model(model_name)
+    secret = f"{model_name}-{surface}-fields-set-secret-sentinel"
+    values = accepted.model_dump(round_trip=True)
+
+    def construct() -> Any:
+        if surface == "model_construct":
+            return type(accepted).model_construct(_fields_set={secret}, **values)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            return type(accepted).construct(_fields_set={secret}, **values)
+
+    _assert_bypass_surface_rejected(construct, accepted, secret)
+
+
+@pytest.mark.parametrize("model_name", ["snapshot", "attempt", "record", "aggregate"])
+@pytest.mark.parametrize("mode", ["include", "exclude"])
+def test_deprecated_copy_cannot_create_partial_invalid_accounting_models(
+    model_name: str,
+    mode: Literal["include", "exclude"],
+) -> None:
+    accepted = _accounting_model(model_name)
+    secret = f"{model_name}-{mode}-copy-secret-sentinel"
+    required_field = {
+        "snapshot": "provider",
+        "attempt": "provider",
+        "record": "provider",
+        "aggregate": "target_attempt_count",
+    }[model_name]
+
+    def copy_subset() -> Any:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            if mode == "include":
+                return accepted.copy(include={secret})
+            return accepted.copy(exclude={required_field, secret})
+
+    _assert_bypass_surface_rejected(copy_subset, accepted, secret)
+
+
+@pytest.mark.parametrize("model_name", ["snapshot", "attempt", "record", "aggregate"])
+def test_valid_accounting_copy_and_construct_paths_remain_supported(
+    model_name: str,
+) -> None:
+    accepted = _accounting_model(model_name)
+    values = accepted.model_dump(round_trip=True)
+
+    assert accepted.model_copy() == accepted
+    assert accepted.model_copy(deep=True) == accepted
+    assert accepted.model_copy(update={"schema_version": "1.0"}) == accepted
+    assert type(accepted).model_construct(**values) == accepted
+    constructed = type(accepted).model_construct(
+        _fields_set={"schema_version"},
+        **values,
+    )
+    assert constructed == accepted
+    assert constructed.model_fields_set == {"schema_version"}
+    assert accepted.__replace__(schema_version="1.0") == accepted
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        assert accepted.copy() == accepted
+        assert accepted.copy(deep=True) == accepted
+        assert accepted.copy(update={"schema_version": "1.0"}) == accepted
+        assert type(accepted).construct(**values) == accepted
 
 
 @pytest.mark.parametrize("entrypoint", ["constructor", "python", "json", "strings"])

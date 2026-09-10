@@ -3,10 +3,10 @@
 import hashlib
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import date
 from decimal import Context, Decimal, localcontext
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -153,6 +153,93 @@ class ProviderAccountingModel(BaseModel):
     def __delattr__(self, name: str) -> None:
         del name
         raise ProviderAccountingError from None
+
+    @classmethod
+    def _validate_accounting_model(cls, values: Any) -> Self:
+        validated: Self | None = None
+        failed = False
+        try:
+            validated = cls.model_validate(values)
+        except Exception:
+            failed = True
+        if failed or validated is None:
+            raise ProviderAccountingError from None
+        return validated
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> Self:
+        if update is None:
+            return super().model_copy(deep=deep)
+
+        values: dict[str, Any] | None = None
+        try:
+            source = super().model_copy(deep=deep)
+            values = {
+                field_name: getattr(source, field_name)
+                for field_name in type(self).model_fields
+            }
+            values.update(update)
+        except Exception:
+            pass
+        if values is None:
+            raise ProviderAccountingError from None
+        return type(self)._validate_accounting_model(values)
+
+    @classmethod
+    def model_construct(
+        cls,
+        _fields_set: set[str] | None = None,
+        **values: Any,
+    ) -> Self:
+        requested_fields: set[str] | None = None
+        invalid_fields = False
+        try:
+            if _fields_set is not None:
+                requested_fields = set(_fields_set)
+                invalid_fields = not requested_fields.issubset(cls.model_fields)
+        except Exception:
+            invalid_fields = True
+        if invalid_fields:
+            raise ProviderAccountingError from None
+
+        validated = cls._validate_accounting_model(values)
+        if requested_fields is not None:
+            object.__setattr__(
+                validated,
+                "__pydantic_fields_set__",
+                requested_fields,
+            )
+        return validated
+
+    def copy(
+        self,
+        *,
+        include: Any = None,
+        exclude: Any = None,
+        update: dict[str, Any] | None = None,
+        deep: bool = False,
+    ) -> Self:
+        if include is None and exclude is None and update is None:
+            return self.model_copy(deep=deep)
+
+        values: dict[str, Any] | None = None
+        try:
+            values = self.model_dump(
+                include=include,
+                exclude=exclude,
+                round_trip=True,
+            )
+            if update is not None:
+                values.update(update)
+        except Exception:
+            pass
+        if values is None:
+            raise ProviderAccountingError from None
+        return type(self)._validate_accounting_model(values)
 
 
 def _canonical_decimal(value: Decimal) -> str:
