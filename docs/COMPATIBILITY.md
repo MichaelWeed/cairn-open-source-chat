@@ -19,7 +19,7 @@ validation.
   },
   "compatibility": {
     "chat_api": "1.0",
-    "sse_events": "1.0",
+    "sse_events": "1.1",
     "widget": "0.1.0",
     "local_retrieval_store": "1",
     "local_corpus": "1"
@@ -78,3 +78,11 @@ validation.
 Capability state is descriptive, not a runtime health signal. `available` means the
 feature is built for its documented path, `development_only` identifies deterministic
 development/test implementations, and `planned` means callers must not depend on it.
+
+## Chat compatibility 1.0 and SSE compatibility 1.1
+
+The public chat request keeps the same four keys and does not require a version
+field. KAN-46a adds validation bounds without changing successful envelopes. SSE
+1.1 adds error codes for invalid requests, budgets, concurrency, timeouts,
+retrieval, and cancellation, plus `limit` and `cancelled` done reasons. Existing
+event names and payload fields remain compatible.

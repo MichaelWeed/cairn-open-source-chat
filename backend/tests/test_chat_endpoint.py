@@ -5,12 +5,13 @@ from pathlib import Path
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.types import Message, Receive, Scope, Send
 
-from app.api.contracts import ChatTurn
+from app.api.contracts import ProviderChunk, ProviderGenerationRequest
 from app.config import Settings
 from app.db import bootstrap
 from app.ingest.pipeline import ingest_upload
-from app.main import create_app
+from app.main import ChatRequestBodyLimitMiddleware, create_app
 from app.providers.base import Provider
 from app.providers.echo import EchoProvider
 
@@ -21,9 +22,7 @@ def fake_embeddings(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class FailingProvider(Provider):
-    async def stream(
-        self, *, message: str, history: list[ChatTurn], context: str | None = None
-    ) -> AsyncIterator[str]:
+    async def stream(self, request: ProviderGenerationRequest) -> AsyncIterator[ProviderChunk]:
         raise ConnectionError("simulated provider outage")
         yield  # pragma: no cover - unreachable, satisfies the generator type
 
@@ -35,13 +34,17 @@ class CapturingProvider(Provider):
     just running and being discarded."""
 
     def __init__(self) -> None:
-        self.last_context: str | None = None
+        self.last_request: ProviderGenerationRequest | None = None
 
-    async def stream(
-        self, *, message: str, history: list[ChatTurn], context: str | None = None
-    ) -> AsyncIterator[str]:
-        self.last_context = context
-        yield "ok"
+    async def stream(self, request: ProviderGenerationRequest) -> AsyncIterator[ProviderChunk]:
+        self.last_request = request
+        yield ProviderChunk(delta="ok")
+
+
+class WhitespaceLimitProvider(Provider):
+    async def stream(self, request: ProviderGenerationRequest) -> AsyncIterator[ProviderChunk]:
+        yield ProviderChunk(delta="abc")
+        yield ProviderChunk(delta="  x")
 
 
 def parse_sse(body: str) -> list[tuple[str, str]]:
@@ -144,6 +147,28 @@ def test_chunks_reconstruct_message(grounded_client: TestClient) -> None:
     events = parse_sse(resp.text)
     deltas = [json.loads(data)["delta"] for t, data in events if t == "chunk"]
     assert "".join(deltas) == "hello world"
+
+
+def test_output_limit_emits_whitespace_only_safe_prefix(tmp_path: Path) -> None:
+    settings = Settings(
+        database_path=tmp_path / "test.db",
+        chroma_path=tmp_path / "chroma",
+        retrieval_max_distance=1000.0,
+        max_output_chars=5,
+    )
+    app = create_app(settings, provider=WhitespaceLimitProvider())
+
+    with TestClient(app) as client:
+        _ingest(app, settings, "faq.md", b"Grounding for the provider response.")
+        response = client.post(
+            "/api/v1/chat/message",
+            json={"session_id": "s1", "message": "show the bounded answer"},
+        )
+
+    events = parse_sse(response.text)
+    chunks = [json.loads(data)["delta"] for event_type, data in events if event_type == "chunk"]
+    assert chunks == ["abc", "  "]
+    assert json.loads(events[-1][1])["finish_reason"] == "limit"
 
 
 def test_refuses_and_skips_provider_when_nothing_ingested(client: TestClient) -> None:
@@ -299,9 +324,151 @@ def test_retrieval_grounds_the_reply_and_emits_citations(tmp_path: Path) -> None
         {"id": "doc-1", "title": "returns.md", "url": "document://doc-1"}
     ]
 
-    assert provider.last_context is not None
-    assert "30 days" in provider.last_context
-    assert "<retrieved-context>" in provider.last_context
+    assert provider.last_request is not None
+    assert "30 days" in provider.last_request.retrieved_context
+    assert "<retrieved-context>" in provider.last_request.retrieved_context
+
+
+def test_public_context_never_becomes_provider_instruction_or_retrieved_context(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(
+        database_path=tmp_path / "test.db",
+        chroma_path=tmp_path / "chroma",
+        retrieval_max_distance=1000.0,
+        system_instruction="Server-owned instruction",
+    )
+    provider = CapturingProvider()
+    app = create_app(settings, provider=provider)
+    with TestClient(app) as client:
+        _ingest(app, settings, "faq.md", b"Return policy text")
+        response = client.post(
+            "/api/v1/chat/message",
+            json={
+                "session_id": "s1",
+                "message": "returns",
+                "context": {"locale": "en-US", "page_path": "/public-marker"},
+            },
+        )
+
+    assert response.status_code == 200
+    assert provider.last_request is not None
+    assert provider.last_request.system_instruction == "Server-owned instruction"
+    assert "/public-marker" not in provider.last_request.retrieved_context
+    assert "en-US" not in provider.last_request.retrieved_context
+
+
+def test_emitted_citations_enforce_count_and_title_bounds(tmp_path: Path) -> None:
+    settings = Settings(
+        database_path=tmp_path / "test.db",
+        chroma_path=tmp_path / "chroma",
+        retrieval_top_k=7,
+        retrieval_max_distance=1000.0,
+    )
+    app = create_app(settings, provider=CapturingProvider())
+
+    with TestClient(app) as client:
+        for index in range(7):
+            _ingest(
+                app,
+                settings,
+                f"{'x' * 170}-{index}.md",
+                f"Relevant answer {index}".encode(),
+                document_id=f"doc-{index}",
+            )
+        response = client.post(
+            "/api/v1/chat/message",
+            json={"session_id": "s1", "message": "Relevant answer"},
+        )
+
+    assert response.status_code == 200
+    events = parse_sse(response.text)
+    citations_body = json.loads(next(data for event, data in events if event == "citations"))
+    assert len(citations_body["sources"]) == 6
+    assert all(len(source["title"]) <= 160 for source in citations_body["sources"])
+
+
+def test_actual_multibyte_body_size_is_capped(tmp_path: Path) -> None:
+    settings = Settings(database_path=tmp_path / "test.db", chroma_path=tmp_path / "chroma")
+    app = create_app(settings)
+    oversized = json.dumps(
+        {"session_id": "s1", "message": "ok", "padding": "é" * 9000}, ensure_ascii=False
+    ).encode("utf-8")
+    assert len(oversized) > 16_384
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/chat/message",
+            content=oversized,
+            headers={"content-type": "application/json", "content-length": "1"},
+        )
+
+    assert response.status_code == 413
+    assert response.json() == {"detail": "Request body too large"}
+
+
+def test_body_at_exact_byte_limit_is_parsed_normally(tmp_path: Path) -> None:
+    settings = Settings(database_path=tmp_path / "test.db", chroma_path=tmp_path / "chroma")
+    app = create_app(settings)
+    body = b'{"session_id":"s1","message":"ok"}'
+    body += b" " * (16_384 - len(body))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/chat/message",
+            content=body,
+            headers={"content-type": "application/json"},
+        )
+
+    assert response.status_code == 200
+
+
+async def test_body_limit_stops_receiving_after_first_oversized_chunk() -> None:
+    consumed: list[bytes] = []
+
+    async def downstream(scope: Scope, receive: Receive, send: Send) -> None:
+        while True:
+            message = await receive()
+            consumed.append(message.get("body", b""))
+            if not message.get("more_body", False):
+                return
+
+    request_messages: list[Message] = [
+        {"type": "http.request", "body": b"123", "more_body": True},
+        {"type": "http.request", "body": b"456", "more_body": True},
+        {"type": "http.request", "body": b"must-not-be-read", "more_body": False},
+    ]
+    response_messages: list[Message] = []
+
+    async def receive() -> Message:
+        return request_messages.pop(0)
+
+    async def send(message: Message) -> None:
+        response_messages.append(message)
+
+    middleware = ChatRequestBodyLimitMiddleware(downstream, max_bytes=5)
+    scope: Scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/api/v1/chat/message",
+        "raw_path": b"/api/v1/chat/message",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [],
+        "client": ("testclient", 50000),
+        "server": ("testserver", 80),
+        "state": {},
+    }
+
+    await middleware(scope, receive, send)
+
+    assert consumed == [b"123"]
+    assert len(request_messages) == 1
+    assert response_messages[0]["type"] == "http.response.start"
+    assert response_messages[0]["status"] == 413
 
 
 def test_no_citations_event_when_nothing_ingested(tmp_path: Path) -> None:

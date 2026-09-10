@@ -1,7 +1,10 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.api.contracts import OUTPUT_CHARS_MAX, OUTPUT_TOKENS_MAX, SYSTEM_INSTRUCTION_MAX_CHARS
 
 DEFAULT_DB_PATH = Path("data/cairn.db")
 DEFAULT_CHROMA_PATH = Path("data/chroma")
@@ -18,6 +21,9 @@ class Settings(BaseSettings):
     cairn_port: int = 8080
     origin_allowlist: str = ""
     chat_message_max_chars: int = 500
+    system_instruction: str = Field(default="", max_length=SYSTEM_INSTRUCTION_MAX_CHARS)
+    max_output_tokens: int = Field(default=OUTPUT_TOKENS_MAX, ge=1, le=OUTPUT_TOKENS_MAX)
+    max_output_chars: int = Field(default=OUTPUT_CHARS_MAX, ge=1, le=OUTPUT_CHARS_MAX)
     database_path: Path = DEFAULT_DB_PATH
     chroma_path: Path = DEFAULT_CHROMA_PATH
     # None preserves the deterministic local/test startup path. The live
