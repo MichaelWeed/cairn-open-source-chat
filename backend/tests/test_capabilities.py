@@ -32,7 +32,7 @@ EXPECTED_MANIFEST: dict[str, Any] = {
         "providers": {
             "ollama": "available",
             "echo": "development_only",
-            "gemini": "planned",
+            "gemini": "available",
         },
         "embeddings": {
             "ollama": "available",

@@ -8,15 +8,16 @@ Cairn is a free, Apache-2.0 developer preview for teams that want useful support
 answers without a SaaS subscription, per-seat pricing, or a third party holding
 their customer conversations. Point it at the documents your team trusts; Cairn
 retrieves relevant passages, cites its sources, and refuses when retrieval is below
-its configured confidence threshold. The supported path uses local Ollama models,
-so an operator keeps the service and its data in their own infrastructure.
+its configured confidence threshold. The supported default path uses local Ollama
+models, so an operator can keep the service and its data in their own infrastructure.
 
 **Developer preview / pre-release.** Today you can run the cited local demo and
 use the generic `<cairn-chat>` custom element. It provides a shadow-DOM chat UI,
 accepts `api-url` and `assistant-name`, and streams cited answers over SSE. Human
-handoff, order-status deep links, an admin experience, the guardrail pipeline, a
-hosted-provider adapter, and any author-hosted service are planned, not available
-behavior.
+handoff, order-status deep links, an admin experience, the guardrail pipeline, and
+any author-hosted service are planned, not available behavior. An optional Gemini
+generation adapter is available for explicit opt-in use; it is excluded from the
+local default install and does not establish production or hosted readiness.
 
 It is for CTOs and support leaders evaluating a grounded, self-hosted alternative
 to an opaque support bot. The problem is practical: an unsupported answer can

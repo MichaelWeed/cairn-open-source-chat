@@ -1,7 +1,8 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.api.contracts import OUTPUT_CHARS_MAX, OUTPUT_TOKENS_MAX, SYSTEM_INSTRUCTION_MAX_CHARS
@@ -15,6 +16,13 @@ class Settings(BaseSettings):
 
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b-instruct"
+    deployment_mode: Literal["development", "test", "production"] = "development"
+    provider: Literal["echo", "ollama", "gemini"] = "echo"
+    embedding_provider: Literal["fake", "ollama"] = "fake"
+    gemini_api_key: SecretStr | None = None
+    gemini_model: Literal["gemini-3.8-flash"] = "gemini-3.8-flash"
+    gemini_timeout_seconds: float = Field(default=30.0, gt=0, le=180, allow_inf_nan=False)
+    gemini_max_retries: Literal[0, 1] = 1
     admin_bootstrap_password: str = ""
     # Host port the stack is published on (compose maps it to the
     # container's 8000). Only used to derive the default origin allowlist.
@@ -37,6 +45,31 @@ class Settings(BaseSettings):
     rate_limit_ip_refill_per_minute: float = 20
     rate_limit_session_capacity: float = 10
     rate_limit_session_refill_per_minute: float = 10
+
+    @field_validator("deployment_mode", "provider", "embedding_provider", mode="before")
+    @classmethod
+    def normalize_selection(cls, value: object) -> object:
+        return value.lower() if isinstance(value, str) else value
+
+    @field_validator("gemini_api_key", mode="before")
+    @classmethod
+    def trim_gemini_api_key(cls, value: object) -> object:
+        if isinstance(value, SecretStr):
+            return value.get_secret_value().strip()
+        return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def validate_provider_pair(self) -> "Settings":
+        if self.provider == "gemini" and (
+            self.gemini_api_key is None or not self.gemini_api_key.get_secret_value()
+        ):
+            raise ValueError("GEMINI_API_KEY is required when PROVIDER=gemini")
+        if self.deployment_mode == "production":
+            if self.provider not in ("ollama", "gemini"):
+                raise ValueError("production PROVIDER must be ollama or gemini")
+            if self.embedding_provider != "ollama":
+                raise ValueError("production EMBEDDING_PROVIDER must be ollama")
+        return self
 
     @property
     def origins(self) -> list[str]:

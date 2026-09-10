@@ -24,7 +24,7 @@ built-vs-designed status, request flow, and the cost of each deliberate constrai
 [FastAPI backend]
    Guardrail pipeline (ordered middleware, toggleable)
    -> Router: RAG answer | tool call | refusal
-   -> Provider adapter (Ollama built | hosted adapter planned)
+   -> Provider adapter (Ollama built | optional Gemini built)
         |
    [SQLite flat index]  vectors
    [SQLite, WAL]        docs metadata, provider registry, config, metric counters
@@ -33,10 +33,10 @@ built-vs-designed status, request flow, and the cost of each deliberate constrai
 ```
 
 The built developer-preview slice is the FastAPI chat endpoint, a local SQLite flat
-vector index and SQLite metadata state, in-process Markdown/PDF ingestion, Ollama
-and echo providers, retrieval/refusal/citations, the `/demo` page, and the generic
+vector index and SQLite metadata state, in-process Markdown/PDF ingestion, Ollama,
+optional Gemini, and echo providers, retrieval/refusal/citations, the `/demo` page, and the generic
 `<cairn-chat>` custom element with a shadow-DOM chat UI and `api-url` and
-`assistant-name` attributes. The admin surface, hosted provider, tools, and
+`assistant-name` attributes. The admin surface, hosted operations, tools, and
 guardrail pipeline are planned.
 
 `GET /api/v1/capabilities` returns the static packaged capability manifest. Use it
@@ -104,7 +104,32 @@ origin must be added to `ORIGIN_ALLOWLIST` before its widget can call Cairn.
 
 ### Container plumbing smoke test
 
-`make up` requires Docker or Podman with Compose. The checked-in configuration uses the echo provider and fake embeddings, does not ingest the bundled corpus, and exposes the demo page but no `/admin` route. Use it to check container, health, static-page, and API plumbing. It does not prove a grounded or cited answer. Set `PROVIDER=ollama`, `EMBEDDING_PROVIDER=ollama`, and an Ollama URL reachable from the container only when intentionally testing that alternate configuration; ingestion is still not provided by `make up`.
+`make up` requires Docker or Podman with Compose. The checked-in configuration uses the echo provider and fake embeddings, does not ingest the bundled corpus, and exposes the demo page but no `/admin` route. Use it to check container, health, static-page, and API plumbing. It does not prove a grounded or cited answer. Set `PROVIDER=ollama`, `EMBEDDING_PROVIDER=ollama`, and an Ollama URL reachable from the container only when intentionally testing that alternate configuration; ingestion is still not provided by `make up`. The grounded `make live` workflow remains Ollama-only.
+
+### Optional Gemini generation profile
+
+Gemini is an explicit generation-only option. A source install uses
+`cd backend && uv sync --extra gemini`. An opt-in container build uses
+`CAIRN_INSTALL_GEMINI=true docker compose build backend`; the checked-in default
+is `false`, so the ordinary image does not contain `google-genai`. Never pass
+`GEMINI_API_KEY` as a build argument. At runtime, select `PROVIDER=gemini`, set a
+server-side `GEMINI_API_KEY`, and use real Ollama embeddings for production.
+
+The fixed settings are `GEMINI_MODEL=gemini-3.8-flash`,
+`GEMINI_TIMEOUT_SECONDS=30.0`, and `GEMINI_MAX_RETRIES=1`. Development and test
+default to Echo plus fake embeddings. Production accepts only Ollama or Gemini
+generation paired with Ollama embeddings; Gemini also requires its key and optional
+runtime profile. The adapter and content-free model probe are mocked in tests. No
+live Gemini call is part of validation, and `/readyz` does not probe Gemini.
+
+| Mode | Generation | Embeddings | Result |
+| --- | --- | --- | --- |
+| development/test | missing, Echo, or Ollama | missing, fake, or Ollama | Accepted local configuration |
+| development/test | Gemini | fake or Ollama | Requires nonblank `GEMINI_API_KEY` and the optional profile |
+| production | Echo, missing, blank, or unknown | any | Rejected |
+| production | Ollama or Gemini | fake, missing, blank, or unknown | Rejected |
+| production | Ollama | Ollama | Accepted without Gemini inputs |
+| production | Gemini | Ollama | Requires nonblank key and the optional profile |
 
 **Config plumbing:** compose only interpolates `.env` into `compose.yaml` — it never passes `.env` to the container by itself. Every knob in `.env.example` is therefore forwarded explicitly in the `environment:` block of `compose.yaml`, with defaults mirroring `backend/app/config.py`. Add new settings in all three places.
 
@@ -143,7 +168,8 @@ never included in provider instructions or retrieved context. Response is SSE:
 
 Widget behavior on `error`: render message; reconnect once if `retryable`.
 Provider adapters receive one frozen `ProviderGenerationRequest`; Ollama receives
-the server-owned token cap through `num_predict`. Provider deltas are at most 1,000
+the server-owned token cap through `num_predict`, while Gemini receives it through
+the SDK generation configuration. Provider deltas are at most 1,000
 characters, and the endpoint stops the provider at the configured total character
 budget (default 6,000), ending with `done.limit` when truncated.
 
@@ -154,7 +180,7 @@ WISMO tool result includes `"mode": "deep_link" | "api"`. The system prompt forb
 * **Prompt injection**: fixed prompt template with delimited sections; retrieved chunks wrapped in explicit untrusted-context markers; instruction hierarchy stated; adversarial suite (`backend/tests/adversarial/`) includes poisoned-document retrieval cases and must pass in CI.
 * **Endpoint abuse**: Origin allowlist + CORS, per-IP and per-session token buckets, daily budget cap that degrades to a static "high demand" message, optional signed widget token.
 * **Output**: PII scrubber on responses; citation-required policy; refusal template on low retrieval confidence.
-* **Supply chain**: uv and npm lockfiles with hashes; CycloneDX SBOM per build; Grype gate; digest-pinned images; dependency cooldown window. Release tags ship SBOM + checksums.
+* **Supply chain**: uv and npm lockfiles with hashes; separate default and optional-Gemini backend CycloneDX SBOMs; Grype gates for both image profiles; digest-pinned images; dependency cooldown window. Release tags ship SBOM + checksums.
 * **Data**: raw messages never persisted server-side; metrics are counters and topic labels only. Optional ticket persistence (Phase 3) is off by default and documented in [docs/PRIVACY.md](docs/PRIVACY.md).
 
 Report vulnerabilities per [docs/SECURITY.md](docs/SECURITY.md).
@@ -183,7 +209,7 @@ counterpart to `make eval`'s quantitative metrics.
 
 ## 7. Development
 
-* Python: `uv sync` in `backend/`; `ruff`, `mypy`, `pytest` gate CI. Widget: `npm ci && npm run build` in `widget/` (esbuild, size budget check < 100 KB gz).
+* Python: `uv sync` in `backend/` for local-only development or `uv sync --extra gemini` for the optional adapter; `ruff`, `mypy`, `pytest` gate CI. Widget: `npm ci && npm run build` in `widget/` (esbuild, size budget check < 100 KB gz).
 * Contract-first: change `contracts.py` only via PR that updates widget, tests, and docs together.
 * No stubs/TODOs in merged code (CI grep gate). New dependencies require a one-line justification in the PR and land in the lockfile with hashes.
 * Agent-assisted contributions follow `CLAUDE.md` / `AGENTS.md`: one component + its tests per task, frozen contracts, PR review with full diffs.
@@ -200,7 +226,7 @@ No core changes required; the registry injects enabled tool schemas into the pro
 
 ## 9. Operations
 
-* `GET /healthz` (liveness) and `GET /readyz` (provider + vector store checks); no sensitive data in either.
+* `GET /healthz` provides liveness. `GET /readyz` checks the database, local vector store, and corpus state; hosted-provider readiness remains planned. Neither response contains sensitive data.
 * Structured JSON logs: latency, guardrail stage outcomes, error codes, query counts. No message bodies.
 * Backup = copy the SQLite metadata database and
   `CHROMA_PATH/cairn-vectors-v1.sqlite3` (volume-mounted).
