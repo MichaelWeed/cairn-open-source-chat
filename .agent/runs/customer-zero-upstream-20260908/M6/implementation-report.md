@@ -11,6 +11,7 @@ READY_FOR_REVIEW
 - Readiness repair commit: `fc2a6661a695fdf3529a6d7d8a93a165a9fe1c8e`
 - Privacy/offline-guard repair commit: `fa170863e6330d04dd85edea3de524a7fb6de239`
 - Full-gate test-typing repair commit: `051946e`
+- Firestore image smoke repair commit: `5e182a7`
 - Branch: `mara/KAN-47b-firestore-retrieval`
 - Push: not performed
 
@@ -161,6 +162,34 @@ Post-repair verification, all status 0:
 
 Per control-lane instruction, the shared full and image gates were not rerun in
 this repair lane. The control lane retains ownership of that serialized rerun.
+
+## Firestore image smoke repair
+
+The control lane's next full gate exposed that pinned
+`google-cloud-firestore==2.29.0` returns `None` from `AsyncClient.close()`, while
+both Firestore-bearing image smoke scripts passed that result to `asyncio.run`.
+Commit `5e182a7` calls the pinned SDK close synchronously and asserts its deterministic
+`None` result in both the Firestore-only and combined-hosted profiles. The import,
+profile-exclusion, anonymous-credential, vector, and filter assertions remain.
+
+The repaired gate then exposed a second same-boundary assertion issue: the
+Gemini-only profile queried the absent nested `google.cloud.firestore` module
+without first checking its absent parent. The repair adds that parent guard while
+continuing to require Firestore to be absent. A toolchain regression fixes both
+forms in place.
+
+Post-repair verification, all status 0:
+
+- `make firestore-image-check`, including all four profiles, both Firestore-bearing
+  smoke checks, both fixed-vulnerability scans, and default-image restoration;
+- full backend Ruff including eval: `All checks passed!`;
+- full backend mypy including eval: `Success: no issues found in 66 source files`;
+- toolchain plus Firestore/shared-conformance matrix: `93 passed`, with the
+  pre-existing Starlette warning;
+- `git diff --check`: clean.
+
+No provider, cloud, credential-discovery, or live Firestore call occurred. The
+shared full gate was not run in this repair lane, per control instruction.
 
 ## Self-review
 
