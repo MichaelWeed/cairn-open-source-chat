@@ -73,27 +73,35 @@ function fixture(widgetSource) {
     const error = rectangle(".error");
     const controls = [rectangle("textarea"), rectangle(".send"), rectangle(".close")];
     const tolerance = 0.5;
+    const viewportBounds = { top: 0, right: innerWidth, bottom: innerHeight, left: 0 };
+    const containedBy = (inner, outer) =>
+      inner.top >= outer.top - tolerance &&
+      inner.left >= outer.left - tolerance &&
+      inner.right <= outer.right + tolerance &&
+      inner.bottom <= outer.bottom + tolerance;
+    const errorElement = root.querySelector(".error");
+    const errorStyle = getComputedStyle(errorElement);
     const result = {
       viewport: { width: innerWidth, height: innerHeight },
       panel,
       messages,
       composer,
       error,
+      controls,
       overlapPixels: Math.max(0, messages.bottom - composer.top),
-      panelInsideViewport:
-        panel.top >= -tolerance &&
-        panel.left >= -tolerance &&
-        panel.right <= innerWidth + tolerance &&
-        panel.bottom <= innerHeight + tolerance,
-      controlsInsideViewport: controls.every(
-        (control) =>
-          control.top >= -tolerance &&
-          control.left >= -tolerance &&
-          control.right <= innerWidth + tolerance &&
-          control.bottom <= innerHeight + tolerance,
-      ),
+      panelInsideViewport: containedBy(panel, viewportBounds),
+      controlsInsideViewport: controls.every((control) => containedBy(control, viewportBounds)),
+      controlsInsidePanel: controls.every((control) => containedBy(control, panel)),
+      errorInsideViewport: containedBy(error, viewportBounds),
+      errorInsidePanel: containedBy(error, panel),
       messagesDoNotOverlapComposer: messages.bottom <= composer.top + tolerance,
-      errorVisible: !root.querySelector(".error").hidden,
+      errorVisible:
+        !errorElement.hidden &&
+        errorStyle.display !== "none" &&
+        errorStyle.visibility !== "hidden" &&
+        Number(errorStyle.opacity) > 0 &&
+        error.width > tolerance &&
+        error.height > tolerance,
     };
     document.querySelector("#result").textContent = JSON.stringify(result);
     document.title = result.messagesDoNotOverlapComposer ? "KAN-85 pass" : "KAN-85 fail";
@@ -193,6 +201,9 @@ async function main() {
     assert.equal(result.errorVisible, true, "fixture must exercise the visible error state");
     assert.equal(result.panelInsideViewport, true, "panel must remain inside the viewport");
     assert.equal(result.controlsInsideViewport, true, "close and composer controls must stay reachable");
+    assert.equal(result.controlsInsidePanel, true, "close and composer controls must stay inside the panel");
+    assert.equal(result.errorInsideViewport, true, "error banner must remain inside the viewport");
+    assert.equal(result.errorInsidePanel, true, "error banner must remain inside the panel");
     assert.equal(
       result.messagesDoNotOverlapComposer,
       true,
