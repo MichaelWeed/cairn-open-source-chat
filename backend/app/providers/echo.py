@@ -1,8 +1,9 @@
 import asyncio
 from collections.abc import AsyncIterator
 
-from app.api.contracts import ProviderChunk, ProviderGenerationRequest
+from app.api.contracts import ProviderGenerationRequest
 from app.providers.base import Provider
+from app.providers.contracts import ProviderStreamEvent, ProviderTextChunk
 
 
 class EchoProvider(Provider):
@@ -16,9 +17,11 @@ class EchoProvider(Provider):
     def __init__(self, delay_seconds: float = 0.0) -> None:
         self._delay_seconds = delay_seconds
 
-    async def stream(self, request: ProviderGenerationRequest) -> AsyncIterator[ProviderChunk]:
+    async def stream(
+        self, request: ProviderGenerationRequest
+    ) -> AsyncIterator[ProviderStreamEvent]:
         words = request.message.split()
         for i, word in enumerate(words):
             if self._delay_seconds:
                 await asyncio.sleep(self._delay_seconds)
-            yield ProviderChunk(delta=word if i == len(words) - 1 else f"{word} ")
+            yield ProviderTextChunk(delta=word if i == len(words) - 1 else f"{word} ")

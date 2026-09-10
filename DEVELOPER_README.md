@@ -48,6 +48,10 @@ Design invariants and current limits:
 * **Server holds no conversation state.** The API accepts up to five caller-supplied history turns. The current demo page sends an empty history array; the generic widget keeps a session identifier in browser session storage when available and bounded history in memory.
 * **No admin endpoints exist yet.** The planned admin authentication design is a single account with Argon2id, a SameSite=Strict session cookie, CSRF protection, and optional TOTP.
 * **Contracts are frozen Pydantic models** (`extra="forbid"`). The SSE contract and tool schemas in `backend/app/api/contracts.py` are the source of truth.
+* **Provider stream events are internal and self-identifying.** Text and usage
+  variants are frozen, discriminated models. Usage records carry provider, model,
+  attempt, optional tier, and bounded token counts; the public SSE contract remains
+  unchanged and never emits usage records.
 * **The vector index is local and versioned.** Every ingestion path (upload, scrape,
   future admin reindex) writes through `app.state.document_collection`, which owns a
   SQLite flat index at `CHROMA_PATH/cairn-vectors-v1.sqlite3`. Legacy Chroma files
@@ -173,6 +177,15 @@ the SDK generation configuration. Provider deltas are at most 1,000
 characters, and the endpoint stops the provider at the configured total character
 budget (default 6,000), ending with `done.limit` when truncated.
 
+Ollama and Gemini normalize provider-reported token counts into internal usage
+events. Cumulative provider reports are merged by taking the latest non-null,
+non-decreasing field rather than summing repeated snapshots. Pure accounting
+helpers price a usage event only against an operator-supplied immutable snapshot
+identified by canonical JSON and SHA-256. Rates and totals use `Decimal`; unknown
+usage is never treated as zero, mixed currencies and empty aggregates fail closed,
+and projections are available only with complete priced coverage. No default
+price catalog, persistence sink, budget enforcement, or public usage event exists.
+
 Retrieval crosses a separate frozen internal contract (`retrieval_contracts.py`,
 version `1.0`). Chat currently requests only `local_active` corpus compatibility 2
 with squared-L2 distance. The local adapter clamps `RETRIEVAL_TOP_K` to the store
@@ -224,6 +237,19 @@ counterpart to `make eval`'s quantitative metrics.
 * Contract-first: change `contracts.py` only via PR that updates widget, tests, and docs together.
 * No stubs/TODOs in merged code (CI grep gate). New dependencies require a one-line justification in the PR and land in the lockfile with hashes.
 * Agent-assisted contributions follow `CLAUDE.md` / `AGENTS.md`: one component + its tests per task, frozen contracts, PR review with full diffs.
+
+Focused provider-accounting checks run without live provider calls:
+
+```sh
+cd backend
+uv run --extra gemini pytest -q \
+  tests/test_provider_accounting.py tests/test_provider_conformance.py \
+  tests/test_provider_gemini.py tests/test_provider_ollama.py \
+  tests/test_provider_echo.py tests/test_chat_stream.py \
+  tests/test_chat_endpoint.py tests/test_capabilities.py
+uv run --extra gemini ruff check . ../eval
+uv run --extra gemini mypy . ../eval/run_eval.py
+```
 
 ## 8. Extending: Adding a Tool
 

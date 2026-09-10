@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "release": {
     "stage": "developer-preview",
     "version": "0.0.0"
@@ -9,7 +9,8 @@
     "sse_events": "1.1",
     "widget": "0.1.0",
     "local_retrieval_store": "1",
-    "local_corpus": "2"
+    "local_corpus": "2",
+    "provider_accounting": "1.0"
   },
   "capabilities": {
     "providers": {
@@ -44,7 +45,8 @@
       "liveness": "available",
       "local_readiness": "available",
       "capability_discovery": "available",
-      "hosted_readiness": "planned"
+      "hosted_readiness": "planned",
+      "provider_usage_cost": "available"
     }
   }
 }

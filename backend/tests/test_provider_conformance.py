@@ -8,8 +8,13 @@ from typing import cast
 import httpx
 import pytest
 
-from app.api.contracts import ProviderChunk, ProviderGenerationRequest
+from app.api.contracts import ProviderGenerationRequest
 from app.providers.base import Provider
+from app.providers.contracts import (
+    ProviderStreamEvent,
+    ProviderTextChunk,
+    ProviderUsageChunk,
+)
 from app.providers.gemini import GeminiProvider
 from app.providers.ollama import OllamaProvider
 
@@ -152,10 +157,13 @@ async def test_provider_contract_reconstructs_ordered_bounded_text(
     kind: str, texts: list[str], expected: str
 ) -> None:
     harness = _harness(kind, texts)
-    chunks = [chunk async for chunk in harness.provider.stream(_request())]
+    events = [event async for event in harness.provider.stream(_request())]
+    chunks = [event for event in events if isinstance(event, ProviderTextChunk)]
 
     assert "".join(chunk.delta for chunk in chunks) == expected
-    assert all(isinstance(chunk, ProviderChunk) for chunk in chunks)
+    assert all(
+        isinstance(event, (ProviderTextChunk, ProviderUsageChunk)) for event in events
+    )
     assert all(chunk.delta.strip() for chunk in chunks)
     assert all(1 <= len(chunk.delta) <= 1000 for chunk in chunks)
     assert harness.is_closed() is True
@@ -164,8 +172,12 @@ async def test_provider_contract_reconstructs_ordered_bounded_text(
 @pytest.mark.parametrize("kind", ["ollama", "gemini"])
 async def test_provider_source_closes_when_consumer_stops_early(kind: str) -> None:
     harness = _harness(kind, ["first", "second"])
-    iterator = cast(AsyncGenerator[ProviderChunk, None], harness.provider.stream(_request()))
-    assert (await anext(iterator)).delta == "first"
+    iterator = cast(
+        AsyncGenerator[ProviderStreamEvent, None], harness.provider.stream(_request())
+    )
+    first = await anext(iterator)
+    assert isinstance(first, ProviderTextChunk)
+    assert first.delta == "first"
     await iterator.aclose()
     assert harness.is_closed() is True
 
@@ -212,7 +224,7 @@ async def test_provider_caller_cancellation_propagates_and_closes_source(kind: s
         def closed() -> bool:
             return byte_stream.closed
 
-    async def collect() -> list[ProviderChunk]:
+    async def collect() -> list[ProviderStreamEvent]:
         return [chunk async for chunk in provider.stream(_request())]
 
     task = asyncio.create_task(collect())
