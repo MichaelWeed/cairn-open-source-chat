@@ -3,6 +3,7 @@
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -128,28 +129,16 @@ def _parse_entry(relative_path: str, value: object) -> SourceProvenance:
     )
 
 
-def load_provenance_manifest(
-    corpus_path: Path, documents: dict[str, bytes]
+def parse_provenance_manifest(
+    manifest_bytes: bytes, documents: Mapping[str, bytes]
 ) -> dict[str, SourceProvenance]:
-    """Load and validate the complete startup manifest before ingestion begins."""
-    manifest_path = corpus_path / MANIFEST_FILENAME
-    if manifest_path.is_symlink():
-        raise CorpusProvenanceError("provenance manifest must not be a symbolic link")
-    try:
-        encoded = manifest_path.read_bytes()
-    except FileNotFoundError as error:
-        raise CorpusProvenanceError(
-            f"configured corpus requires {MANIFEST_FILENAME} at its root"
-        ) from error
-    except OSError as error:
-        raise CorpusProvenanceError(f"could not read provenance manifest: {error}") from error
-
-    if len(encoded) > MAX_MANIFEST_BYTES:
+    """Validate manifest bytes against the exact same-read document snapshot."""
+    if len(manifest_bytes) > MAX_MANIFEST_BYTES:
         raise CorpusProvenanceError(
             f"provenance manifest exceeds the {MAX_MANIFEST_BYTES}-byte limit"
         )
     try:
-        decoded = json.loads(encoded.decode("utf-8"), object_pairs_hook=_strict_object)
+        decoded = json.loads(manifest_bytes.decode("utf-8"), object_pairs_hook=_strict_object)
     except UnicodeDecodeError as error:
         raise CorpusProvenanceError("provenance manifest must be UTF-8") from error
     except _DuplicateJsonKeyError as error:
@@ -162,9 +151,7 @@ def load_provenance_manifest(
             "provenance manifest must contain exactly version and documents"
         )
     if type(decoded["version"]) is not int or decoded["version"] != MANIFEST_VERSION:
-        raise CorpusProvenanceError(
-            f"provenance manifest version must be {MANIFEST_VERSION}"
-        )
+        raise CorpusProvenanceError(f"provenance manifest version must be {MANIFEST_VERSION}")
     manifest_documents = decoded["documents"]
     if not isinstance(manifest_documents, dict):
         raise CorpusProvenanceError("provenance manifest documents must be an object")
@@ -178,17 +165,31 @@ def load_provenance_manifest(
     manifested_paths = set(parsed)
     missing = sorted(expected_paths - manifested_paths)
     if missing:
-        raise CorpusProvenanceError(
-            f"missing provenance entries for: {', '.join(missing)}"
-        )
+        raise CorpusProvenanceError(f"missing provenance entries for: {', '.join(missing)}")
     unlisted = sorted(manifested_paths - expected_paths)
     if unlisted:
-        raise CorpusProvenanceError(
-            f"unlisted provenance entries for: {', '.join(unlisted)}"
-        )
+        raise CorpusProvenanceError(f"unlisted provenance entries for: {', '.join(unlisted)}")
 
     for relative_path, content in documents.items():
         actual_hash = hashlib.sha256(content).hexdigest()
         if parsed[relative_path].sha256 != actual_hash:
             raise CorpusProvenanceError(f"provenance hash mismatch for {relative_path}")
     return parsed
+
+
+def load_provenance_manifest(
+    corpus_path: Path, documents: dict[str, bytes]
+) -> dict[str, SourceProvenance]:
+    """Load and validate the complete startup manifest before ingestion begins."""
+    manifest_path = corpus_path / MANIFEST_FILENAME
+    if manifest_path.is_symlink():
+        raise CorpusProvenanceError("provenance manifest must not be a symbolic link")
+    try:
+        manifest_bytes = manifest_path.read_bytes()
+    except FileNotFoundError as error:
+        raise CorpusProvenanceError(
+            f"configured corpus requires {MANIFEST_FILENAME} at its root"
+        ) from error
+    except OSError as error:
+        raise CorpusProvenanceError(f"could not read provenance manifest: {error}") from error
+    return parse_provenance_manifest(manifest_bytes, documents)
