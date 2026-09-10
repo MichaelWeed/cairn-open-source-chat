@@ -28,7 +28,7 @@ validation.
     "providers": {
       "ollama": "available",
       "echo": "development_only",
-      "gemini": "planned"
+      "gemini": "available"
     },
     "embeddings": {
       "ollama": "available",
@@ -88,6 +88,10 @@ rejected; mount regular files read-only.
 Capability state is descriptive, not a runtime health signal. `available` means the
 feature is built for its documented path, `development_only` identifies deterministic
 development/test implementations, and `planned` means callers must not depend on it.
+Gemini availability requires the optional dependency or image profile, an explicit
+provider selection, and a server-side key. `operations.hosted_readiness` remains
+`planned`; `/readyz` does not probe Gemini. The chat and SSE compatibility versions
+are unchanged.
 
 ## Internal retrieval contract 1.0
 

@@ -15,6 +15,8 @@ services:
   backend:
     build:
       context: ./backend
+      args:
+        CAIRN_INSTALL_GEMINI: ${CAIRN_INSTALL_GEMINI:-false}
     ports:
       # Host port is CAIRN_PORT (set it in .env if 8080 is taken on your
       # machine — `make up` preflights it and says so). The port stays
@@ -32,9 +34,14 @@ services:
       ORIGIN_ALLOWLIST: ${ORIGIN_ALLOWLIST:-}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:8b-instruct}
+      DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-development}
       PROVIDER: ${PROVIDER:-echo}
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-fake}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.8-flash}
+      GEMINI_TIMEOUT_SECONDS: ${GEMINI_TIMEOUT_SECONDS:-30.0}
+      GEMINI_MAX_RETRIES: ${GEMINI_MAX_RETRIES:-1}
       SYSTEM_INSTRUCTION: ${SYSTEM_INSTRUCTION:-}
       MAX_OUTPUT_TOKENS: ${MAX_OUTPUT_TOKENS:-1500}
       MAX_OUTPUT_CHARS: ${MAX_OUTPUT_CHARS:-6000}

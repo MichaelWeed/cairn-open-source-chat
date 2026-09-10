@@ -14,6 +14,7 @@ from app.api.contracts import (
     ProviderGenerationRequest,
 )
 from app.providers.base import Provider
+from app.providers.gemini import GeminiProviderError
 from app.retrieval import LocalRetrievalAdapter, build_context_block
 from app.retrieval_contracts import (
     LocalActiveScope,
@@ -59,6 +60,15 @@ class _LifecycleProvider(Provider):
 class _SensitiveInvalidProvider(Provider):
     async def stream(self, request: ProviderGenerationRequest) -> AsyncIterator[ProviderChunk]:
         yield ProviderChunk(delta="provider-response-sentinel\x00")
+
+
+class _NormalizedGeminiFailureProvider(Provider):
+    async def stream(self, request: ProviderGenerationRequest) -> AsyncIterator[ProviderChunk]:
+        if False:
+            yield ProviderChunk(delta="unreachable")
+        raise GeminiProviderError(
+            code="rate_limited", retryable=True, attempt_count=2
+        )
 
 
 async def _slow_source() -> AsyncIterator[ProviderChunk]:
@@ -383,3 +393,34 @@ async def test_unexpected_adapter_failure_is_content_free_and_skips_provider(
     assert provider.calls == 0
     assert caplog.records[-1].retrieval_error_code == "malformed_result"  # type: ignore[attr-defined]
     assert "adapter-secret" not in caplog.text
+
+
+async def test_normalized_gemini_failure_preserves_safe_sse_and_log_fields(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    events = [
+        event
+        async for event in chat_event_stream(
+            _NormalizedGeminiFailureProvider(),
+            ChatMessageRequest(session_id="session-sentinel", message="prompt-sentinel"),
+            _grounded_adapter(),
+        )
+    ]
+
+    error = events[-1]
+    assert error.model_dump() == {
+        "type": "error",
+        "code": "rate_limited",
+        "message": "The model provider is busy. Please try again.",
+        "retryable": True,
+    }
+    record = next(record for record in caplog.records if hasattr(record, "attempt_count"))
+    record_fields = vars(record)
+    assert record_fields["event"] == "provider_stream_failed"
+    assert record_fields["provider"] == "gemini"
+    assert record_fields["code"] == "rate_limited"
+    assert record_fields["retryable"] is True
+    assert record_fields["attempt_count"] == 2
+    assert not hasattr(record, "session_id")
+    assert "session-sentinel" not in caplog.text
+    assert "prompt-sentinel" not in caplog.text

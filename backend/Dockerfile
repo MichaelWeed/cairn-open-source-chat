@@ -21,11 +21,21 @@ RUN pip install --no-cache-dir --upgrade pip wheel setuptools==83.0.0 \
 
 WORKDIR /app
 
+ARG CAIRN_INSTALL_GEMINI=false
 COPY pyproject.toml uv.lock ./
-RUN uv sync --locked --no-install-project --no-dev
+RUN test "$CAIRN_INSTALL_GEMINI" = false || test "$CAIRN_INSTALL_GEMINI" = true \
+    && if [ "$CAIRN_INSTALL_GEMINI" = true ]; then \
+        uv sync --locked --no-install-project --no-dev --extra gemini; \
+    else \
+        uv sync --locked --no-install-project --no-dev; \
+    fi
 
 COPY app ./app
-RUN uv sync --locked --no-dev
+RUN if [ "$CAIRN_INSTALL_GEMINI" = true ]; then \
+        uv sync --locked --no-dev --extra gemini; \
+    else \
+        uv sync --locked --no-dev; \
+    fi
 
 RUN mkdir -p /data && chown -R cairn:cairn /app /data
 USER cairn

@@ -1,5 +1,3 @@
-import os
-
 from app.config import Settings
 from app.embedding_types import EmbeddingFunction
 from app.embeddings.fake import FakeEmbeddingFunction
@@ -13,8 +11,10 @@ def default_embedding_function(settings: Settings) -> EmbeddingFunction:
     # (app/main.py): EMBEDDING_PROVIDER defaults to `fake` (offline,
     # deterministic — a fresh `docker compose up` never requires a model
     # pull just to boot) with `ollama` opt-in for real embeddings.
-    if os.environ.get("EMBEDDING_PROVIDER", "fake").lower() == "ollama":
+    if settings.embedding_provider == "ollama":
         return OllamaEmbeddingFunction(
             base_url=settings.ollama_base_url, model=settings.embedding_model
         )
-    return FakeEmbeddingFunction()
+    if settings.embedding_provider == "fake":
+        return FakeEmbeddingFunction()
+    raise RuntimeError("Unsupported embedding provider configuration")

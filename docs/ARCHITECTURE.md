@@ -29,17 +29,16 @@ marks which.
 │                                              │
 │   retrieval ──▶ SQLite flat index (local)    │
 │   metadata  ──▶ SQLite (WAL, local file)     │
-│   inference ──▶ Ollama  ◀── the only         │
-│                            outbound call     │
+│   inference ──▶ Ollama (default, local)      │
+│             └─▶ Gemini (explicit opt-in)     │
 └──────────────────────────────────────────────┘
 ```
 
 Three properties of this diagram carry most of the design weight:
 
-* **There is no boundary the operator does not own.** The only outbound network
-  call in the current build is to Ollama, which normally runs in the same compose
-  stack. No hosted provider is implemented; a future hosted adapter would create
-  a new data boundary that must be documented explicitly.
+* **Local operation remains the default.** Ollama normally runs in the operator's
+  compose stack. Selecting the optional Gemini adapter creates an explicit Google
+  data boundary described in the privacy and security documentation.
 * **Nothing upstream of the widget is trusted.** The visitor's browser is hostile
   input, and so is the operator's own ingested corpus once it reaches the model —
   retrieved chunks are wrapped as untrusted data, because a poisoned document is a
@@ -53,7 +52,7 @@ Three properties of this diagram carry most of the design weight:
 | Wire contracts | `backend/app/api/contracts.py` | Built. Frozen — see [ADR-0002](adr/0002-frozen-wire-contracts.md) |
 | Chat endpoint (SSE) | `backend/app/api/chat.py` | Built |
 | Capability discovery | `backend/app/capabilities.json`, `backend/app/api/capabilities.py` | Built. Static package metadata; see [COMPATIBILITY.md](COMPATIBILITY.md) |
-| Provider adapters | `backend/app/providers/` | Built: echo, Ollama |
+| Provider adapters | `backend/app/providers/` | Built: echo, Ollama, optional Gemini generation |
 | Embeddings | `backend/app/embeddings/` | Built: fake, Ollama |
 | Vector store | `backend/app/vectorstore.py` | Built. SQLite flat index, version 1, see [ADR-0007](adr/0007-sqlite-flat-vector-index.md) |
 | Retrieval protocol + local adapter + refusal | `backend/app/retrieval_contracts.py`, `backend/app/retrieval.py` | Built. Contract 1.0; `local_active` SQLite only |
@@ -108,6 +107,12 @@ in existing chunk metadata and emerge through the frozen citation response. Dire
 programmatic ingestion has no public-source attestation and keeps an internal
 `document://` reference. See [CORPUS-PROVENANCE.md](CORPUS-PROVENANCE.md).
 
+The Gemini adapter imports its SDK only after explicit selection. It maps history
+roles, keeps retrieved context and the current visitor question as separate JSON
+data in the final user turn, applies bounded token and wall-clock limits, and
+propagates task cancellation so disconnects stop work. It emits only current text
+chunks; usage metadata is neither exposed nor persisted in M3.
+
 Errors ride the SSE stream rather than the HTTP status code — a rate-limited
 request returns HTTP 200 with a `rate_limited` error event. This surprises people
 and is verified explicitly in the QA checklist.
@@ -160,7 +165,9 @@ is unsupported, not merely discouraged.
 
 ## 6. External dependencies
 
-**Runtime:** Ollama for inference and embeddings; Python's standard-library SQLite
+**Runtime:** Ollama for default inference and embeddings, with exact-pinned
+`google-genai` available only through the optional Gemini generation profile;
+Python's standard-library SQLite
 for the local flat-vector index and metadata; FastAPI and uvicorn; pypdf for PDF
 extraction. Every dependency has a written justification
 and pin rationale in [DEPENDENCIES.md](DEPENDENCIES.md).
