@@ -8,6 +8,106 @@ import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 
 const viewport = { width: 640, height: 400 };
+const cleanupRetryDelays = [50, 100, 200, 400, 800, 1_000];
+const transientCleanupErrors = new Set(["EBUSY", "ENOTEMPTY"]);
+
+function pause(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function removeTemporaryDirectory(
+  path,
+  { remove = rm, pause: wait = pause } = {},
+) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await remove(path, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (
+        !transientCleanupErrors.has(error?.code) ||
+        attempt === cleanupRetryDelays.length
+      ) {
+        throw error;
+      }
+      await wait(cleanupRetryDelays[attempt]);
+    }
+  }
+}
+
+async function verifyCleanupRetryContract() {
+  for (const code of transientCleanupErrors) {
+    const transientError = Object.assign(new Error("profile directory is still busy"), {
+      code,
+    });
+    const attempts = [];
+    const delays = [];
+
+    await removeTemporaryDirectory("fixture-profile", {
+      remove: async (path, options) => {
+        attempts.push({ path, options });
+        if (attempts.length < 3) {
+          throw transientError;
+        }
+      },
+      pause: async (milliseconds) => {
+        delays.push(milliseconds);
+      },
+    });
+
+    assert.equal(attempts.length, 3, `cleanup must retry transient ${code}`);
+    assert.deepEqual(delays, [50, 100], "cleanup retries must be bounded and back off");
+    assert.deepEqual(attempts[0], {
+      path: "fixture-profile",
+      options: { recursive: true, force: true },
+    });
+  }
+
+  const exhaustedError = Object.assign(new Error("profile never became idle"), {
+    code: "ENOTEMPTY",
+  });
+  let exhaustedAttempts = 0;
+  const exhaustedDelays = [];
+  await assert.rejects(
+    removeTemporaryDirectory("fixture-profile", {
+      remove: async () => {
+        exhaustedAttempts += 1;
+        throw exhaustedError;
+      },
+      pause: async (milliseconds) => {
+        exhaustedDelays.push(milliseconds);
+      },
+    }),
+    (error) => error === exhaustedError,
+  );
+  assert.equal(
+    exhaustedAttempts,
+    cleanupRetryDelays.length + 1,
+    "cleanup must stop after its bounded retries",
+  );
+  assert.deepEqual(
+    exhaustedDelays,
+    cleanupRetryDelays,
+    "cleanup must use only the declared retry window",
+  );
+
+  const unexpectedError = Object.assign(new Error("permission denied"), { code: "EACCES" });
+  let unexpectedAttempts = 0;
+  await assert.rejects(
+    removeTemporaryDirectory("fixture-profile", {
+      remove: async () => {
+        unexpectedAttempts += 1;
+        throw unexpectedError;
+      },
+      pause: async () => {
+        throw new Error("unexpected cleanup error must not be retried");
+      },
+    }),
+    (error) => error === unexpectedError,
+  );
+  assert.equal(unexpectedAttempts, 1, "cleanup must preserve unexpected failures");
+  console.log("widget browser cleanup contract tests passed");
+}
 
 async function browserPath() {
   const candidates = [
@@ -147,6 +247,9 @@ async function connectToCdp(webSocketUrl) {
 
   let nextId = 0;
   const pending = new Map();
+  const closed = new Promise((resolve) => {
+    socket.addEventListener("close", resolve, { once: true });
+  });
   socket.addEventListener("message", (event) => {
     const message = JSON.parse(String(event.data));
     const waiter = pending.get(message.id);
@@ -168,8 +271,11 @@ async function connectToCdp(webSocketUrl) {
   });
 
   return {
+    closed,
     close() {
-      socket.close();
+      if (socket.readyState < WebSocket.CLOSING) {
+        socket.close();
+      }
     },
     send(method, params = {}, sessionId) {
       const id = ++nextId;
@@ -179,6 +285,95 @@ async function connectToCdp(webSocketUrl) {
       });
     },
   };
+}
+
+async function settlesWithin(promise, milliseconds) {
+  let timeout;
+  try {
+    return await Promise.race([
+      promise.then(() => true),
+      new Promise((resolve) => {
+        timeout = setTimeout(() => resolve(false), milliseconds);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function stopBrowser(child, cdp, closed) {
+  let gracefulCloseError;
+  if (cdp !== undefined && child.exitCode === null && child.signalCode === null) {
+    try {
+      await settlesWithin(cdp.send("Browser.close"), 3_000);
+    } catch (error) {
+      gracefulCloseError = error;
+    }
+    await settlesWithin(Promise.race([cdp.closed, closed]), 3_000);
+  }
+
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill("SIGTERM");
+  }
+  if (!(await settlesWithin(closed, 3_000))) {
+    child.kill("SIGKILL");
+    if (!(await settlesWithin(closed, 3_000))) {
+      throw new Error("browser did not stop after bounded graceful and forced shutdown", {
+        cause: gracefulCloseError,
+      });
+    }
+  }
+
+  if (cdp !== undefined) {
+    cdp.close();
+    if (!(await settlesWithin(cdp.closed, 3_000))) {
+      throw new Error("DevTools socket did not close after browser shutdown", {
+        cause: gracefulCloseError,
+      });
+    }
+  }
+}
+
+async function verifyBrowserShutdownContract() {
+  let resolveProcessClose;
+  let resolveSocketClose;
+  const processClosed = new Promise((resolve) => {
+    resolveProcessClose = resolve;
+  });
+  const socketClosed = new Promise((resolve) => {
+    resolveSocketClose = resolve;
+  });
+  const signals = [];
+  const child = {
+    exitCode: null,
+    signalCode: null,
+    kill(signal) {
+      signals.push(signal);
+    },
+  };
+  const closeBeforeAcknowledgement = new Error(
+    "DevTools closed before Browser.close completed",
+  );
+  const cdp = {
+    closed: socketClosed,
+    close() {},
+    send(method) {
+      assert.equal(method, "Browser.close");
+      return new Promise((_, reject) => {
+        queueMicrotask(() => {
+          child.exitCode = 0;
+          resolveSocketClose();
+          resolveProcessClose();
+          reject(closeBeforeAcknowledgement);
+        });
+      });
+    },
+  };
+
+  await stopBrowser(child, cdp, processClosed);
+  assert.equal(child.exitCode, 0, "close-before-ack fixture must model a clean exit");
+  assert.deepEqual(signals, [], "a clean close-before-ack must not send a signal");
+  console.log("widget browser shutdown contract tests passed");
 }
 
 async function runBrowser(browser, fixturePath, temporaryDirectory, profileName) {
@@ -207,9 +402,8 @@ async function runBrowser(browser, fixturePath, temporaryDirectory, profileName)
   child.stderr.on("data", (chunk) => {
     stderr += chunk;
   });
-  const exited = new Promise((resolve) => {
-    child.once("error", resolve);
-    child.once("exit", resolve);
+  const closed = new Promise((resolve) => {
+    child.once("close", resolve);
   });
   let cdp;
   let timeout;
@@ -263,15 +457,13 @@ async function runBrowser(browser, fixturePath, temporaryDirectory, profileName)
     return result;
   } finally {
     clearTimeout(timeout);
-    cdp?.close();
-    if (child.exitCode === null && child.signalCode === null) {
-      child.kill("SIGKILL");
-    }
-    await exited;
+    await stopBrowser(child, cdp, closed);
   }
 }
 
 async function main() {
+  await verifyCleanupRetryContract();
+  await verifyBrowserShutdownContract();
   const browser = await browserPath();
   const bundle = await build({
     entryPoints: [new URL("../src/index.ts", import.meta.url).pathname],
@@ -305,7 +497,7 @@ async function main() {
     );
     console.log(`widget rendered layout test passed: ${JSON.stringify(result)}`);
   } finally {
-    await rm(temporaryDirectory, { recursive: true, force: true });
+    await removeTemporaryDirectory(temporaryDirectory);
   }
 }
 
