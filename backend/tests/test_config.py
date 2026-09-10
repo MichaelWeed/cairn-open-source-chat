@@ -1,9 +1,11 @@
+import json
 import math
 from pathlib import Path
+from typing import Literal, cast
 
 import pytest
 import yaml
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from app.config import Settings
 
@@ -273,6 +275,124 @@ def test_firestore_validation_string_hides_rejected_values() -> None:
     assert "FIRESTORE_PROJECT_ID" in str(caught.value)
     assert secret not in str(caught.value)
     assert secret not in repr(caught.value)
+
+
+ValidationExtra = Literal["allow", "ignore", "forbid"] | None
+
+
+def _settings_surface(
+    mode: str,
+    payload: dict[str, object],
+    extra: ValidationExtra,
+) -> Settings:
+    if mode.endswith("strings"):
+        value: object = {key: str(item) for key, item in payload.items()}
+    elif mode.endswith("json"):
+        value = json.dumps(payload)
+    else:
+        value = payload
+    if mode.startswith("model_"):
+        method = getattr(Settings, mode)
+    else:
+        method = getattr(TypeAdapter(Settings), mode.removeprefix("adapter_"))
+    return cast(Settings, method(value, extra=extra))
+
+
+def _assert_content_free_settings_error(
+    error: ValidationError, canaries: tuple[str, ...]
+) -> None:
+    rendered = (
+        str(error)
+        + repr(error)
+        + repr(error.errors(include_input=True, include_context=True))
+        + error.json(include_input=True, include_context=True)
+        + repr(error.__cause__)
+        + repr(error.__context__)
+        + repr(error.__dict__)
+    )
+    assert "FIRESTORE_PROJECT_ID" in rendered
+    assert all(canary not in rendered for canary in canaries)
+
+
+def test_firestore_constructor_structured_error_never_retains_values() -> None:
+    canaries = (
+        "Bad_Project-secret",
+        "corpus-secret",
+        "v1-secret",
+        "embedding-secret",
+        "retained-extra-secret",
+    )
+    payload = _firestore_settings(
+        firestore_project_id=canaries[0],
+        firestore_corpus_id=canaries[1],
+        firestore_corpus_version=canaries[2],
+        firestore_embedding_identity=canaries[3],
+    )
+    payload["unknown_content"] = canaries[4]
+
+    with pytest.raises(ValidationError) as caught:
+        Settings(**payload)  # type: ignore[arg-type]
+    _assert_content_free_settings_error(caught.value, canaries)
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "model_validate",
+        "model_validate_json",
+        "model_validate_strings",
+        "adapter_validate_python",
+        "adapter_validate_json",
+        "adapter_validate_strings",
+    ],
+)
+@pytest.mark.parametrize("extra", [None, "allow", "ignore", "forbid"])
+def test_firestore_structured_validation_errors_never_retain_values(
+    mode: str,
+    extra: ValidationExtra,
+) -> None:
+    canaries = (
+        "Bad_Project-secret",
+        "corpus-secret",
+        "v1-secret",
+        "embedding-secret",
+        "retained-extra-secret",
+    )
+    payload = _firestore_settings(
+        firestore_project_id=canaries[0],
+        firestore_corpus_id=canaries[1],
+        firestore_corpus_version=canaries[2],
+        firestore_embedding_identity=canaries[3],
+    )
+    payload["unknown_content"] = canaries[4]
+
+    with pytest.raises(ValidationError) as caught:
+        _settings_surface(mode, payload, extra)
+    _assert_content_free_settings_error(caught.value, canaries)
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "model_validate",
+        "model_validate_json",
+        "model_validate_strings",
+        "adapter_validate_python",
+        "adapter_validate_json",
+        "adapter_validate_strings",
+    ],
+)
+@pytest.mark.parametrize("extra", [None, "allow", "ignore", "forbid"])
+def test_firestore_valid_surfaces_ignore_unknown_content_without_retention(
+    mode: str,
+    extra: ValidationExtra,
+) -> None:
+    payload = _firestore_settings()
+    payload["unknown_content"] = "retained-extra-secret"
+    settings = _settings_surface(mode, payload, extra)
+    assert settings.firestore_project_id == "cairn1"
+    assert "unknown_content" not in settings.__dict__
+    assert settings.model_extra is None
 
 
 def test_origins_splits_and_strips() -> None:

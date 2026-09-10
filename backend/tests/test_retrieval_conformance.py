@@ -4,7 +4,7 @@ import socket
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -206,6 +206,24 @@ def test_external_call_guard_denies_dns_and_connection_attempts() -> None:
             match="external call forbidden in retrieval conformance tests",
         ):
             __import__("google.auth").auth.default()
+
+
+def test_external_call_guard_denies_providers_and_firestore_factory() -> None:
+    from app.main import _default_firestore_adapter
+    from app.providers.gemini import GeminiProvider
+    from app.providers.ollama import OllamaProvider
+
+    operations = (
+        lambda: GeminiProvider.stream(cast(GeminiProvider, object()), cast(Any, object())),
+        lambda: OllamaProvider.stream(cast(OllamaProvider, object()), cast(Any, object())),
+        lambda: _default_firestore_adapter(cast(Any, object())),
+    )
+    for operation in operations:
+        with pytest.raises(
+            AssertionError,
+            match="external call forbidden in retrieval conformance tests",
+        ):
+            operation()
 
 
 @pytest.fixture(params=("memory", "sqlite"))

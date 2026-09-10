@@ -1,9 +1,11 @@
+import json
 import math
 import os
 import re
+from contextvars import ContextVar
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated, Literal, cast
+from typing import Annotated, Any, Literal, cast
 
 from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -13,9 +15,204 @@ from app.api.contracts import OUTPUT_CHARS_MAX, OUTPUT_TOKENS_MAX, SYSTEM_INSTRU
 DEFAULT_DB_PATH = Path("data/cairn.db")
 DEFAULT_CHROMA_PATH = Path("data/chroma")
 _FIRESTORE_PROJECT_PATTERN = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
+_SETTINGS_VALIDATION_DEPTH: ContextVar[int] = ContextVar(
+    "settings_validation_depth", default=0
+)
+_SAFE_SETTING_NAMES = (
+    "CAIRN_PORT",
+    "CORPUS_PATH",
+    "DATABASE_PATH",
+    "DEPLOYMENT_MODE",
+    "EMBEDDING_PROVIDER",
+    "FIRESTORE_CORPUS_ID",
+    "FIRESTORE_CORPUS_VERSION",
+    "FIRESTORE_DISTANCE_MEASURE",
+    "FIRESTORE_EMBEDDING_DIMENSIONS",
+    "FIRESTORE_EMBEDDING_IDENTITY",
+    "FIRESTORE_MAX_DISTANCE",
+    "FIRESTORE_MAX_RETRIES",
+    "FIRESTORE_PROJECT_ID",
+    "FIRESTORE_QUERY_TIMEOUT_SECONDS",
+    "GEMINI_API_KEY",
+    "GEMINI_MAX_RETRIES",
+    "GEMINI_MODEL",
+    "GEMINI_TIMEOUT_SECONDS",
+    "GOOGLE_SDK_PYTHON_LOGGING_SCOPE",
+    "MAX_OUTPUT_CHARS",
+    "MAX_OUTPUT_TOKENS",
+    "PROVIDER",
+    "RETRIEVAL_BACKEND",
+    "RETRIEVAL_MAX_DISTANCE",
+    "RETRIEVAL_TOP_K",
+    "SYSTEM_INSTRUCTION",
+)
 
 
-class Settings(BaseSettings):
+class SettingsValidationError(ValidationError):
+    """ValidationError-compatible settings failure without rejected values."""
+
+    _safe_errors: tuple[dict[str, object], ...]
+
+    @classmethod
+    def sanitized(cls, error: ValidationError) -> "SettingsValidationError":
+        if isinstance(error, cls):
+            return error
+
+        def safe_error(item: Any) -> dict[str, object]:
+            location = tuple(item.get("loc", ()))
+            message = str(item.get("msg", ""))
+            setting_name = next(
+                (
+                    name
+                    for name in _SAFE_SETTING_NAMES
+                    if name in message
+                    or any(
+                        isinstance(part, str) and part.upper() == name
+                        for part in location
+                    )
+                ),
+                None,
+            )
+            safe_message = (
+                f"{setting_name} is invalid."
+                if setting_name is not None
+                else "Settings configuration is invalid."
+            )
+            return {
+                "type": "settings_invalid",
+                "loc": location,
+                "msg": safe_message,
+            }
+
+        safe_errors = tuple(
+            safe_error(item)
+            for item in error.errors(
+                include_url=False,
+                include_context=False,
+                include_input=False,
+            )
+        )
+        sanitized = cls.from_exception_data(
+            "Settings",
+            [
+                {
+                    "type": "value_error",
+                    "loc": (),
+                    "input": None,
+                    "ctx": {"error": ValueError("Settings configuration is invalid.")},
+                }
+            ],
+            hide_input=True,
+        )
+        sanitized._safe_errors = safe_errors
+        return sanitized
+
+    def __str__(self) -> str:
+        parts = []
+        for item in self._safe_errors:
+            location = ".".join(
+                str(value) for value in cast(tuple[object, ...], item["loc"])
+            )
+            prefix = f"{location}: " if location else ""
+            parts.append(prefix + str(item["msg"]))
+        return "Settings configuration is invalid. " + "; ".join(parts)
+
+    def __repr__(self) -> str:
+        return "SettingsValidationError()"
+
+    def errors(
+        self,
+        *,
+        include_url: bool = True,
+        include_context: bool = True,
+        include_input: bool = True,
+    ) -> list[Any]:
+        del include_url, include_context, include_input
+        return [dict(item) for item in self._safe_errors]
+
+    def json(
+        self,
+        *,
+        indent: int | None = None,
+        include_url: bool = True,
+        include_context: bool = True,
+        include_input: bool = True,
+    ) -> str:
+        return json.dumps(
+            self.errors(
+                include_url=include_url,
+                include_context=include_context,
+                include_input=include_input,
+            ),
+            indent=indent,
+            separators=None if indent is not None else (",", ":"),
+        )
+
+
+class _ContentFreeSettingsValidator:
+    def __init__(self, validator: Any) -> None:
+        self._validator = validator
+
+    def _validate(
+        self,
+        method_name: Literal["validate_python", "validate_json", "validate_strings"],
+        value: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        kwargs["extra"] = "ignore"
+        depth = _SETTINGS_VALIDATION_DEPTH.get()
+        token = _SETTINGS_VALIDATION_DEPTH.set(depth + 1)
+        failure: SettingsValidationError | None = None
+        try:
+            return getattr(self._validator, method_name)(value, *args, **kwargs)
+        except SettingsValidationError as error:
+            if depth:
+                raise
+            failure = error
+        except ValidationError as error:
+            if depth:
+                raise
+            failure = SettingsValidationError.sanitized(error)
+        finally:
+            _SETTINGS_VALIDATION_DEPTH.reset(token)
+        assert failure is not None
+        raise failure from None
+
+    def validate_python(self, value: Any, *args: Any, **kwargs: Any) -> Any:
+        return self._validate("validate_python", value, *args, **kwargs)
+
+    def validate_json(self, value: Any, *args: Any, **kwargs: Any) -> Any:
+        return self._validate("validate_json", value, *args, **kwargs)
+
+    def validate_strings(self, value: Any, *args: Any, **kwargs: Any) -> Any:
+        return self._validate("validate_strings", value, *args, **kwargs)
+
+    def validate_assignment(self, *args: Any, **kwargs: Any) -> Any:
+        failure: SettingsValidationError | None = None
+        try:
+            return self._validator.validate_assignment(*args, **kwargs)
+        except SettingsValidationError as error:
+            failure = error
+        except ValidationError as error:
+            failure = SettingsValidationError.sanitized(error)
+        assert failure is not None
+        raise failure from None
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._validator, name)
+
+
+class ContentFreeBaseSettings(BaseSettings):
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        validator = cls.__pydantic_validator__
+        if not isinstance(validator, _ContentFreeSettingsValidator):
+            cls.__pydantic_validator__ = _ContentFreeSettingsValidator(validator)  # type: ignore[assignment]
+
+
+class Settings(ContentFreeBaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env", extra="ignore", hide_input_in_errors=True
     )

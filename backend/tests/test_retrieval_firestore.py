@@ -67,6 +67,30 @@ def no_external_firestore_calls(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.main._default_firestore_adapter", forbidden)
 
 
+def test_firestore_external_guard_denies_providers_and_factory() -> None:
+    from app.main import _default_firestore_adapter
+    from app.providers.gemini import GeminiProvider
+    from app.providers.ollama import OllamaProvider
+
+    operations = (
+        lambda: GeminiProvider.stream(cast(GeminiProvider, object()), cast(Any, object())),
+        lambda: OllamaProvider.stream(cast(OllamaProvider, object()), cast(Any, object())),
+        lambda: _default_firestore_adapter(cast(Any, object())),
+    )
+    for operation in operations:
+        with pytest.raises(
+            AssertionError,
+            match="external call forbidden in Firestore retrieval tests",
+        ):
+            operation()
+    if _google_auth_available():
+        with pytest.raises(
+            AssertionError,
+            match="external call forbidden in Firestore retrieval tests",
+        ):
+            __import__("google.auth").auth.default()
+
+
 class FakeClient:
     def __init__(self, rows: Sequence[FirestoreVectorRow] = ()) -> None:
         self.rows = rows
@@ -691,7 +715,7 @@ async def test_sdk_wrapper_readiness_accepts_any_completed_bounded_read(
         timeout_seconds=7,
     )
 
-    assert await wrapper.readiness_get(readiness) is None
+    await wrapper.readiness_get(readiness)
     assert ("select", ("schema_version",)) in client.query.calls
     assert ("limit", 1) in client.query.calls
     assert ("get", {"retry": None, "timeout": 7}) in client.query.calls
