@@ -8,11 +8,6 @@ import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 
 const viewport = { width: 640, height: 400 };
-const browserWindow = {
-  width: viewport.width,
-  // Headless Chrome on macOS includes a 143px native frame in --window-size.
-  height: viewport.height + (process.platform === "darwin" ? 143 : 0),
-};
 
 async function browserPath() {
   const candidates = [
@@ -110,70 +105,170 @@ function fixture(widgetSource) {
 </html>`;
 }
 
-function runBrowser(browser, fixturePath, temporaryDirectory, windowSize, profileName) {
+function waitForDebuggerUrl(child, stderr) {
   return new Promise((resolve, reject) => {
-    const child = spawn(
-      browser,
-      [
-        "--headless=new",
-        "--disable-background-networking",
-        "--disable-component-update",
-        "--disable-extensions",
-        "--disable-gpu",
-        "--disable-sync",
-        "--no-default-browser-check",
-        "--no-first-run",
-        "--no-sandbox",
-        "--force-device-scale-factor=1",
-        `--window-size=${windowSize.width},${windowSize.height}`,
-        "--dump-dom",
-        `--user-data-dir=${join(temporaryDirectory, profileName)}`,
-        pathToFileURL(fixturePath).href,
-      ],
-      { stdio: ["ignore", "pipe", "pipe"] },
-    );
-    let stdout = "";
-    let stderr = "";
-    let result;
-    let failure;
-    const timeout = setTimeout(() => {
-      failure = new Error(`browser fixture timed out: ${stderr}`);
-      child.kill("SIGKILL");
-    }, 30_000);
-
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-      const match = stdout.match(/<pre id="result">([^<]+)<\/pre>/);
-      if (match && result === undefined) {
-        result = JSON.parse(match[1].replaceAll("&quot;", '"').replaceAll("&amp;", "&"));
-        child.kill("SIGKILL");
+    const onData = (chunk) => {
+      const match = chunk.match(/DevTools listening on (ws:\/\/\S+)/);
+      if (match) {
+        cleanup();
+        resolve(match[1]);
       }
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
-    child.on("error", (error) => {
-      failure = error;
-      clearTimeout(timeout);
+    };
+    const onError = (error) => {
+      cleanup();
       reject(error);
-    });
-    child.on("exit", (code, signal) => {
-      clearTimeout(timeout);
-      if (failure) {
-        reject(failure);
-      } else if (result !== undefined) {
-        resolve(result);
-      } else {
-        reject(
-          new Error(
-            `browser exited with code ${code ?? "none"} via ${signal ?? "no signal"} before reporting geometry: ${stderr}\n${stdout}`,
-          ),
-        );
-      }
-    });
+    };
+    const onExit = (code, signal) => {
+      cleanup();
+      reject(
+        new Error(
+          `browser exited with code ${code ?? "none"} via ${signal ?? "no signal"} before opening DevTools: ${stderr()}`,
+        ),
+      );
+    };
+    const cleanup = () => {
+      child.stderr.off("data", onData);
+      child.off("error", onError);
+      child.off("exit", onExit);
+    };
+
+    child.stderr.on("data", onData);
+    child.once("error", onError);
+    child.once("exit", onExit);
   });
+}
+
+async function connectToCdp(webSocketUrl) {
+  const socket = new WebSocket(webSocketUrl);
+  await new Promise((resolve, reject) => {
+    socket.addEventListener("open", resolve, { once: true });
+    socket.addEventListener("error", reject, { once: true });
+  });
+
+  let nextId = 0;
+  const pending = new Map();
+  socket.addEventListener("message", (event) => {
+    const message = JSON.parse(String(event.data));
+    const waiter = pending.get(message.id);
+    if (waiter === undefined) {
+      return;
+    }
+    pending.delete(message.id);
+    if (message.error) {
+      waiter.reject(new Error(`${waiter.method} failed: ${message.error.message}`));
+    } else {
+      waiter.resolve(message.result);
+    }
+  });
+  socket.addEventListener("close", () => {
+    for (const waiter of pending.values()) {
+      waiter.reject(new Error(`DevTools closed before ${waiter.method} completed`));
+    }
+    pending.clear();
+  });
+
+  return {
+    close() {
+      socket.close();
+    },
+    send(method, params = {}, sessionId) {
+      const id = ++nextId;
+      return new Promise((resolve, reject) => {
+        pending.set(id, { method, resolve, reject });
+        socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+      });
+    },
+  };
+}
+
+async function runBrowser(browser, fixturePath, temporaryDirectory, profileName) {
+  const child = spawn(
+    browser,
+    [
+      "--headless=new",
+      "--disable-background-networking",
+      "--disable-component-update",
+      "--disable-extensions",
+      "--disable-gpu",
+      "--disable-sync",
+      "--no-default-browser-check",
+      "--no-first-run",
+      "--no-sandbox",
+      "--remote-allow-origins=*",
+      "--remote-debugging-address=127.0.0.1",
+      "--remote-debugging-port=0",
+      `--user-data-dir=${join(temporaryDirectory, profileName)}`,
+      "about:blank",
+    ],
+    { stdio: ["ignore", "ignore", "pipe"] },
+  );
+  child.stderr.setEncoding("utf8");
+  let stderr = "";
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  const exited = new Promise((resolve) => {
+    child.once("error", resolve);
+    child.once("exit", resolve);
+  });
+  let cdp;
+  let timeout;
+
+  try {
+    const result = await Promise.race([
+      (async () => {
+        const debuggerUrl = await waitForDebuggerUrl(child, () => stderr);
+        cdp = await connectToCdp(debuggerUrl);
+        const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" });
+        const { sessionId } = await cdp.send("Target.attachToTarget", {
+          targetId,
+          flatten: true,
+        });
+        // Set the CSS viewport directly instead of guessing each platform's native frame size.
+        await cdp.send(
+          "Emulation.setDeviceMetricsOverride",
+          {
+            width: viewport.width,
+            height: viewport.height,
+            deviceScaleFactor: 1,
+            mobile: false,
+            screenWidth: viewport.width,
+            screenHeight: viewport.height,
+          },
+          sessionId,
+        );
+        await cdp.send("Page.navigate", { url: pathToFileURL(fixturePath).href }, sessionId);
+
+        for (;;) {
+          const evaluation = await cdp.send(
+            "Runtime.evaluate",
+            {
+              expression: 'document.querySelector("#result")?.textContent ?? ""',
+              returnByValue: true,
+            },
+            sessionId,
+          );
+          if (evaluation.result.value) {
+            return JSON.parse(evaluation.result.value);
+          }
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+      })(),
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error(`browser fixture timed out: ${stderr}`));
+        }, 30_000);
+      }),
+    ]);
+    return result;
+  } finally {
+    clearTimeout(timeout);
+    cdp?.close();
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+    }
+    await exited;
+  }
 }
 
 async function main() {
@@ -193,7 +288,6 @@ async function main() {
       browser,
       fixturePath,
       temporaryDirectory,
-      browserWindow,
       "fixture-profile",
     );
 
