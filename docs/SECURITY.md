@@ -44,7 +44,8 @@ this stage.
   `grype` (built images) gates; container images pinned by digest; a 14-day dependency cooldown
   window. Any documented, narrowly-scoped exception includes a stated re-check condition. The
   retired ChromaDB exception was removed with that dependency, so the backend lockfile has no OSV
-  vulnerability ignores; remaining image exceptions are documented in `.grype.yaml`.
+  vulnerability ignores; the six remaining image exceptions are limited to findings
+  fixed only in pre-release Python and documented with re-check conditions in `.grype.yaml`.
 
 ## Not yet built — do not assume these exist
 
