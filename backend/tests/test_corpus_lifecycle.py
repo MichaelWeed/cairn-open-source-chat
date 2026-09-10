@@ -693,10 +693,51 @@ def test_corpus_lifecycle_contract_constants_are_frozen() -> None:
     ) == ("1.0", "1.0", "1.0", "1.0", 0, 1)
 
 
-def test_public_and_local_compatibility_surfaces_match_accepted_base_bytes() -> None:
+def test_public_and_local_compatibility_surfaces_match_accepted_base_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for subprocess_name in ("call", "check_call", "check_output", "Popen", "run"):
+        monkeypatch.setattr(subprocess, subprocess_name, _forbidden)
     root = Path(__file__).resolve().parents[2]
-    base = "e1183d48126e1728df380b6cc5ab4cec52ca5048"
-    paths = (
+    # Raw-byte SHA-256 values from accepted base
+    # e1183d48126e1728df380b6cc5ab4cec52ca5048. Keeping the oracle in the
+    # test makes it work in history-free archives and shallow CI checkouts.
+    accepted_sha256 = {
+        "backend/app/capabilities.json": (
+            "a2e44a748ff13b4705334c6278c1c7cbebd0aaa9e498e2f0cce4f2a8855a1e74"
+        ),
+        "backend/app/capabilities.py": (
+            "c53c439bbb18a7be4dc6031cde1892072a3c7248e4a8f6cd3b37effe0f4e0c7e"
+        ),
+        "backend/app/api/capabilities.py": (
+            "a53ee240361d25234d8dfe103d60ea675cea3f1bbaa1add8247b6de714b954fb"
+        ),
+        "backend/app/api/contracts.py": (
+            "1895eaf57db82f12eac3855de603e3e686c1e75c010430addca537ed260a2cb1"
+        ),
+        "backend/app/providers/contracts.py": (
+            "b73e171d8921aadc61a9e21df744b813742f65c8d478bf89c8b06a803000040c"
+        ),
+        "backend/app/retrieval_contracts.py": (
+            "fae47b51302018c364a5423b800f754c39f7beba138505399e49b728ca9831af"
+        ),
+        "backend/app/retrieval_firestore.py": (
+            "ca2a9ec03c5b89b9478feabef92b55825b3765492b0a0850df1e860f1a0388cc"
+        ),
+        "backend/app/vectorstore.py": (
+            "2c17b0f70422e1e2e243ad77aee01171b948d062e608db5b1503b72863312fb7"
+        ),
+        "backend/app/ingest/planner.py": (
+            "ca6c987bc03cf3cef8d89384bd5c6b15d71007b83ebb11b3bdace03a90f746e0"
+        ),
+        "backend/app/ingest/candidate_persistence.py": (
+            "e825bebafdabb2339e1d722cddfd46b0f96e0f23dd6502a387203b15d47d70d8"
+        ),
+        "backend/app/ingest/provenance.py": (
+            "24fb9031d05ed5c1b0862bef446b7ea3188e9f3bb57ff27675ad6d0bb9e7f094"
+        ),
+    }
+    assert set(accepted_sha256) == {
         "backend/app/capabilities.json",
         "backend/app/capabilities.py",
         "backend/app/api/capabilities.py",
@@ -708,12 +749,14 @@ def test_public_and_local_compatibility_surfaces_match_accepted_base_bytes() -> 
         "backend/app/ingest/planner.py",
         "backend/app/ingest/candidate_persistence.py",
         "backend/app/ingest/provenance.py",
-    )
-    for relative in paths:
-        accepted = subprocess.check_output(
-            ["git", "show", f"{base}:{relative}"], cwd=root
+    }
+    for relative, expected in accepted_sha256.items():
+        accepted = (root / relative).read_bytes()
+        assert hashlib.sha256(accepted).hexdigest() == expected, relative
+        corrupted = (
+            bytes((accepted[0] ^ 1,)) + accepted[1:] if accepted else b"one-byte-change"
         )
-        assert (root / relative).read_bytes() == accepted
+        assert hashlib.sha256(corrupted).hexdigest() != expected, relative
 
 
 @pytest.mark.parametrize(
