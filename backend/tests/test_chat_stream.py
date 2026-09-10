@@ -83,6 +83,22 @@ class _NormalizedGeminiFailureProvider(Provider):
         )
 
 
+class _UsageThenGuardrailProvider(Provider):
+    async def stream(
+        self, request: ProviderGenerationRequest
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        del request
+        yield ProviderUsageChunk(
+            provider="gemini",
+            model="gemini-3.8-flash",
+            provider_attempt=1,
+            usage=ProviderUsage(input_tokens=17, total_tokens=17),
+        )
+        raise GeminiProviderError(
+            code="guardrail_block", retryable=False, attempt_count=1
+        )
+
+
 async def _slow_source() -> AsyncIterator[ProviderStreamEvent]:
     yield ProviderTextChunk(delta="fast")
     await asyncio.sleep(0.05)
@@ -358,6 +374,30 @@ async def test_provider_failure_log_excludes_provider_content(
     assert events[-1].type == "error"
     assert "provider stream failed" in caplog.text
     assert "provider-response-sentinel" not in caplog.text
+
+
+async def test_guardrail_usage_is_hidden_before_public_content_free_error() -> None:
+    events = [
+        event
+        async for event in chat_event_stream(
+            _UsageThenGuardrailProvider(),
+            ChatMessageRequest(session_id="s1", message="hi"),
+            _grounded_adapter(),
+        )
+    ]
+
+    assert [event.type for event in events] == [
+        "status",
+        "citations",
+        "status",
+        "error",
+    ]
+    assert events[-1].model_dump() == {
+        "type": "error",
+        "code": "guardrail_block",
+        "message": "The model response was blocked by safety controls.",
+        "retryable": False,
+    }
 
 
 class _StaticAdapter:

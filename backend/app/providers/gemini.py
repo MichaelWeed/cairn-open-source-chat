@@ -273,8 +273,6 @@ class GeminiProvider(Provider):
                     pending_content = ""
                     async for item in iterator:
                         observed_item = True
-                        if _is_safety_block(item):
-                            raise _NormalizedFailure("guardrail_block", False)
                         usage = _usage_chunk(
                             item,
                             model=self._model,
@@ -284,6 +282,8 @@ class GeminiProvider(Provider):
                         if usage is not None:
                             cumulative_usage = usage
                             yield usage
+                        if _is_safety_block(item):
+                            raise _NormalizedFailure("guardrail_block", False)
                         content = getattr(item, "text", None)
                         if content is not None and not isinstance(content, str):
                             raise _NormalizedFailure("provider_unavailable", False)
