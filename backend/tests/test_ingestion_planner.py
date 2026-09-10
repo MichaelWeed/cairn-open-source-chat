@@ -11,10 +11,10 @@ import warnings
 from collections.abc import Callable, Sequence
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import TypeAdapter, ValidationError
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
@@ -38,6 +38,7 @@ from app.ingest.planner import (
     EmbeddingSpecification,
     ExistingCandidateDescriptor,
     IngestionPlanError,
+    IngestionPlanModel,
     PlannedChunk,
     PlannedDocument,
     PlannedProvenance,
@@ -123,8 +124,36 @@ def _corpus(version: str = "2026.09.08") -> ExactCorpusReference:
     return ExactCorpusReference(corpus_id="example-support", corpus_version=version)
 
 
-def _embedding(input: tuple[str, ...]) -> tuple[tuple[float, ...], ...]:
+def _embedding(input: Sequence[str]) -> Sequence[Sequence[float]]:
     return tuple((float(index), float(len(text))) for index, text in enumerate(input))
+
+
+def _record_rejected_embedding(
+    calls: list[tuple[str, ...]], input: Sequence[str]
+) -> Sequence[Sequence[float]]:
+    calls.append(tuple(input))
+    return ()
+
+
+def _replace_model(sample: IngestionPlanModel, **update: object) -> object:
+    replace = cast(Callable[..., object], cast(Any, sample).__replace__)
+    return replace(**update)
+
+
+def _construct_model(
+    model: type[IngestionPlanModel],
+    values: dict[str, object],
+    *,
+    deprecated: bool = False,
+    fields_set: set[str] | None = None,
+    extra: dict[str, object] | None = None,
+) -> IngestionPlanModel:
+    arguments = values | (extra or {})
+    constructor = cast(
+        Callable[..., IngestionPlanModel],
+        model.construct if deprecated else model.model_construct,
+    )
+    return constructor(_fields_set=fields_set, **arguments)
 
 
 def _plan(
@@ -202,8 +231,8 @@ def test_provenance_and_disposition_are_exact() -> None:
 def test_all_input_is_validated_before_embedding_and_failures_are_content_free() -> None:
     calls: list[tuple[str, ...]] = []
 
-    def embed(input: tuple[str, ...]) -> tuple[tuple[float, ...], ...]:
-        calls.append(input)
+    def embed(input: Sequence[str]) -> Sequence[Sequence[float]]:
+        calls.append(tuple(input))
         return tuple((1.0, 2.0) for _ in input)
 
     source = CandidateSourceSnapshot(
@@ -234,8 +263,10 @@ def test_all_input_is_validated_before_embedding_and_failures_are_content_free()
 def test_model_validation_is_content_free_across_pydantic_entrypoints() -> None:
     secret = "model-secret-sentinel"
     model = CandidateDocumentSnapshot
-    calls = (
-        lambda: model(relative_path="guide.md", content=b"ok", message=secret),
+    calls: tuple[Callable[[], object], ...] = (
+        lambda: cast(Callable[..., CandidateDocumentSnapshot], model)(
+            relative_path="guide.md", content=b"ok", message=secret
+        ),
         lambda: model.model_validate(
             {"relative_path": "guide.md", "content": b"ok", "message": secret}
         ),
@@ -280,7 +311,7 @@ def test_model_validation_is_content_free_across_pydantic_entrypoints() -> None:
 def test_models_recompute_counts_ids_and_digests_and_are_frozen() -> None:
     plan = _plan()
     with pytest.raises(ValidationError):
-        plan.document_count = 2  # type: ignore[misc]
+        plan.document_count = 2
     values = plan.model_dump()
     values["chunk_count"] += 1
     with pytest.raises(IngestionPlanError):
@@ -336,9 +367,12 @@ def test_semantic_provenance_changes_are_preserved_and_change_plan(field: str) -
     assert changed.documents[0].provenance.source_sha256 == (
         original.documents[0].provenance.source_sha256
     )
-    assert getattr(changed.documents[0].provenance, field) == (
-        date.fromisoformat(changed_value) if field == "reviewed_at" else changed_value
+    expected_value = (
+        date.fromisoformat(cast(str, changed_value))
+        if field == "reviewed_at"
+        else changed_value
     )
+    assert getattr(changed.documents[0].provenance, field) == expected_value
 
 
 def test_source_byte_change_updates_content_digests_and_stale_hash_fails_first() -> None:
@@ -362,7 +396,7 @@ def test_source_byte_change_updates_content_digests_and_stale_hash_fails_first()
             corpus=_corpus(),
             source=stale_source,
             embedding=EmbeddingSpecification(identity="fixture", dimensions=2),
-            embed=lambda input: calls.append(tuple(input)) or (),
+            embed=lambda input: _record_rejected_embedding(calls, input),
         )
     assert caught.value.code == "invalid_manifest"
     assert calls == []
@@ -455,12 +489,16 @@ def test_embedding_batches_are_exact_immutable_and_positional(
     ),
 )
 def test_malformed_embedding_results_fail_closed(result: object) -> None:
+    def malformed(input: Sequence[str]) -> Sequence[Sequence[float]]:
+        del input
+        return cast(Sequence[Sequence[float]], result)
+
     with pytest.raises(IngestionPlanError) as caught:
         plan_candidate(
             corpus=_corpus(),
             source=_source({"guide.md": b"content"}),
             embedding=EmbeddingSpecification(identity="fixture", dimensions=2),
-            embed=lambda _input: result,  # type: ignore[arg-type,return-value]
+            embed=malformed,
         )
     assert caught.value.code == "malformed_embedding"
     assert caught.value.__cause__ is None
@@ -472,7 +510,8 @@ def test_embedding_exception_and_later_batch_failure_have_no_partial_plan(
 ) -> None:
     secret = "raw-embedding-secret"
 
-    def failed(_input: Sequence[str]) -> Sequence[Sequence[float]]:
+    def failed(input: Sequence[str]) -> Sequence[Sequence[float]]:
+        del input
         raise RuntimeError(secret)
 
     with pytest.raises(IngestionPlanError) as first:
@@ -670,7 +709,7 @@ def test_owner_limit_chunk_and_scalar_bounds_fail_before_embedding(
             corpus=_corpus(),
             source=source,
             embedding=EmbeddingSpecification(identity="fixture", dimensions=1),
-            embed=lambda input: calls.append(tuple(input)) or (),
+            embed=lambda input: _record_rejected_embedding(calls, input),
         )
     assert owner.value.code == "bounds_exceeded"
     assert calls == []
@@ -682,7 +721,7 @@ def test_owner_limit_chunk_and_scalar_bounds_fail_before_embedding(
             corpus=_corpus(),
             source=_source({"guide.md": b"content"}),
             embedding=EmbeddingSpecification(identity="fixture", dimensions=1),
-            embed=lambda input: calls.append(tuple(input)) or (),
+            embed=lambda input: _record_rejected_embedding(calls, input),
         )
     assert chunks.value.code == "bounds_exceeded"
     assert calls == []
@@ -693,7 +732,7 @@ def test_owner_limit_chunk_and_scalar_bounds_fail_before_embedding(
             corpus=_corpus(),
             source=_source({"guide.md": b"content"}),
             embedding=EmbeddingSpecification(identity="fixture", dimensions=4_096),
-            embed=lambda input: calls.append(tuple(input)) or (),
+            embed=lambda input: _record_rejected_embedding(calls, input),
         )
     assert scalars.value.code == "bounds_exceeded"
     assert calls == []
@@ -821,7 +860,7 @@ def test_planner_exact_text_chunk_count_and_scalar_boundaries(
     assert calls == []
 
 
-def _all_m7_model_samples(plan: CandidateIngestionPlan) -> tuple[BaseModel, ...]:
+def _all_m7_model_samples(plan: CandidateIngestionPlan) -> tuple[IngestionPlanModel, ...]:
     return (
         CandidateDocumentSnapshot(relative_path="guide.md", content=b"content"),
         _source({"guide.md": b"content"}),
@@ -868,20 +907,22 @@ def test_all_m7_models_seal_public_copy_and_construct_bypasses(surface: str) -> 
         values = sample.model_dump(round_trip=True)
 
         def operation(
-            model: type[BaseModel] = model,
+            model: type[IngestionPlanModel] = model,
             values: dict[str, object] = values,
-            sample: BaseModel = sample,
+            sample: IngestionPlanModel = sample,
         ) -> object:
             if surface == "model_construct":
-                return model.model_construct(**values, unknown=secret)
+                return _construct_model(model, values, extra={"unknown": secret})
             if surface == "construct":
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", DeprecationWarning)
-                    return model.construct(**values, unknown=secret)
+                    return _construct_model(
+                        model, values, deprecated=True, extra={"unknown": secret}
+                    )
             if surface == "model_copy":
                 return sample.model_copy(update={"unknown": secret})
             if surface == "replace":
-                return sample.__replace__(unknown=secret)
+                return _replace_model(sample, unknown=secret)
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", DeprecationWarning)
                 return sample.copy(update={"unknown": secret})
@@ -899,29 +940,34 @@ def test_all_m7_models_reject_missing_fields_and_fields_set_content(surface: str
         values.pop(missing)
 
         def operation(
-            model: type[BaseModel] = model,
+            model: type[IngestionPlanModel] = model,
             values: dict[str, object] = values,
         ) -> object:
             if surface == "model_construct":
-                return model.model_construct(**values)
+                return _construct_model(model, values)
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", DeprecationWarning)
-                return model.construct(**values)
+                return _construct_model(model, values, deprecated=True)
 
         _assert_invalid_model_is_content_free(operation, secret)
 
         complete_values = sample.model_dump(round_trip=True)
 
         def fields_set_operation(
-            model: type[BaseModel] = model,
+            model: type[IngestionPlanModel] = model,
             complete_values: dict[str, object] = complete_values,
         ) -> object:
             if surface == "model_construct":
-                return model.model_construct(_fields_set={secret}, **complete_values)
+                return _construct_model(model, complete_values, fields_set={secret})
             else:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", DeprecationWarning)
-                    return model.construct(_fields_set={secret}, **complete_values)
+                    return _construct_model(
+                        model,
+                        complete_values,
+                        deprecated=True,
+                        fields_set={secret},
+                    )
 
         _assert_invalid_model_is_content_free(fields_set_operation, secret)
 
@@ -937,10 +983,10 @@ def test_all_m7_models_preserve_valid_copy_construct_and_adapter_paths() -> None
         assert constructed.model_fields_set == {first_field}
         assert sample.model_copy() == sample
         assert sample.model_copy(deep=True) == sample
-        assert sample.__replace__() == sample
+        assert _replace_model(sample) == sample
         valid_update = {first_field: getattr(sample, first_field)}
         assert sample.model_copy(update=valid_update) == sample
-        assert sample.__replace__(**valid_update) == sample
+        assert _replace_model(sample, **valid_update) == sample
         assert TypeAdapter(model).validate_python(values) == sample
         encoded = sample.model_dump_json()
         assert model.model_validate_json(encoded) == sample
@@ -958,7 +1004,7 @@ def test_deprecated_copy_cannot_create_partial_invalid_models(mode: str) -> None
     for sample in _all_m7_model_samples(_plan()):
         missing = next(iter(type(sample).model_fields))
 
-        def operation(sample: BaseModel = sample, missing: str = missing) -> object:
+        def operation(sample: IngestionPlanModel = sample, missing: str = missing) -> object:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", DeprecationWarning)
                 if mode == "include":
@@ -968,7 +1014,7 @@ def test_deprecated_copy_cannot_create_partial_invalid_models(mode: str) -> None
         _assert_invalid_model_is_content_free(operation)
 
 
-def _invalid_known_update(sample: BaseModel, secret: str) -> dict[str, object]:
+def _invalid_known_update(sample: IngestionPlanModel, secret: str) -> dict[str, object]:
     if isinstance(sample, CandidateDocumentSnapshot | PlannedDocument):
         return {"relative_path": f"../{secret}"}
     if isinstance(sample, CandidateSourceSnapshot):
@@ -1008,9 +1054,9 @@ def test_all_m7_models_reject_invalid_known_values_without_disclosure(
         invalid_values = values | update
 
         def operation(
-            model: type[BaseModel] = model,
+            model: type[IngestionPlanModel] = model,
             invalid_values: dict[str, object] = invalid_values,
-            sample: BaseModel = sample,
+            sample: IngestionPlanModel = sample,
             update: dict[str, object] = update,
         ) -> object:
             if surface == "constructor":
@@ -1020,15 +1066,15 @@ def test_all_m7_models_reject_invalid_known_values_without_disclosure(
             if surface == "type_adapter":
                 return TypeAdapter(model).validate_python(invalid_values)
             if surface == "model_construct":
-                return model.model_construct(**invalid_values)
+                return _construct_model(model, invalid_values)
             if surface == "construct":
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", DeprecationWarning)
-                    return model.construct(**invalid_values)
+                    return _construct_model(model, invalid_values, deprecated=True)
             if surface == "model_copy":
                 return sample.model_copy(update=update)
             if surface == "replace":
-                return sample.__replace__(**update)
+                return _replace_model(sample, **update)
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", DeprecationWarning)
                 return sample.copy(update=update)
@@ -1119,42 +1165,36 @@ def test_plan_candidate_rejects_incomplete_instance_with_fixed_error() -> None:
     )
 
 
+def _unknown_model_validation_calls(
+    model: type[IngestionPlanModel],
+    python_values: dict[str, object],
+    json_values: dict[str, object],
+) -> tuple[Callable[[], object], ...]:
+    return (
+        lambda: model.model_validate(python_values),
+        lambda: model.model_validate_json(json.dumps(json_values)),
+        lambda: model.model_validate_strings(python_values),
+        lambda: TypeAdapter(model).validate_python(python_values),
+        lambda: TypeAdapter(model).validate_json(json.dumps(json_values)),
+        lambda: TypeAdapter(model).validate_strings(python_values),
+        lambda: model.model_validate(python_values, extra="allow"),
+        lambda: model.model_validate(python_values, extra="ignore"),
+        lambda: model.model_validate_json(json.dumps(json_values), extra="allow"),
+        lambda: model.model_validate_json(json.dumps(json_values), extra="ignore"),
+        lambda: TypeAdapter(model).validate_python(python_values, extra="allow"),
+        lambda: TypeAdapter(model).validate_python(python_values, extra="ignore"),
+        lambda: TypeAdapter(model).validate_json(json.dumps(json_values), extra="allow"),
+        lambda: TypeAdapter(model).validate_json(json.dumps(json_values), extra="ignore"),
+    )
+
+
 def test_all_m7_models_reject_unknown_values_without_disclosure() -> None:
     secret = "all-model-entrypoint-sentinel"
     for sample in _all_m7_model_samples(_plan()):
         model = type(sample)
         python_values = sample.model_dump(mode="python") | {"unknown": secret}
         json_values = sample.model_dump(mode="json") | {"unknown": secret}
-        calls = (
-            lambda model=model, values=python_values: model.model_validate(values),
-            lambda model=model, values=json_values: model.model_validate_json(json.dumps(values)),
-            lambda model=model, values=python_values: model.model_validate_strings(values),
-            lambda model=model, values=python_values: TypeAdapter(model).validate_python(values),
-            lambda model=model, values=json_values: TypeAdapter(model).validate_json(
-                json.dumps(values)
-            ),
-            lambda model=model, values=python_values: TypeAdapter(model).validate_strings(values),
-            lambda model=model, values=python_values: model.model_validate(values, extra="allow"),
-            lambda model=model, values=python_values: model.model_validate(values, extra="ignore"),
-            lambda model=model, values=json_values: model.model_validate_json(
-                json.dumps(values), extra="allow"
-            ),
-            lambda model=model, values=json_values: model.model_validate_json(
-                json.dumps(values), extra="ignore"
-            ),
-            lambda model=model, values=python_values: TypeAdapter(model).validate_python(
-                values, extra="allow"
-            ),
-            lambda model=model, values=python_values: TypeAdapter(model).validate_python(
-                values, extra="ignore"
-            ),
-            lambda model=model, values=json_values: TypeAdapter(model).validate_json(
-                json.dumps(values), extra="allow"
-            ),
-            lambda model=model, values=json_values: TypeAdapter(model).validate_json(
-                json.dumps(values), extra="ignore"
-            ),
-        )
+        calls = _unknown_model_validation_calls(model, python_values, json_values)
         for call in calls:
             with pytest.raises(IngestionPlanError) as caught:
                 call()
@@ -1285,8 +1325,9 @@ print(plan.model_dump_json())
 def test_interruption_has_no_planner_state_and_retry_is_complete() -> None:
     calls = 0
 
-    def interrupted(_input: Sequence[str]) -> Sequence[Sequence[float]]:
+    def interrupted(input: Sequence[str]) -> Sequence[Sequence[float]]:
         nonlocal calls
+        del input
         calls += 1
         raise KeyboardInterrupt
 
