@@ -141,10 +141,11 @@ The internal candidate persistence contract adds create-or-confirm storage, exac
 readback, canonical inventory hashing, and injected attestation verification. Its
 separate signer-free verifier accepts an exact corpus, externally selected identity,
 and verify-only verifier and returns immutable content-free evidence. Therefore
-`immutable_versions` is `development_only`. It is not wired to startup or an
-endpoint and supplies no real signer, trusted identity selection, or lifecycle
-policy. Ready state, active pointers, promotion, rollback, and hosted readiness
-remain planned.
+`immutable_versions` is `development_only`. The internal lifecycle contract can copy
+verified evidence into ready state, apply exact active-pointer promotion or rollback,
+and logically remove an inactive version with immutable audits. It accepts an injected
+immutable trust policy but ships no real signer or production trust selection and is
+not wired to startup or an endpoint. Hosted readiness remains planned.
 
 The public chat API remains `1.0`, SSE remains `1.1`, local corpus remains `2`, and
 local retrieval store remains `1`. Existing deployments require no migration or

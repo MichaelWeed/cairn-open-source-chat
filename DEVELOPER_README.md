@@ -72,7 +72,10 @@ Design invariants and current limits:
   total, 4,096 embedding dimensions, and 8,388,608 vector scalars. The planner does
   not read files, contact providers or stores, persist data, or change lifecycle.
   The separate candidate persistence service consumes that complete plan through
-  injected store and signer/verifier boundaries; activation remains planned.
+  injected store and signer/verifier boundaries. The internal lifecycle registry
+  can mark fully verified candidates ready, switch an exact active pointer by CAS,
+  roll back, and logically remove an inactive version through injected trust and
+  store boundaries; it is not wired into startup or public APIs.
 
 ## 2. Developer Preview Quick Start
 
@@ -214,9 +217,12 @@ readback, inventory, payload, envelope, and signature checks without signing or
 writing. Its immutable, content-free evidence includes the exact corpus, plan and
 semantic-manifest hashes, embedding identity and dimensions, record counts,
 inventory and payload hashes, and signer algorithm and key IDs. KAN-45 must supply
-trusted identity selection and lifecycle rules before any candidate can become
-ready or active. All persistence tests are offline and deny providers, sockets,
-credentials, and production factories.
+`app.corpus_lifecycle` supplies those strict lifecycle rules around a caller-owned,
+immutable trust policy. It stores content-free evidence, exact state and immutable
+audits in fixed-key transactions. Removal is logical and terminal, never a candidate
+delete. Cairn still ships no production trust policy and does not route this seam into
+chat or startup. All persistence and lifecycle tests are offline and deny providers,
+sockets, credentials, and production factories.
 
 **Config plumbing:** compose only interpolates `.env` into `compose.yaml` — it never passes `.env` to the container by itself. Every knob in `.env.example` is therefore forwarded explicitly in the `environment:` block of `compose.yaml`, with defaults mirroring `backend/app/config.py`. Add new settings in all three places.
 

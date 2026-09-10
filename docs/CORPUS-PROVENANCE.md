@@ -81,6 +81,12 @@ so JSON whitespace and object-key order do not matter while any provenance or so
 hash change does. This planning step does not persist, publish, activate, update, or
 delete a corpus candidate.
 
+The development-only lifecycle registry can later copy a complete independently
+verified candidate's content-free evidence into immutable ready state. Active changes
+use an exact revisioned pointer and audit; removal is terminal logical state for an
+inactive version and never deletes candidate content, provenance, vectors, or
+attestation records. No production trust policy or public activation surface ships.
+
 ## Citation behavior and boundary
 
 Manifested startup documents use the verified `title` and `url` in the existing
