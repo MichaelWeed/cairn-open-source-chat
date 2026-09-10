@@ -66,6 +66,17 @@ this stage.
   Nonblank `GOOGLE_SDK_PYTHON_LOGGING_SCOPE` is rejected, adapter errors are
   content-free, and deterministic tests deny ADC, DNS, sockets, providers, and the
   production factory. Production selection remains fail-closed.
+* **Immutable candidate attestation boundary.** The development-only persistence
+  component reserves an exact candidate with an immutable header, performs only
+  existence-preconditioned creates, independently reads back every expected record,
+  rejects extras or changes, and writes the attestation last. Batch count, encoded
+  request bytes, document bytes, dimensions, pagination, timeouts, and retries are
+  bounded. Errors are fixed and content-free, and SDK logging remains disabled.
+  Exact encoded-size agreement is computed linearly and kept operation-local. A
+  separate signer-free verifier accepts an exact corpus, externally selected
+  identity, and verify-only verifier and returns only identity-bound, content-free
+  evidence from a complete durable readback. The component ships no key, credential
+  loader, KMS client, production algorithm, trust selection, or trust store.
 * **Supply chain.** `uv.lock`/`package-lock.json` with hashes; CycloneDX SBOM regenerated and
   diffed against the committed one on every `make validate` run; `osv-scanner` (lockfiles) and
   `grype` (built images) gates; container images pinned by digest; a 14-day dependency cooldown
@@ -88,6 +99,9 @@ this stage.
   to the client (task 4.3).
 * **No daily abuse budget cap or signed widget token** (task 4.5) — only the per-IP/session token
   buckets above.
+* **No trusted candidate promotion policy.** Candidate attestation exists only as a
+  development seam. KAN-45 must select trusted signer identities, verify the M8
+  read-only evidence, and define ready/active transitions, rollback, and removal.
 * **No HTTP ingestion endpoint.** `ingest_upload()` (task 2.2) exists as a callable but nothing
   routes an HTTP request to it yet (task 2.7). Today, the only way content enters the vector store
   is a direct function call (tests, or an operator-run script) — there's no attacker-reachable

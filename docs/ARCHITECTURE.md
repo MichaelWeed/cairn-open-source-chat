@@ -57,7 +57,7 @@ Three properties of this diagram carry most of the design weight:
 | Vector store | `backend/app/vectorstore.py` | Built. SQLite flat index, version 1, see [ADR-0007](adr/0007-sqlite-flat-vector-index.md) |
 | Retrieval protocol + adapters + refusal | `backend/app/retrieval_contracts.py`, `backend/app/retrieval.py`, `backend/app/retrieval_firestore.py` | Built. Contract 1.0; default `local_active` SQLite plus optional development-only exact-scope Firestore reads |
 | Ingestion pipeline | `backend/app/ingest/` | Built; mounted startup requires a versioned provenance manifest, while direct callable ingestion retains internal citations |
-| Immutable candidate planner | `backend/app/ingest/planner.py` | Built internally. Pure contract 1.0 planning only; persistence and lifecycle remain planned |
+| Immutable candidate planner and persistence | `backend/app/ingest/planner.py`, `backend/app/ingest/candidate_persistence.py`, `backend/app/ingest/candidate_firestore.py` | Built internally for development. Pure plan plus create-or-confirm storage, full readback, and attestation; readiness and lifecycle remain planned |
 | Rate limiting | `backend/app/ratelimit.py` | Built. In-process, single-instance |
 | Metadata store | `backend/app/db/` | Built. SQLite, WAL |
 | Config | `backend/app/config.py` | Built |
@@ -114,8 +114,19 @@ and version. It performs deterministic extraction, LF/NFC normalization, existin
 boundary-aware chunking, fixed-size positional embedding batches, and canonical
 identity/digest construction without filesystem, network, database, vector-store,
 or provider access. It returns one complete frozen candidate plan or fails closed;
-it does not alter the current mounted startup pipeline. KAN-49b storage/readback and
-KAN-45 lifecycle/active-pointer work remain planned.
+it does not alter the current mounted startup pipeline. The separate persistence
+component creates or confirms an immutable candidate header, then sorted document
+and chunk batches, reads the exact scope back in stable key order, and signs a
+canonical inventory only after full comparison. Its fixed collections are
+`cairn_corpus_candidates_v1`, `cairn_corpus_documents_v1`,
+`cairn_corpus_chunks_v1`, and `cairn_corpus_attestations_v1`. Candidate and
+attestation keys are derived from the exact corpus reference, document keys are M7
+document IDs, and chunk keys use the M6 bounded chunk-key helper. A distinct
+signer-free verification service accepts an exact corpus, externally selected
+identity, and verify-only verifier, then returns immutable content-free evidence
+from a fresh complete durable readback. It does not select trust or lifecycle
+state. KAN-45 lifecycle, trust policy, readiness, and active-pointer work remain
+planned.
 
 The Gemini adapter imports its SDK only after explicit selection. It maps history
 roles, keeps retrieved context and the current visitor question as separate JSON
@@ -144,10 +155,15 @@ not a bug fix.
   `CHROMA_PATH/cairn-vectors-v1.sqlite3`; legacy Chroma files are not read or
   changed, and corpus re-ingestion is explicit. See
   [ADR-0007](adr/0007-sqlite-flat-vector-index.md). The optional Firestore adapter
-  is a read-only development/test boundary: it applies four exact equality filters,
+  is a read-only development/test retrieval boundary: it applies four exact equality filters,
   a fixed projection and vector field, a K + 1 query, and deterministic
-  `(distance, chunk_id)` ordering. It neither writes nor promotes corpus versions;
-  candidate persistence belongs to KAN-49b and promotion/readiness to KAN-45.
+  `(distance, chunk_id)` ordering. Candidate persistence is a separate injected
+  development boundary. It performs header-first create-only writes, exact
+  read-confirm replay, full document/chunk readback, framed inventory hashing, and
+  immutable attestation last. A failed operation may leave an unattested prefix;
+  it never cleans up or promotes that prefix. Its signer-free verifier repeats the
+  exact durable readback and returns identity-bound evidence without signing or
+  writing. Promotion/readiness and trusted identity selection belong to KAN-45.
 * **Contracts change only with their consumers.** The wire format is a frozen
   Pydantic model; changing it requires updating widget, tests, and documentation in
   the same change. See [ADR-0002](adr/0002-frozen-wire-contracts.md).
