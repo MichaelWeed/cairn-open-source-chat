@@ -575,6 +575,8 @@ async def test_adapter_emits_no_canary_content_at_debug_level(
 class _SdkQuery:
     def __init__(self) -> None:
         self.calls: list[tuple[str, object]] = []
+        self.get_result: object = []
+        self.failure: Exception | None = None
 
     def where(self, **kwargs: object) -> "_SdkQuery":
         self.calls.append(("where", kwargs))
@@ -592,9 +594,11 @@ class _SdkQuery:
         self.calls.append(("limit", value))
         return self
 
-    async def get(self, **kwargs: object) -> list[object]:
+    async def get(self, **kwargs: object) -> object:
         self.calls.append(("get", kwargs))
-        return []
+        if self.failure is not None:
+            raise self.failure
+        return self.get_result
 
 
 class _SdkClient:
@@ -669,6 +673,51 @@ async def test_sdk_wrapper_maps_only_bounded_query_options_and_closes_once() -> 
     assert cast(Any, nearest["query_vector"]).value == [0.25, 0.75]
     assert ("get", {"retry": None, "timeout": 7}) in client.query.calls
     await asyncio.gather(wrapper.aclose(), wrapper.aclose())
+    assert client.close_calls == 1
+
+
+@pytest.mark.parametrize("result", [[], [object()], "malformed-complete-result"])
+async def test_sdk_wrapper_readiness_accepts_any_completed_bounded_read(
+    result: object,
+) -> None:
+    client = _SdkClient()
+    client.query.get_result = result
+    wrapper = FirestoreSdkVectorClient(client, sdk=_Sdk())
+    readiness = FirestoreReadinessQuery(
+        collection=FIRESTORE_CHUNKS_COLLECTION,
+        filters=(("schema_version", "1.0"), ("corpus_id", "docs")),
+        projection=("schema_version",),
+        limit=1,
+        timeout_seconds=7,
+    )
+
+    assert await wrapper.readiness_get(readiness) is None
+    assert ("select", ("schema_version",)) in client.query.calls
+    assert ("limit", 1) in client.query.calls
+    assert ("get", {"retry": None, "timeout": 7}) in client.query.calls
+    await wrapper.aclose()
+    assert client.close_calls == 1
+
+
+async def test_sdk_wrapper_readiness_normalizes_failure_without_retaining_content() -> None:
+    client = _SdkClient()
+    client.query.failure = RuntimeError("transport-secret")
+    wrapper = FirestoreSdkVectorClient(client, sdk=_Sdk())
+    readiness = FirestoreReadinessQuery(
+        collection=FIRESTORE_CHUNKS_COLLECTION,
+        filters=(("schema_version", "1.0"),),
+        projection=("schema_version",),
+        limit=1,
+        timeout_seconds=7,
+    )
+
+    with pytest.raises(FirestoreClientError) as caught:
+        await wrapper.readiness_get(readiness)
+    assert caught.value.retryable is False
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert "transport-secret" not in str(caught.value)
+    await wrapper.aclose()
     assert client.close_calls == 1
 
 

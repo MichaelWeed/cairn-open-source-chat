@@ -176,6 +176,7 @@ class FirestoreSdkVectorClient:
         try:
             query = self._filtered_query(request).select(request.projection).limit(request.limit)
             await query.get(retry=request.retry, timeout=request.timeout_seconds)
+            return
         except asyncio.CancelledError:
             raise
         except Exception as error:
