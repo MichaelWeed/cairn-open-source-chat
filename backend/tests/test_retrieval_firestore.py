@@ -1,9 +1,10 @@
 import asyncio
+import importlib
 import importlib.util
 import logging
 import math
 import socket
-from collections.abc import Sequence
+from collections.abc import MutableMapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -282,7 +283,7 @@ def test_missing_firestore_extra_has_fixed_actionable_error(
         assert name == "google.cloud.firestore_v1"
         raise ModuleNotFoundError
 
-    monkeypatch.setattr(module.importlib, "import_module", missing)
+    monkeypatch.setattr(importlib, "import_module", missing)
     with pytest.raises(RuntimeError) as caught:
         module.create_firestore_vector_client("cairn1")
     assert str(caught.value) == (
@@ -436,7 +437,8 @@ async def test_duplicate_physical_or_logical_identity_rejects_atomically(
 async def test_conflicting_repeated_document_metadata_rejects_atomically() -> None:
     first = row("doc::chunk::0")
     second = row("doc::chunk::1", distance=0.2, chunk_index=1)
-    second.fields["source"] = "conflict.md"
+    mutable_fields = cast(MutableMapping[str, object], second.fields)
+    mutable_fields["source"] = "conflict.md"
     with pytest.raises(RetrievalError) as caught:
         await adapter(FakeClient([first, second])).retrieve(request())
     assert caught.value.code == "malformed_result"
@@ -584,8 +586,9 @@ async def test_adapter_emits_no_canary_content_at_debug_level(
         "canary-transport-secret",
     )
     candidate = row()
-    candidate.fields["text"] = canaries[1]
-    candidate.fields["citation_url"] = f"https://{canaries[2]}/x"
+    mutable_fields = cast(MutableMapping[str, object], candidate.fields)
+    mutable_fields["text"] = canaries[1]
+    mutable_fields["citation_url"] = f"https://{canaries[2]}/x"
     client = FakeClient([candidate])
     caplog.set_level(logging.DEBUG)
     await adapter(client).retrieve(request(query=canaries[0]))
