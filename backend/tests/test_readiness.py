@@ -1858,12 +1858,8 @@ async def test_ollama_catalog_model_count_bound() -> None:
         await probe.aclose()
 
 
-async def test_budget_is_always_not_required_without_policy_authority() -> None:
-    class _ForbiddenBudget:
-        async def check_readiness(self) -> object:
-            raise AssertionError("future budget authority must remain inert")
-
-    evaluator, _ = _evaluator(budget_probe=_ForbiddenBudget())
+async def test_budget_is_not_required_only_when_probe_is_absent() -> None:
+    evaluator, _ = _evaluator()
     report = await evaluator.evaluate()
     assert report.checks[7].model_dump() == {
         "contract_version": "1.0",
@@ -1872,6 +1868,542 @@ async def test_budget_is_always_not_required_without_policy_authority() -> None:
         "required": False,
         "reason": "not_required",
     }
+    assert tuple(check.dimension for check in report.checks) == DIMENSIONS
+    assert report.ready is True
+
+
+class _BudgetProbe:
+    def __init__(self, result: object) -> None:
+        self.result = result
+        self.calls = 0
+
+    async def check_readiness(self) -> object:
+        self.calls += 1
+        if isinstance(self.result, BaseException):
+            raise self.result
+        return self.result
+
+    async def aclose(self) -> None:
+        raise AssertionError("borrowed budget probe must not close")
+
+
+@pytest.mark.parametrize(
+    ("state", "reason", "ready"),
+    [
+        ("ready", "ready", True),
+        ("not_ready", "budget_exhausted", False),
+        ("not_ready", "budget_overrun", False),
+        ("unknown", "accounting_uncertain", False),
+        ("unknown", "unavailable", False),
+        ("unknown", "misconfigured", False),
+    ],
+)
+async def test_budget_probe_projects_every_exact_result(
+    state: Literal["ready", "not_ready", "unknown"],
+    reason: Literal[
+        "ready",
+        "budget_exhausted",
+        "budget_overrun",
+        "accounting_uncertain",
+        "unavailable",
+        "misconfigured",
+    ],
+    ready: bool,
+) -> None:
+    source = BudgetReadiness(state=state, reason=reason)
+    probe = _BudgetProbe(source)
+    evaluator, _ = _evaluator(budget_probe=probe)
+    report = await evaluator.evaluate()
+    check = report.checks[7]
+    assert check.model_dump() == {
+        "contract_version": "1.0",
+        "dimension": "budget",
+        "state": state,
+        "required": True,
+        "reason": reason,
+    }
+    assert id(check) != id(source)
+    assert report.ready is ready
+    assert probe.calls == 1
+
+
+async def test_budget_probe_runs_last_once_per_evaluation_without_caching() -> None:
+    events: list[str] = []
+
+    class _OrderedBudget:
+        async def check_readiness(self) -> object:
+            events.append("budget")
+            return BudgetReadiness(state="ready", reason="ready")
+
+    route = _StaticRouteProbe(
+        RetrievalProbe(
+            scope=LocalActiveScope(),
+            reachable=True,
+            store_ready=True,
+            exact_version_ready=False,
+        )
+    )
+    original_route = route.check_readiness
+
+    async def route_readiness() -> object:
+        events.append("route")
+        return await original_route()
+
+    def database_readiness() -> bool:
+        events.append("database")
+        return True
+
+    def corpus_readiness() -> bool:
+        events.append("corpus")
+        return True
+
+    def vector_readiness() -> None:
+        events.append("vector")
+
+    route.check_readiness = route_readiness  # type: ignore[method-assign]
+    evaluator = ReadinessEvaluator(
+        database_probe=database_readiness,
+        corpus_probe=corpus_readiness,
+        local_vector_probe=vector_readiness,
+        retrieval_route_resolver=route,
+        retrieval_profile="local_static",
+        expected_retrieval_scope=LocalActiveScope(),
+        provider_name="echo",
+        provider_model="",
+        embedding_name="fake",
+        embedding_model="",
+        gemini_probe=None,
+        ollama_catalog_probe=None,
+        budget_probe=_OrderedBudget(),
+    )
+    await evaluator.evaluate()
+    await evaluator.evaluate()
+    assert events == [
+        "database", "route", "vector", "corpus", "budget",
+        "database", "route", "vector", "corpus", "budget",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("probe", "reason"),
+    [
+        (object(), "misconfigured"),
+        (type("NonCallableBudget", (), {"check_readiness": None})(), "misconfigured"),
+        (type("SyncBudget", (), {"check_readiness": lambda self: object()})(), "misconfigured"),
+        (
+            type(
+                "WrongArityBudget",
+                (),
+                {"check_readiness": lambda self, required: required},
+            )(),
+            "misconfigured",
+        ),
+    ],
+)
+async def test_budget_probe_interface_mismatch_is_fixed_and_content_free(
+    probe: object, reason: str
+) -> None:
+    evaluator, _ = _evaluator(budget_probe=probe)
+    check = (await evaluator.evaluate()).checks[7]
+    assert (check.state, check.required, check.reason) == ("unknown", True, reason)
+
+
+@pytest.mark.parametrize("error_type", [AttributeError, TypeError])
+async def test_budget_probe_attribute_contract_errors_are_misconfigured(
+    error_type: type[Exception],
+) -> None:
+    class _AttributeFailure:
+        @property
+        def check_readiness(self) -> object:
+            raise error_type("PRIVATE-BUDGET-ATTRIBUTE-CONTRACT")
+
+    evaluator, _ = _evaluator(budget_probe=_AttributeFailure())
+    check = (await evaluator.evaluate()).checks[7]
+    assert (check.state, check.required, check.reason) == (
+        "unknown", True, "misconfigured"
+    )
+
+
+async def test_budget_probe_call_type_error_and_await_type_error_are_distinct() -> None:
+    class _CallTypeError:
+        def check_readiness(self) -> object:
+            raise TypeError("PRIVATE-BUDGET-CALL-TYPE")
+
+    class _AwaitTypeError:
+        async def check_readiness(self) -> object:
+            raise TypeError("PRIVATE-BUDGET-AWAIT-TYPE")
+
+    call_evaluator, _ = _evaluator(budget_probe=_CallTypeError())
+    await_evaluator, _ = _evaluator(budget_probe=_AwaitTypeError())
+    call_check = (await call_evaluator.evaluate()).checks[7]
+    await_check = (await await_evaluator.evaluate()).checks[7]
+    assert (call_check.state, call_check.reason) == ("unknown", "misconfigured")
+    assert (await_check.state, await_check.reason) == ("unknown", "unavailable")
+
+
+@pytest.mark.parametrize("window", ["attribute", "call", "await"])
+async def test_budget_probe_ordinary_failures_are_unavailable_content_free(
+    window: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    canary = f"PRIVATE-BUDGET-{window}-CANARY"
+
+    class _AttributeFailure:
+        @property
+        def check_readiness(self) -> object:
+            raise RuntimeError(canary)
+
+    class _CallFailure:
+        def check_readiness(self) -> object:
+            raise RuntimeError(canary)
+
+    class _AwaitFailure:
+        async def check_readiness(self) -> object:
+            raise RuntimeError(canary)
+
+    probes = {
+        "attribute": _AttributeFailure(),
+        "call": _CallFailure(),
+        "await": _AwaitFailure(),
+    }
+    caplog.set_level("DEBUG")
+    evaluator, _ = _evaluator(budget_probe=probes[window])
+    report = await evaluator.evaluate()
+    check = report.checks[7]
+    assert (check.state, check.required, check.reason) == (
+        "unknown", True, "unavailable"
+    )
+    assert canary not in repr(report)
+    assert canary not in caplog.text
+
+
+async def test_budget_probe_rejects_subclass_facsimile_and_corrupted_exact_models(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    calls: list[str] = []
+    canary = "PRIVATE-HOSTILE-BUDGET-CANARY"
+
+    class _BudgetSubclass(BudgetReadiness):
+        pass
+
+    class _HostileFacsimile:
+        def __init__(self, truth: bool) -> None:
+            object.__setattr__(self, "truth", truth)
+
+        def __bool__(self) -> bool:
+            calls.append("bool")
+            return cast(bool, object.__getattribute__(self, "truth"))
+
+        def __repr__(self) -> str:
+            calls.append("repr")
+            raise AssertionError(canary)
+
+        def __str__(self) -> str:
+            calls.append("str")
+            raise AssertionError(canary)
+
+        def __eq__(self, other: object) -> bool:
+            del other
+            calls.append("eq")
+            raise AssertionError(canary)
+
+        def __iter__(self) -> object:
+            calls.append("iter")
+            raise AssertionError(canary)
+
+        def __len__(self) -> int:
+            calls.append("len")
+            raise AssertionError(canary)
+
+        def model_dump(self) -> object:
+            calls.append("model_dump")
+            raise AssertionError(canary)
+
+        @property
+        def state(self) -> object:
+            calls.append("state")
+            raise AssertionError(canary)
+
+    class _HostileKey(str):
+        def __hash__(self) -> int:
+            calls.append("hash")
+            return super().__hash__()
+
+        def __eq__(self, other: object) -> bool:
+            del other
+            calls.append("key_eq")
+            raise AssertionError(canary)
+
+    class _HostileValue:
+        def __repr__(self) -> str:
+            calls.append("value_repr")
+            raise AssertionError(canary)
+
+    corrupted = BudgetReadiness(state="ready", reason="ready")
+    object.__setattr__(corrupted, "reason", canary)
+    hidden = BudgetReadiness(state="ready", reason="ready")
+    object.__setattr__(hidden, "__pydantic_extra__", {"hidden": canary})
+    bad_fields = BudgetReadiness(state="ready", reason="ready")
+    object.__setattr__(bad_fields, "__pydantic_fields_set__", {canary})
+    missing = BudgetReadiness(state="ready", reason="ready")
+    object.__getattribute__(missing, "__dict__").pop("reason")
+    private = BudgetReadiness(state="ready", reason="ready")
+    object.__setattr__(private, "__pydantic_private__", {"hidden": canary})
+    bad_state_type = BudgetReadiness(state="ready", reason="ready")
+    object.__setattr__(bad_state_type, "state", 1)
+    bad_pair = BudgetReadiness(state="ready", reason="ready")
+    object.__setattr__(bad_pair, "reason", "budget_overrun")
+    hostile_mapping = {_HostileKey("state"): _HostileValue()}
+    calls.clear()
+    results: tuple[object, ...] = (
+        _BudgetSubclass(state="ready", reason="ready"),
+        _HostileFacsimile(True),
+        _HostileFacsimile(False),
+        {"state": "ready", "reason": "ready"},
+        hostile_mapping,
+        corrupted,
+        hidden,
+        bad_fields,
+        missing,
+        private,
+        bad_state_type,
+        bad_pair,
+    )
+    caplog.set_level("DEBUG")
+    for result in results:
+        evaluator, _ = _evaluator(budget_probe=_BudgetProbe(result))
+        report = await evaluator.evaluate()
+        check = report.checks[7]
+        assert (check.state, check.required, check.reason) == (
+            "unknown", True, "misconfigured"
+        )
+        assert canary not in repr(report)
+    assert calls == []
+    assert canary not in caplog.text
+
+
+async def test_budget_probe_transient_results_and_errors_are_not_retained() -> None:
+    result = BudgetReadiness(state="ready", reason="ready")
+    result_ref = weakref.ref(result)
+
+    class _OneShotResult:
+        def __init__(self, value: object) -> None:
+            self.value: object | None = value
+
+        async def check_readiness(self) -> object:
+            value = self.value
+            self.value = None
+            return value
+
+    probe = _OneShotResult(result)
+    evaluator, _ = _evaluator(budget_probe=probe)
+    del result
+    report = await evaluator.evaluate()
+    assert report.checks[7].reason == "ready"
+    assert result_ref() is None
+
+    error_ref: weakref.ReferenceType[BaseException] | None = None
+
+    class _OneShotError(RuntimeError):
+        pass
+
+    class _FailingProbe:
+        async def check_readiness(self) -> object:
+            nonlocal error_ref
+            error = _OneShotError("PRIVATE-TRANSIENT-BUDGET-ERROR")
+            error_ref = weakref.ref(error)
+            raise error
+
+    failing, _ = _evaluator(budget_probe=_FailingProbe())
+    failed_report = await failing.evaluate()
+    assert failed_report.checks[7].reason == "unavailable"
+    assert error_ref is not None
+    assert error_ref() is None
+
+    class _Canary:
+        pass
+
+    canary = _Canary()
+    canary_ref = weakref.ref(canary)
+    malformed_probe = _OneShotResult(canary)
+    malformed, _ = _evaluator(budget_probe=malformed_probe)
+    del canary
+    malformed_report = await malformed.evaluate()
+    assert malformed_report.checks[7].reason == "misconfigured"
+    assert canary_ref() is None
+
+
+@pytest.mark.parametrize("window", ["call", "await"])
+async def test_budget_probe_cancellation_preserves_identity_and_stops(
+    window: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    cancellation = asyncio.CancelledError()
+    calls = 0
+
+    class _Cancel:
+        def check_readiness(self) -> object:
+            nonlocal calls
+            calls += 1
+            if window == "call":
+                raise cancellation
+
+            async def pending() -> object:
+                raise cancellation
+
+            return pending()
+
+    caplog.set_level("DEBUG")
+    evaluator, _ = _evaluator(budget_probe=_Cancel())
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await evaluator.evaluate()
+    assert caught.value is cancellation
+    assert calls == 1
+    assert caplog.records == []
+
+
+async def test_budget_probe_concurrent_evaluations_are_isolated() -> None:
+    release_first = asyncio.Event()
+    second_arrived = asyncio.Event()
+    calls = 0
+
+    class _ReversedBudget:
+        async def check_readiness(self) -> object:
+            nonlocal calls
+            calls += 1
+            call = calls
+            if call == 1:
+                second_arrived.set()
+                await release_first.wait()
+                return BudgetReadiness(state="ready", reason="ready")
+            release_first.set()
+            return BudgetReadiness(state="not_ready", reason="budget_overrun")
+
+    evaluator, _ = _evaluator(budget_probe=_ReversedBudget())
+    first = asyncio.create_task(evaluator.evaluate())
+    await second_arrived.wait()
+    second = asyncio.create_task(evaluator.evaluate())
+    first_report, second_report = await asyncio.gather(first, second)
+    assert first_report.checks[7].reason == "ready"
+    assert second_report.checks[7].reason == "budget_overrun"
+    assert calls == 2
+
+
+async def test_budget_probe_concurrent_failure_does_not_taint_success() -> None:
+    release_success = asyncio.Event()
+    failure_arrived = asyncio.Event()
+    calls = 0
+
+    class _MixedBudget:
+        async def check_readiness(self) -> object:
+            nonlocal calls
+            calls += 1
+            call = calls
+            if call == 1:
+                await failure_arrived.wait()
+                await release_success.wait()
+                return BudgetReadiness(state="ready", reason="ready")
+            failure_arrived.set()
+            release_success.set()
+            raise RuntimeError("PRIVATE-CONCURRENT-BUDGET-FAILURE")
+
+    evaluator, _ = _evaluator(budget_probe=_MixedBudget())
+    success_task = asyncio.create_task(evaluator.evaluate())
+    failure_task = asyncio.create_task(evaluator.evaluate())
+    success, failure = await asyncio.gather(success_task, failure_task)
+    assert success.checks[7].reason == "ready"
+    assert failure.checks[7].reason == "unavailable"
+    assert calls == 2
+
+
+def test_budget_probe_binding_is_sealed() -> None:
+    evaluator, _ = _evaluator(
+        budget_probe=_BudgetProbe(BudgetReadiness(state="ready", reason="ready"))
+    )
+    operations: tuple[Callable[[], object], ...] = (
+        lambda: setattr(evaluator, "_budget_probe", None),
+        lambda: delattr(evaluator, "_budget_probe"),
+    )
+    for operation in operations:
+        with pytest.raises(ReadinessError):
+            operation()
+
+
+async def test_budget_probe_binding_retention_invokes_no_hooks_before_evaluation() -> None:
+    calls: list[str] = []
+
+    class _HostileBinding:
+        def __getattribute__(self, name: str) -> object:
+            calls.append(name)
+            return object.__getattribute__(self, name)
+
+        def __bool__(self) -> bool:
+            calls.append("bool")
+            raise AssertionError
+
+        def __eq__(self, other: object) -> bool:
+            del other
+            calls.append("eq")
+            raise AssertionError
+
+        def __repr__(self) -> str:
+            calls.append("repr")
+            raise AssertionError
+
+        async def check_readiness(self) -> object:
+            return BudgetReadiness(state="ready", reason="ready")
+
+    probe = _HostileBinding()
+    evaluator, _ = _evaluator(budget_probe=probe)
+    assert calls == []
+    assert object.__getattribute__(evaluator, "_budget_probe") is probe
+    report = await evaluator.evaluate()
+    assert report.checks[7].reason == "ready"
+    assert calls == ["check_readiness"]
+
+
+@pytest.mark.parametrize("fails", [False, True])
+async def test_present_budget_probe_performs_no_unrelated_external_work(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    fails: bool,
+) -> None:
+    calls: list[str] = []
+
+    def forbidden(name: str) -> Callable[..., object]:
+        def fail(*args: object, **kwargs: object) -> object:
+            del args, kwargs
+            calls.append(name)
+            raise AssertionError(name)
+
+        return fail
+
+    for target, name in (
+        ("socket.getaddrinfo", "dns"),
+        ("socket.create_connection", "socket"),
+        ("os.getenv", "environment"),
+        ("pathlib.Path.write_bytes", "write_bytes"),
+        ("pathlib.Path.write_text", "write_text"),
+        ("app.providers.ollama.OllamaProvider.stream", "ollama"),
+        ("app.providers.gemini.GeminiProvider.stream", "gemini"),
+        ("asyncio.create_task", "background_task"),
+    ):
+        monkeypatch.setattr(target, forbidden(name))
+
+    class _Probe:
+        async def check_readiness(self) -> object:
+            if fails:
+                raise RuntimeError("PRIVATE-BUDGET-FAILURE")
+            return BudgetReadiness(state="ready", reason="ready")
+
+        async def aclose(self) -> None:
+            calls.append("close")
+            raise AssertionError("borrowed probe closed")
+
+    caplog.set_level("DEBUG")
+    evaluator, _ = _evaluator(budget_probe=_Probe())
+    check = (await evaluator.evaluate()).checks[7]
+    assert check.reason == ("unavailable" if fails else "ready")
+    assert calls == []
+    assert caplog.records == []
 
 
 async def test_readiness_emits_no_logs_and_performs_no_unselected_external_work(

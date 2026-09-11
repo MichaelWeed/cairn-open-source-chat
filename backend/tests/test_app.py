@@ -22,7 +22,7 @@ from app.ingest.candidate_persistence import (
 from app.ingest.startup import CorpusStartupError
 from app.main import _close_application_resources, create_app
 from app.providers.echo import EchoProvider
-from app.readiness import OllamaCatalogReadiness, ReadinessError
+from app.readiness import BudgetReadiness, OllamaCatalogReadiness, ReadinessError
 from app.request_accounting import (
     ProviderAttemptPolicy,
     RequestAccountingError,
@@ -79,6 +79,89 @@ def test_readyz(client: TestClient) -> None:
     assert body["status"] == "ok"
     assert body["checks"]["database"] is True
     assert body["checks"]["vector_store"] is True
+
+
+class _ApplicationBudgetProbe:
+    def __init__(self, result: BudgetReadiness) -> None:
+        self.result = result
+        self.calls = 0
+
+    async def check_readiness(self) -> object:
+        self.calls += 1
+        return self.result
+
+    async def aclose(self) -> None:
+        raise AssertionError("borrowed budget probe must not close")
+
+
+@pytest.mark.parametrize(
+    ("state", "reason", "status"),
+    [
+        ("ready", "ready", 200),
+        ("not_ready", "budget_exhausted", 503),
+        ("not_ready", "budget_overrun", 503),
+        ("unknown", "accounting_uncertain", 503),
+        ("unknown", "unavailable", 503),
+        ("unknown", "misconfigured", 503),
+    ],
+)
+def test_injected_budget_probe_controls_internal_readyz_only(
+    tmp_path: Path,
+    state: str,
+    reason: str,
+    status: int,
+) -> None:
+    probe = _ApplicationBudgetProbe(
+        BudgetReadiness(state=cast(Any, state), reason=cast(Any, reason))
+    )
+    application = create_app(
+        Settings(
+            provider="echo",
+            embedding_provider="fake",
+            database_path=tmp_path / "test.db",
+            chroma_path=tmp_path / "chroma",
+        ),
+        budget_readiness_probe=probe,
+    )
+    with TestClient(application) as local_client:
+        health = local_client.get("/healthz")
+        assert health.status_code == 200
+        assert health.content == b'{"status":"ok"}'
+        assert probe.calls == 0
+        response = local_client.get("/readyz")
+        assert response.status_code == status
+        expected_status = b"ok" if status == 200 else b"not_ready"
+        assert response.content == (
+            b'{"status":"' + expected_status
+            + b'","checks":{"database":true,"vector_store":true,"corpus":true}}'
+        )
+        assert set(response.json()) == {"status", "checks"}
+        assert set(response.json()["checks"]) == {
+            "database", "vector_store", "corpus"
+        }
+        assert probe.calls == 1
+
+
+def test_invalid_settings_precede_budget_probe_inspection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class _HostileBudgetProbe:
+        def __getattribute__(self, name: str) -> object:
+            calls.append(name)
+            raise AssertionError("budget probe was inspected")
+
+    monkeypatch.setattr(
+        "app.main.configure_logging",
+        lambda: (_ for _ in ()).throw(AssertionError("logging ran")),
+    )
+    with pytest.raises(SettingsValidationError):
+        create_app(
+            _forged_production_corpus_settings(),
+            budget_readiness_probe=cast(Any, _HostileBudgetProbe()),
+        )
+    assert calls == []
 
 
 def test_accounting_factory_mismatch_precedes_provider_construction(
