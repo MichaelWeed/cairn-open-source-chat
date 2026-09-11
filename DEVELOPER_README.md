@@ -193,6 +193,16 @@ fake transport, deny DNS, sockets, providers, ADC, and the production factory, a
 make no live or credentialed call. `/readyz` intentionally does not probe
 Firestore in this milestone.
 
+Chat consumes one internal retrieval-route resolver per request. The default
+resolver preserves `local_active`; development Firestore preserves its configured
+exact reference. Explicit development/test composition may inject the read-only
+lifecycle resolver, which validates one 45a active snapshot, single-flights full M8
+verification for each new content-free pointer/policy fingerprint, and constructs an
+M6 adapter bound to the same exact reference. The binding is checked against M6's
+authoritative scope, embedding identity, and dimensions immediately before readiness
+or retrieval I/O. Cairn ships no production lifecycle factory, trust loader, key, or
+new environment setting, and `/readyz` remains unchanged.
+
 ### Immutable candidate persistence (development only)
 
 `app.ingest.candidate_persistence` maps one validated plan to an immutable header,
@@ -216,12 +226,13 @@ selected signer identity, and verify-only verifier. It performs the same complet
 readback, inventory, payload, envelope, and signature checks without signing or
 writing. Its immutable, content-free evidence includes the exact corpus, plan and
 semantic-manifest hashes, embedding identity and dimensions, record counts,
-inventory and payload hashes, and signer algorithm and key IDs. KAN-45 must supply
-`app.corpus_lifecycle` supplies those strict lifecycle rules around a caller-owned,
+inventory and payload hashes, and signer algorithm and key IDs.
+`app.corpus_lifecycle` supplies the strict lifecycle rules around a caller-owned,
 immutable trust policy. It stores content-free evidence, exact state and immutable
 audits in fixed-key transactions. Removal is logical and terminal, never a candidate
-delete. Cairn still ships no production trust policy and does not route this seam into
-chat or startup. All persistence and lifecycle tests are offline and deny providers,
+delete. The read-only route resolver can consume this seam only through explicit
+development/test injection; default startup does not construct it. Cairn still ships no
+production trust policy or lifecycle mutation surface. All persistence and lifecycle tests are offline and deny providers,
 sockets, credentials, and production factories.
 
 **Config plumbing:** compose only interpolates `.env` into `compose.yaml` — it never passes `.env` to the container by itself. Every knob in `.env.example` is therefore forwarded explicitly in the `environment:` block of `compose.yaml`, with defaults mirroring `backend/app/config.py`. Add new settings in all three places.
@@ -283,7 +294,9 @@ provenance metadata without coercion, and fails closed on unsupported scope,
 malformed output, or context larger than 12,000 characters. Exact immutable corpus
 references remain unsupported by the local store. The optional development-only
 Firestore adapter accepts one configured exact reference and either cosine or
-Euclidean distance without changing the public chat or SSE contracts.
+Euclidean distance without changing the public chat or SSE contracts. Internally, chat
+resolves one scope-plus-adapter route exactly once and retains that binding for the whole
+request, so a later active-pointer change affects only the next request.
 `RETRIEVAL_TOP_K` must be an integer from 1 through 6 and
 `RETRIEVAL_MAX_DISTANCE` must be finite and non-negative; invalid settings stop
 startup rather than changing retrieval behavior silently.

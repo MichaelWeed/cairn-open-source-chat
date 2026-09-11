@@ -35,13 +35,11 @@ from app.retrieval import (
 )
 from app.retrieval_contracts import (
     DistanceMeasure,
-    LocalActiveScope,
-    RetrievalAdapter,
     RetrievalError,
     RetrievalRequest,
     RetrievalResult,
-    RetrievalScope,
 )
+from app.retrieval_route import RetrievalRouteResolver, validate_route_authority
 
 logger = logging.getLogger("app")
 
@@ -120,10 +118,9 @@ async def stream_with_pings(
 async def chat_event_stream(
     provider: Provider,
     body: ChatMessageRequest,
-    retrieval_adapter: RetrievalAdapter,
+    retrieval_route_resolver: RetrievalRouteResolver,
     top_k: int = DEFAULT_TOP_K,
     max_distance: float = DEFAULT_MAX_DISTANCE,
-    retrieval_scope: RetrievalScope | None = None,
     retrieval_distance_measure: DistanceMeasure = "squared_l2",
     ping_interval: float = PING_INTERVAL_SECONDS,
     system_instruction: str = "",
@@ -131,9 +128,13 @@ async def chat_event_stream(
     max_output_chars: int = 6000,
 ) -> AsyncIterator[ChatEvent]:
     yield StatusEvent(state="retrieving", label="Searching the knowledge base")
+    route = None
     try:
+        route = validate_route_authority(
+            await retrieval_route_resolver.resolve_route()
+        )
         retrieval_request = RetrievalRequest(
-            scope=retrieval_scope or LocalActiveScope(),
+            scope=route.scope,
             query=body.message,
             max_results=top_k,
             max_distance=max_distance,
@@ -142,9 +143,18 @@ async def chat_event_stream(
     except ValidationError:
         logger.warning("retrieval failed", extra={"retrieval_error_code": "invalid_request"})
         retrieval_result = None
+    except asyncio.CancelledError:
+        raise
+    except RetrievalError as error:
+        logger.warning("retrieval failed", extra={"retrieval_error_code": error.code})
+        retrieval_result = None
+    except Exception:
+        logger.warning("retrieval failed", extra={"retrieval_error_code": "malformed_result"})
+        retrieval_result = None
     else:
         try:
-            adapter_result = await retrieval_adapter.retrieve(retrieval_request)
+            route = validate_route_authority(route, requested_scope=retrieval_request.scope)
+            adapter_result = await route.adapter.retrieve(retrieval_request)
             result_payload = (
                 adapter_result.model_dump()
                 if isinstance(adapter_result, RetrievalResult)
@@ -300,15 +310,16 @@ async def chat_message(request: Request, body: ChatMessageRequest) -> StreamingR
         return _sse_response(_single_event_stream(event))
 
     provider: Provider = request.app.state.provider
-    retrieval_adapter: RetrievalAdapter = request.app.state.retrieval_adapter
+    retrieval_route_resolver: RetrievalRouteResolver = (
+        request.app.state.retrieval_route_resolver
+    )
     return _sse_response(
         chat_event_stream(
             provider,
             body,
-            retrieval_adapter,
+            retrieval_route_resolver,
             top_k=settings.retrieval_top_k,
             max_distance=request.app.state.retrieval_max_distance,
-            retrieval_scope=request.app.state.retrieval_scope,
             retrieval_distance_measure=request.app.state.retrieval_distance_measure,
             system_instruction=settings.system_instruction,
             max_output_tokens=settings.max_output_tokens,
