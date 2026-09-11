@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-REPLACE_WITH_RESPONSE_NONCE'; style-src 'self' 'nonce-REPLACE_WITH_RESPONSE_NONCE'; connect-src https://cairn.example; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
+  <title>Example Support</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to support information</a>
+  <header class="site-header">
+    <span class="site-mark" aria-hidden="true">E</span>
+    <span class="site-name">Example Support</span>
+  </header>
+  <main id="main-content" tabindex="-1">
+    <div class="intro">
+      <p class="eyebrow">Customer help</p>
+      <h1>How can we help?</h1>
+      <p>Find general information below, or open the chat for answers grounded in the documents connected by your Cairn operator.</p>
+    </div>
+    <section aria-labelledby="shipping-heading">
+      <h2 id="shipping-heading">Shipping</h2>
+      <p>Orders usually leave the warehouse after processing. Your confirmation provides the available delivery details.</p>
+    </section>
+    <section aria-labelledby="returns-heading">
+      <h2 id="returns-heading">Returns</h2>
+      <p>Keep your order details and review the return instructions supplied by the store before sending an item back.</p>
+    </section>
+    <section aria-labelledby="warranty-heading">
+      <h2 id="warranty-heading">Warranty</h2>
+      <p>Warranty coverage depends on the item and purchase date. The connected support documents provide the authoritative terms.</p>
+    </section>
+    <p class="placeholder-note"><strong>Example links:</strong> Privacy and contact destinations are placeholders.</p>
+  </main>
+  <footer class="site-footer">
+    <p>Example Support is a neutral host-page demonstration.</p>
+  </footer>
+  <script nonce="REPLACE_WITH_RESPONSE_NONCE" src="https://cairn.example/widget/widget.js" referrerpolicy="no-referrer" defer></script>
+<cairn-chat api-url="https://cairn.example" assistant-name="Example Support" theme="auto" privacy-url="https://example.test/privacy" handoff-url="https://example.test/support" nonce="REPLACE_WITH_RESPONSE_NONCE"></cairn-chat>
+</body>
+</html>
