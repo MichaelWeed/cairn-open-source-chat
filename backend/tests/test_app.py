@@ -31,6 +31,7 @@ from app.retrieval_contracts import (
     RetrievalResult,
     RetrievalScope,
 )
+from app.retrieval_firestore import FirestoreReadinessQuery, FirestoreRetrievalAdapter
 from app.retrieval_route import (
     ExactRetrievalAdapterBinding,
     LifecycleRetrievalRouteResolver,
@@ -371,6 +372,106 @@ class _InjectedAdapter:
             store_ready=True,
             exact_version_ready=False,
         )
+
+
+def _firestore_settings(tmp_path: Path) -> Settings:
+    return Settings(
+        retrieval_backend="firestore",
+        firestore_project_id="cairn1",
+        firestore_corpus_id="docs",
+        firestore_corpus_version="v1",
+        firestore_embedding_identity="embed-v1",
+        firestore_embedding_dimensions=2,
+        firestore_distance_measure="cosine",
+        firestore_max_distance=0.8,
+        firestore_query_timeout_seconds=5,
+        firestore_max_retries=1,
+        provider="echo",
+        embedding_provider="fake",
+        database_path=tmp_path / "test.db",
+        chroma_path=tmp_path / "chroma",
+    )
+
+
+def test_firestore_static_readiness_uses_configured_scope_with_injected_adapter(
+    tmp_path: Path,
+) -> None:
+    class _Client:
+        async def readiness_get(self, request: FirestoreReadinessQuery) -> None:
+            del request
+
+    caller_scope = ExactCorpusReference(corpus_id="other", corpus_version="v2")
+    adapter = FirestoreRetrievalAdapter(
+        client=cast(Any, _Client()),
+        embedding_function=cast(Any, lambda values: [[0.0, 0.0] for _ in values]),
+        scope=caller_scope,
+        embedding_identity="embed-v1",
+        embedding_dimensions=2,
+        distance_measure="cosine",
+        timeout_seconds=5,
+        max_retries=1,
+        owns_client=False,
+    )
+    application = create_app(
+        _firestore_settings(tmp_path),
+        provider=EchoProvider(),
+        retrieval_adapter=adapter,
+        retrieval_scope=caller_scope,
+        retrieval_distance_measure="cosine",
+        retrieval_max_distance=0.8,
+    )
+    with TestClient(application) as client:
+        response = client.get("/readyz")
+        assert response.status_code == 503
+        assert response.content == (
+            b'{"status":"not_ready","checks":{"database":true,'
+            b'"vector_store":false,"corpus":true}}'
+        )
+    assert application.state.retrieval_scope == caller_scope
+
+
+def test_legacy_selection_never_invokes_caller_truthiness(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    class _HostileScope:
+        def __bool__(self) -> bool:
+            calls.append("scope")
+            raise AssertionError("scope truthiness invoked")
+
+    class _HostileMeasure(str):
+        def __bool__(self) -> bool:
+            calls.append("measure")
+            raise AssertionError("measure truthiness invoked")
+
+    application = create_app(
+        Settings(
+            database_path=tmp_path / "test.db",
+            chroma_path=tmp_path / "chroma",
+        ),
+        provider=EchoProvider(),
+        retrieval_adapter=_InjectedAdapter(),
+        retrieval_scope=cast(Any, _HostileScope()),
+        retrieval_distance_measure="cosine",
+    )
+    assert calls == []
+    with pytest.raises(RetrievalError):
+        with TestClient(application):
+            pass
+    assert calls == []
+
+    with pytest.raises(RetrievalError) as caught:
+        create_app(
+            Settings(
+                database_path=tmp_path / "measure.db",
+                chroma_path=tmp_path / "measure-chroma",
+            ),
+            provider=EchoProvider(),
+            retrieval_adapter=_InjectedAdapter(),
+            retrieval_scope=LocalActiveScope(),
+            retrieval_distance_measure=cast(Any, _HostileMeasure("cosine")),
+        )
+    assert caught.value.code == "invalid_request"
+    assert calls == []
 
 
 class _CloseTrackedActiveStateResolver:

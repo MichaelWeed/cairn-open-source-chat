@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 from collections.abc import Callable, Iterator, Mapping
@@ -189,17 +190,36 @@ def _content_free_validation(
     def validate() -> Any:
         if type(value) is dict:
             raw = value
+            if len(raw) > len(model.model_fields):
+                raise ValueError
             for key, _ in dict.items(raw):
                 if type(key) is not str or key not in model.model_fields:
+                    raise ValueError
+            if model is ReadinessReport:
+                checks = dict.get(raw, "checks", _MISSING)
+                if type(checks) in {list, tuple} and len(checks) != len(
+                    _DIMENSION_ORDER
+                ):
+                    raise ValueError
+            elif model is OllamaCatalogReadiness:
+                names = dict.get(raw, "model_names", _MISSING)
+                if (
+                    type(names) in {list, tuple}
+                    and len(names) > OLLAMA_CATALOG_MAX_MODELS
+                ):
                     raise ValueError
             if mode == "json":
                 controlled = dict(raw)
                 if model is ReadinessReport and type(controlled.get("checks")) is list:
+                    if len(controlled["checks"]) != len(_DIMENSION_ORDER):
+                        raise ValueError
                     controlled["checks"] = tuple(controlled["checks"])
                 elif (
                     model is OllamaCatalogReadiness
                     and type(controlled.get("model_names")) is list
                 ):
+                    if len(controlled["model_names"]) > OLLAMA_CATALOG_MAX_MODELS:
+                        raise ValueError
                     controlled["model_names"] = tuple(controlled["model_names"])
                 return handler(controlled)
         elif type(value) is model:
@@ -212,7 +232,9 @@ def _content_free_validation(
                 or extra is not None
                 or private is not None
                 or type(fields_set) is not set
+                or len(fields_set) > len(model.model_fields)
                 or not fields_set.issubset(model.model_fields)
+                or len(raw) != len(model.model_fields)
             ):
                 raise ValueError
             count = 0
@@ -222,6 +244,17 @@ def _content_free_validation(
                 count += 1
             if count != len(model.model_fields):
                 raise ValueError
+            if model is ReadinessReport:
+                checks = dict.get(raw, "checks", _MISSING)
+                if type(checks) is tuple and len(checks) != len(_DIMENSION_ORDER):
+                    raise ValueError
+            elif model is OllamaCatalogReadiness:
+                names = dict.get(raw, "model_names", _MISSING)
+                if (
+                    type(names) is tuple
+                    and len(names) > OLLAMA_CATALOG_MAX_MODELS
+                ):
+                    raise ValueError
         elif isinstance(value, Mapping):
             raise ValueError
         return handler(value)
@@ -302,9 +335,11 @@ class ReadinessModel(BaseModel):
 
     @classmethod
     def model_construct(cls, _fields_set: set[str] | None = None, **values: Any) -> Self:
+        if len(values) > len(cls.model_fields):
+            raise ReadinessError() from None
         fields_set: set[str] | None = None
         if _fields_set is not None:
-            if type(_fields_set) is not set:
+            if type(_fields_set) is not set or len(_fields_set) > len(cls.model_fields):
                 raise ReadinessError() from None
             fields_set = set()
             for field in _fields_set:
@@ -333,6 +368,8 @@ class ReadinessModel(BaseModel):
                 or extra is not None
                 or private is not None
                 or type(raw_fields_set) is not set
+                or len(raw_fields_set) > len(type(self).model_fields)
+                or len(raw) != len(type(self).model_fields)
             ):
                 raise ValueError
             values: dict[str, Any] = {}
@@ -346,10 +383,13 @@ class ReadinessModel(BaseModel):
             if not fields_set.issubset(type(self).model_fields):
                 raise ValueError
             if update is not None:
-                if type(update) is not dict:
+                if type(update) is not dict or len(update) > len(type(self).model_fields):
                     raise ValueError
-                values.update(cast(dict[str, Any], update))
-                fields_set.update(cast(dict[str, Any], update))
+                for key, value in dict.items(cast(dict[object, object], update)):
+                    if type(key) is not str or key not in type(self).model_fields:
+                        raise ValueError
+                    values[key] = value
+                    fields_set.add(key)
             return values, fields_set
 
         values, fields_set = _content_free(prepare)
@@ -370,14 +410,23 @@ class ReadinessModel(BaseModel):
         if include is None and exclude is None and update is None:
             return self.model_copy(deep=deep)
         source = self.model_copy(deep=deep)
-        return _content_free(
-            lambda: type(self).model_validate(
-                {
-                    **source.model_dump(include=include, exclude=exclude, round_trip=True),
-                    **({} if update is None else update),
-                }
+
+        def prepare() -> dict[str, Any]:
+            values = source.model_dump(
+                include=include, exclude=exclude, round_trip=True
             )
-        )
+            if type(values) is not dict or len(values) > len(type(self).model_fields):
+                raise ValueError
+            if update is not None:
+                if len(update) > len(type(self).model_fields):
+                    raise ValueError
+                for key, value in dict.items(cast(dict[object, object], update)):
+                    if type(key) is not str or key not in type(self).model_fields:
+                        raise ValueError
+                    values[key] = value
+            return values
+
+        return type(self)._validated(_content_free(prepare))
 
     def __replace__(self, **changes: Any) -> Self:
         return self.model_copy(update=changes)
@@ -445,7 +494,9 @@ def _copy_check(value: object) -> ReadinessCheck:
             or extra is not None
             or private is not None
             or type(fields_set) is not set
+            or len(fields_set) > len(ReadinessCheck.model_fields)
             or not fields_set.issubset(ReadinessCheck.model_fields)
+            or len(raw) != len(ReadinessCheck.model_fields)
         ):
             raise ValueError
         expected = ReadinessCheck.model_fields
@@ -473,7 +524,7 @@ class ReadinessReport(ReadinessModel):
 
     @model_validator(mode="after")
     def validate_report(self) -> ReadinessReport:
-        if type(self.checks) is not tuple:
+        if type(self.checks) is not tuple or len(self.checks) != len(_DIMENSION_ORDER):
             raise ReadinessError() from None
         copied = tuple(_copy_check(check) for check in self.checks)
         if tuple(check.dimension for check in copied) != _DIMENSION_ORDER:
@@ -562,7 +613,11 @@ class OllamaCatalogProbe:
             raise ReadinessError() from None
         if type(client) is not httpx.AsyncClient or type(owns_client) is not bool:
             raise ReadinessError() from None
-        self._base_url = base_url.rstrip("/")
+        self._base_url = _content_free(
+            lambda: str(
+                httpx.URL(base_url).copy_with(username=None, password=None)
+            ).rstrip("/")
+        )
         self._client = client
         self._owns_client = owns_client
         self._closed = False
@@ -579,76 +634,79 @@ class OllamaCatalogProbe:
             owns_client=True,
         )
 
-    async def _catalog_body(self) -> bytearray:
+    async def _catalog_body(
+        self,
+    ) -> tuple[Literal["ready", "unreachable", "invalid"], bytearray | None]:
         response: httpx.Response | None = None
-        cancellation: asyncio.CancelledError | None = None
-        failure: Exception | None = None
+        outcome: Literal["ready", "unreachable", "invalid"] = "ready"
         body = bytearray()
         with _without_transport_logs():
             try:
-                request = self._client.build_request(
-                    "GET",
-                    f"{self._base_url}/api/tags",
+                request = httpx.Request(
+                    "GET", f"{self._base_url}/api/tags", headers={}
                 )
-                response = await self._client.send(
-                    request,
-                    stream=True,
-                    follow_redirects=False,
-                )
+                transport = object.__getattribute__(
+                    self._client, "_transport_for_url"
+                )(request.url)
+                response = await transport.handle_async_request(request)
                 if response.status_code < 200 or response.status_code >= 300:
-                    raise ReadinessError() from None
+                    outcome = "invalid"
                 length = response.headers.get("content-length")
-                if length is not None:
-                    if (
-                        not length.isascii()
-                        or not length.isdecimal()
-                        or int(length) > OLLAMA_CATALOG_MAX_RESPONSE_BYTES
-                    ):
-                        raise ReadinessError() from None
-                async for chunk in response.aiter_bytes():
-                    if len(body) + len(chunk) > OLLAMA_CATALOG_MAX_RESPONSE_BYTES:
-                        raise ReadinessError() from None
-                    body.extend(chunk)
-            except asyncio.CancelledError as error:
-                cancellation = error
+                if outcome == "ready" and length is not None and (
+                    not length.isascii()
+                    or not length.isdecimal()
+                    or int(length) > OLLAMA_CATALOG_MAX_RESPONSE_BYTES
+                ):
+                    outcome = "invalid"
+                if outcome == "ready":
+                    async for chunk in response.aiter_bytes():
+                        if len(body) + len(chunk) > OLLAMA_CATALOG_MAX_RESPONSE_BYTES:
+                            outcome = "invalid"
+                            break
+                        body.extend(chunk)
+            except asyncio.CancelledError:
+                raise
+            except httpx.TransportError as error:
+                BaseException.with_traceback(error, None)
+                outcome = "unreachable"
             except Exception as error:
-                failure = error
+                BaseException.with_traceback(error, None)
+                outcome = "invalid"
             if response is not None:
                 try:
                     await response.aclose()
-                except asyncio.CancelledError as error:
-                    if cancellation is None:
-                        cancellation = error
+                except asyncio.CancelledError:
+                    raise
                 except Exception as error:
-                    if failure is None:
-                        failure = error
-        if cancellation is not None:
-            raise cancellation from None
-        if failure is not None:
-            raise failure from None
-        return body
+                    BaseException.with_traceback(error, None)
+                    if outcome == "ready":
+                        outcome = "invalid"
+        if outcome != "ready":
+            body.clear()
+            return outcome, None
+        return outcome, body
 
     async def check_readiness(self) -> OllamaCatalogReadiness:
         if self._closed:
             raise ReadinessError() from None
-        invalid = False
         try:
             async with asyncio.timeout(OLLAMA_CATALOG_TIMEOUT_SECONDS):
-                body = await self._catalog_body()
+                outcome, body = await self._catalog_body()
         except asyncio.CancelledError:
             raise
-        except ReadinessError:
-            invalid = True
-        except httpx.TransportError:
+        except TimeoutError as error:
+            BaseException.with_traceback(error, None)
             return OllamaCatalogReadiness(reachable=False, model_names=())
-        except TimeoutError:
+        except Exception as error:
+            BaseException.with_traceback(error, None)
+            raise ReadinessError() from None
+        if outcome == "unreachable":
             return OllamaCatalogReadiness(reachable=False, model_names=())
-        except Exception:
-            invalid = True
-        if invalid:
+        if outcome != "ready" or body is None:
             raise ReadinessError() from None
 
-        def parse() -> OllamaCatalogReadiness:
+        parsed: OllamaCatalogReadiness | None = None
+        try:
             payload = json.loads(bytes(body))
             if type(payload) is not dict:
                 raise ValueError
@@ -668,9 +726,15 @@ class OllamaCatalogProbe:
                 names.append(name)
             if len(set(names)) != len(names):
                 raise ValueError
-            return OllamaCatalogReadiness(reachable=True, model_names=tuple(names))
-
-        return _content_free(parse)
+            parsed = OllamaCatalogReadiness(
+                reachable=True, model_names=tuple(names)
+            )
+        except Exception:
+            pass
+        body.clear()
+        if parsed is None:
+            raise ReadinessError() from None
+        return parsed
 
     async def aclose(self) -> None:
         if self._closed:
@@ -710,7 +774,9 @@ def _copy_simple_model(value: object, model: type[ReadinessModel]) -> ReadinessM
             or extra is not None
             or private is not None
             or type(fields_set) is not set
+            or len(fields_set) > len(model.model_fields)
             or not fields_set.issubset(model.model_fields)
+            or len(raw) != len(model.model_fields)
         ):
             raise ValueError
         controlled: dict[str, object] = {}
@@ -718,7 +784,11 @@ def _copy_simple_model(value: object, model: type[ReadinessModel]) -> ReadinessM
             if type(key) is not str or key not in model.model_fields:
                 raise ValueError
             if model is OllamaCatalogReadiness and key == "model_names":
-                if type(item) is not tuple or any(type(name) is not str for name in item):
+                if (
+                    type(item) is not tuple
+                    or len(item) > OLLAMA_CATALOG_MAX_MODELS
+                    or any(type(name) is not str for name in item)
+                ):
                     raise ValueError
                 controlled[key] = tuple(item)
             else:
@@ -737,7 +807,7 @@ def _copy_gemini(value: object) -> GeminiReadiness:
         if type(value) is not GeminiReadiness:
             raise TypeError
         raw = object.__getattribute__(value, "__dict__")
-        if type(raw) is not dict:
+        if type(raw) is not dict or len(raw) != 2:
             raise ValueError
         controlled: dict[str, bool] = {}
         for key, item in dict.items(cast(dict[object, object], raw)):
@@ -778,7 +848,9 @@ def _copy_scope(value: object) -> RetrievalScope:
             or extra is not None
             or private is not None
             or type(fields_set) is not set
+            or len(fields_set) > len(model.model_fields)
             or not fields_set.issubset(model.model_fields)
+            or len(raw) != len(model.model_fields)
         ):
             raise ValueError
         controlled: dict[str, object] = {}
@@ -807,7 +879,9 @@ def _copy_retrieval_probe(value: object) -> RetrievalProbe:
             or extra is not None
             or private is not None
             or type(fields_set) is not set
+            or len(fields_set) > len(expected)
             or not fields_set.issubset(expected)
+            or len(raw) != len(expected)
         ):
             raise ValueError
         controlled: dict[str, object] = {}
@@ -853,6 +927,37 @@ def _check(
         required=required,
         reason=reason,
     )
+
+
+async def _call_readiness_probe(
+    probe: object,
+) -> tuple[object, ReadinessReason | None]:
+    try:
+        operation = cast(Any, probe).check_readiness
+    except (AttributeError, TypeError) as error:
+        BaseException.with_traceback(error, None)
+        return _MISSING, "misconfigured"
+    except Exception as error:
+        BaseException.with_traceback(error, None)
+        return _MISSING, "unavailable"
+    if not callable(operation):
+        return _MISSING, "misconfigured"
+    try:
+        pending = operation()
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        BaseException.with_traceback(error, None)
+        return _MISSING, "unavailable"
+    if not inspect.isawaitable(pending):
+        return _MISSING, "misconfigured"
+    try:
+        return await pending, None
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        BaseException.with_traceback(error, None)
+        return _MISSING, "unavailable"
 
 
 class ReadinessEvaluator:
@@ -968,12 +1073,9 @@ class ReadinessEvaluator:
         )
 
     async def _route_probe(self) -> tuple[RetrievalProbe | None, ReadinessReason | None]:
-        try:
-            raw = await self._route_resolver.check_readiness()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            return None, "unavailable"
+        raw, failure = await _call_readiness_probe(self._route_resolver)
+        if failure is not None:
+            return None, failure
         try:
             probe = _copy_retrieval_probe(raw)
         except ReadinessError:
@@ -992,12 +1094,9 @@ class ReadinessEvaluator:
     async def _gemini(self) -> tuple[GeminiReadiness | None, ReadinessReason | None]:
         if self._gemini_probe is None:
             return None, "misconfigured"
-        try:
-            raw = await self._gemini_probe.check_readiness()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            return None, "unavailable"
+        raw, failure = await _call_readiness_probe(self._gemini_probe)
+        if failure is not None:
+            return None, failure
         try:
             return _copy_gemini(raw), None
         except ReadinessError:
@@ -1008,12 +1107,9 @@ class ReadinessEvaluator:
     ) -> tuple[OllamaCatalogReadiness | None, ReadinessReason | None]:
         if self._catalog_probe is None:
             return None, "misconfigured"
-        try:
-            raw = await self._catalog_probe.check_readiness()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            return None, "unavailable"
+        raw, failure = await _call_readiness_probe(self._catalog_probe)
+        if failure is not None:
+            return None, failure
         try:
             return _copy_catalog(raw), None
         except ReadinessError:
@@ -1183,7 +1279,9 @@ def public_readiness(report: object) -> tuple[bool, dict[str, bool]]:
             or extra is not None
             or private is not None
             or type(raw_fields_set) is not set
+            or len(raw_fields_set) > len(ReadinessReport.model_fields)
             or not raw_fields_set.issubset(ReadinessReport.model_fields)
+            or len(raw) != len(ReadinessReport.model_fields)
         ):
             raise ValueError
         controlled: dict[str, object] = {}

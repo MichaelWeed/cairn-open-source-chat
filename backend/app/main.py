@@ -249,8 +249,19 @@ def create_app(
     if retrieval_adapter is None and settings.retrieval_backend == "firestore":
         selected_scope, selected_measure, selected_max_distance = _firestore_policy(settings)
     else:
-        selected_scope = retrieval_scope or LocalActiveScope()
-        selected_measure = retrieval_distance_measure or "squared_l2"
+        selected_scope = (
+            retrieval_scope if retrieval_scope is not None else LocalActiveScope()
+        )
+        selected_measure = (
+            retrieval_distance_measure
+            if retrieval_distance_measure is not None
+            else "squared_l2"
+        )
+        if type(selected_measure) is not str or selected_measure not in {
+            "cosine",
+            "squared_l2",
+        }:
+            raise RetrievalError("invalid_request") from None
         selected_max_distance = (
             settings.retrieval_max_distance
             if retrieval_max_distance is None
@@ -308,6 +319,7 @@ def create_app(
                 selected_catalog_probe = owned_catalog_probe
 
             exact_lifecycle = type(selected_resolver) is LifecycleRetrievalRouteResolver
+            expected_readiness_scope: RetrievalScope | None
             if exact_lifecycle:
                 retrieval_profile = "lifecycle_exact"
                 expected_readiness_scope = None
@@ -317,7 +329,7 @@ def create_app(
                 }
             elif settings.retrieval_backend == "firestore":
                 retrieval_profile = "firestore_static"
-                expected_readiness_scope = selected_scope
+                expected_readiness_scope = _firestore_policy(settings)[0]
                 retrieval_composition_valid = True
             else:
                 retrieval_profile = "local_static"

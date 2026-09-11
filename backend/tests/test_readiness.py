@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import socket
+import weakref
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -276,6 +277,69 @@ def test_model_copy_rejects_hidden_source_state() -> None:
     _assert_content_free(caught.value, canary)
 
 
+def test_model_copy_rejects_oversized_and_hostile_exact_dict_updates_first() -> None:
+    calls: list[str] = []
+
+    class _HostileKey(str):
+        def __hash__(self) -> int:
+            calls.append("hash")
+            return super().__hash__()
+
+        def __eq__(self, other: object) -> bool:
+            calls.append("eq")
+            return super().__eq__(other)
+
+    check = _ready_check("provider")
+    key = _HostileKey("state")
+    hostile_update = {key: "not_ready"}
+    calls.clear()
+    with pytest.raises(ReadinessError):
+        check.model_copy(update=cast(dict[str, Any], hostile_update))
+    assert calls == []
+
+    oversized = {f"extra-{index}": index for index in range(100_000)}
+    with pytest.raises(ReadinessError):
+        check.model_copy(update=oversized)
+    with pytest.raises(ReadinessError):
+        ReadinessCheck.model_validate(oversized)
+
+
+def test_oversized_nested_collections_reject_before_element_hooks() -> None:
+    calls: list[str] = []
+
+    class _HostileName(str):
+        def __hash__(self) -> int:
+            calls.append("hash")
+            raise AssertionError("oversized model name was inspected")
+
+        def __eq__(self, other: object) -> bool:
+            del other
+            calls.append("eq")
+            raise AssertionError("oversized model name was inspected")
+
+    name = _HostileName("PRIVATE-OVERSIZED-NAME")
+    forged = OllamaCatalogReadiness(reachable=True, model_names=())
+    object.__setattr__(
+        forged,
+        "model_names",
+        (name,) + ("safe",) * OLLAMA_CATALOG_MAX_MODELS,
+    )
+    operations: tuple[Callable[[], object], ...] = (
+        forged.model_copy,
+        lambda: OllamaCatalogReadiness.model_validate(forged),
+        lambda: TypeAdapter(OllamaCatalogReadiness).validate_python(forged),
+    )
+    for operation in operations:
+        with pytest.raises(ReadinessError):
+            operation()
+    assert calls == []
+
+    with pytest.raises(ReadinessError):
+        ReadinessReport.model_validate(
+            {"checks": [object()] * (len(DIMENSIONS) + 1)}
+        )
+
+
 def test_private_model_state_is_rejected_directly_nested_and_on_copy() -> None:
     canary = "PRIVATE-PYDANTIC-PRIVATE-CANARY"
     check = _ready_check("database")
@@ -323,6 +387,15 @@ def test_forged_fields_set_is_rejected_directly_and_when_nested() -> None:
     with pytest.raises(ReadinessError) as caught:
         public_readiness(report)
     _assert_content_free(caught.value, canary)
+
+    oversized = _ready_check("database")
+    object.__setattr__(
+        oversized,
+        "__pydantic_fields_set__",
+        {f"field-{index}" for index in range(100_000)},
+    )
+    with pytest.raises(ReadinessError):
+        oversized.model_copy()
 
 
 def test_model_construct_rejects_stateful_fields_set_without_consuming_it() -> None:
@@ -489,6 +562,121 @@ async def test_gemini_false_is_authoritative_and_outer_failure_is_unknown() -> N
         report = await evaluator.evaluate()
         assert report.checks[3].state == expected
         assert probe.calls == 1
+
+
+@pytest.mark.parametrize("kind", ["absent", "non_async"])
+async def test_route_probe_interface_mismatch_is_misconfigured(kind: str) -> None:
+    class _NonAsyncRoute:
+        def check_readiness(self) -> object:
+            return object()
+
+    route: object = object() if kind == "absent" else _NonAsyncRoute()
+    evaluator = ReadinessEvaluator(
+        database_probe=lambda: True,
+        corpus_probe=lambda: True,
+        local_vector_probe=lambda: None,
+        retrieval_route_resolver=cast(Any, route),
+        retrieval_profile="local_static",
+        expected_retrieval_scope=LocalActiveScope(),
+        provider_name="echo",
+        provider_model="",
+        embedding_name="fake",
+        embedding_model="",
+        gemini_probe=None,
+        ollama_catalog_probe=None,
+        budget_probe=None,
+    )
+    report = await evaluator.evaluate()
+    assert (report.checks[1].state, report.checks[1].reason) == (
+        "unknown",
+        "misconfigured",
+    )
+
+
+@pytest.mark.parametrize("kind", ["absent", "non_async"])
+async def test_gemini_probe_interface_mismatch_is_misconfigured(kind: str) -> None:
+    class _NonAsyncGemini:
+        def check_readiness(self) -> object:
+            return object()
+
+    probe: object = object() if kind == "absent" else _NonAsyncGemini()
+    evaluator, _ = _evaluator(
+        provider="gemini",
+        provider_model="gemini-3.8-flash",
+        gemini_probe=probe,
+    )
+    report = await evaluator.evaluate()
+    assert (report.checks[3].state, report.checks[3].reason) == (
+        "unknown",
+        "misconfigured",
+    )
+    assert (report.checks[4].state, report.checks[4].reason) == (
+        "unknown",
+        "misconfigured",
+    )
+
+
+@pytest.mark.parametrize("kind", ["absent", "non_async"])
+async def test_catalog_probe_interface_mismatch_is_misconfigured(kind: str) -> None:
+    class _NonAsyncCatalog:
+        def check_readiness(self) -> object:
+            return object()
+
+    probe: object = object() if kind == "absent" else _NonAsyncCatalog()
+    evaluator, _ = _evaluator(
+        provider="ollama",
+        provider_model="generation-model",
+        catalog_probe=probe,
+    )
+    report = await evaluator.evaluate()
+    assert (report.checks[3].state, report.checks[3].reason) == (
+        "unknown",
+        "misconfigured",
+    )
+    assert (report.checks[4].state, report.checks[4].reason) == (
+        "unknown",
+        "misconfigured",
+    )
+
+
+@pytest.mark.parametrize("probe", [_GeminiProbe(TypeError()), _CatalogProbe(TypeError())])
+async def test_probe_implementation_type_error_remains_unavailable(probe: object) -> None:
+    if type(probe) is _GeminiProbe:
+        evaluator, _ = _evaluator(
+            provider="gemini",
+            provider_model="gemini-3.8-flash",
+            gemini_probe=probe,
+        )
+    else:
+        evaluator, _ = _evaluator(
+            provider="ollama",
+            provider_model="generation-model",
+            catalog_probe=probe,
+        )
+    report = await evaluator.evaluate()
+    assert report.checks[3].reason == "unavailable"
+
+    class _BrokenRoute:
+        async def check_readiness(self) -> object:
+            raise TypeError
+
+    route_evaluator = ReadinessEvaluator(
+        database_probe=lambda: True,
+        corpus_probe=lambda: True,
+        local_vector_probe=lambda: None,
+        retrieval_route_resolver=_BrokenRoute(),
+        retrieval_profile="local_static",
+        expected_retrieval_scope=LocalActiveScope(),
+        provider_name="echo",
+        provider_model="",
+        embedding_name="fake",
+        embedding_model="",
+        gemini_probe=None,
+        ollama_catalog_probe=None,
+        budget_probe=None,
+    )
+    route_report = await route_evaluator.evaluate()
+    assert route_report.checks[1].reason == "unavailable"
 
 
 async def test_gemini_runs_before_selected_ollama_embedding() -> None:
@@ -990,6 +1178,42 @@ async def test_ollama_catalog_exact_request_and_shape() -> None:
     await client.aclose()
 
 
+async def test_ollama_catalog_request_ignores_client_and_url_credentials() -> None:
+    captured: list[httpx.Request] = []
+    hook_calls = 0
+
+    async def forbidden_hook(request: httpx.Request) -> None:
+        nonlocal hook_calls
+        del request
+        hook_calls += 1
+
+    client = httpx.AsyncClient(
+        transport=_catalog_transport(b'{"models":[]}', captured=captured),
+        headers={
+            "Authorization": "Bearer PRIVATE-CLIENT-AUTH",
+            "Cookie": "PRIVATE-CLIENT-COOKIE=1",
+            "X-Private": "PRIVATE-CLIENT-HEADER",
+        },
+        cookies={"PRIVATE-COOKIE-JAR": "secret"},
+        auth=httpx.BasicAuth("PRIVATE-AUTH-USER", "PRIVATE-AUTH-PASSWORD"),
+        event_hooks={"request": [forbidden_hook]},
+    )
+    probe = OllamaCatalogProbe(
+        base_url="http://PRIVATE-URL-USER:PRIVATE-URL-PASSWORD@ollama:11434",
+        client=client,
+        owns_client=False,
+    )
+    assert (await probe.check_readiness()).reachable is True
+    assert hook_calls == 0
+    assert len(captured) == 1
+    request = captured[0]
+    assert str(request.url) == "http://ollama:11434/api/tags"
+    assert set(request.headers) == {"host"}
+    assert request.content == b""
+    await probe.aclose()
+    await client.aclose()
+
+
 async def test_ollama_catalog_non_2xx_is_non_authoritative() -> None:
     probe = OllamaCatalogProbe(
         base_url="http://ollama:11434",
@@ -1341,23 +1565,82 @@ async def test_malformed_catalog_error_hides_response_and_endpoint_traceback() -
     await probe.aclose()
 
 
-async def test_body_cancellation_wins_over_response_close_failure_and_stops_evaluation() -> None:
-    close_canary = "PRIVATE-CLOSE-AFTER-CANCELLATION"
+@pytest.mark.parametrize(
+    "outcome", ["success", "transport", "error", "malformed"]
+)
+async def test_catalog_transient_response_and_error_release_without_gc(
+    outcome: str,
+) -> None:
+    response_ref: weakref.ReferenceType[httpx.Response] | None = None
+    error_ref: weakref.ReferenceType[BaseException] | None = None
+
+    class _TransportFailure(httpx.TransportError):
+        pass
+
+    class _RawFailure(RuntimeError):
+        pass
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal response_ref, error_ref
+        if outcome in {"transport", "error"}:
+            error = (
+                _TransportFailure("PRIVATE-TRANSIENT-ERROR", request=request)
+                if outcome == "transport"
+                else _RawFailure("PRIVATE-TRANSIENT-ERROR")
+            )
+            error_ref = weakref.ref(error)
+            raise error
+        response = httpx.Response(
+            200,
+            content=(
+                b'{"models":[]}'
+                if outcome == "success"
+                else b"PRIVATE-TRANSIENT-RESPONSE"
+            ),
+            request=request,
+        )
+        response_ref = weakref.ref(response)
+        return response
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    probe = OllamaCatalogProbe(
+        base_url="http://ollama:11434",
+        client=client,
+        owns_client=False,
+    )
+    if outcome == "success":
+        assert (await probe.check_readiness()).reachable is True
+    elif outcome == "transport":
+        assert (await probe.check_readiness()).reachable is False
+    else:
+        with pytest.raises(ReadinessError) as caught:
+            await probe.check_readiness()
+        assert caught.value.__traceback__ is None
+    assert response_ref is None or response_ref() is None
+    assert error_ref is None or error_ref() is None
+    await client.aclose()
+
+
+async def test_body_cancellation_skips_blocked_response_close_and_stops_evaluation() -> None:
     cancellation = asyncio.CancelledError()
     requests = 0
+    close_calls = 0
+    close_release = asyncio.Event()
 
-    class CancelThenFailClose(httpx.AsyncByteStream):
+    class CancelThenBlockClose(httpx.AsyncByteStream):
         async def __aiter__(self) -> AsyncIterator[bytes]:
             raise cancellation
             yield b""
 
         async def aclose(self) -> None:
-            raise RuntimeError(close_canary)
+            nonlocal close_calls
+            close_calls += 1
+            await close_release.wait()
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal requests
         requests += 1
-        return httpx.Response(200, stream=CancelThenFailClose(), request=request)
+        return httpx.Response(200, stream=CancelThenBlockClose(), request=request)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     probe = OllamaCatalogProbe(
@@ -1372,11 +1655,19 @@ async def test_body_cancellation_wins_over_response_close_failure_and_stops_eval
         embedding_model="embedding-model",
         catalog_probe=probe,
     )
+    task = asyncio.create_task(evaluator.evaluate())
+    completed, pending = await asyncio.wait({task}, timeout=1)
+    if pending:
+        close_release.set()
+        await asyncio.gather(*pending, return_exceptions=True)
+    assert completed == {task}
+    assert pending == set()
     with pytest.raises(asyncio.CancelledError) as caught:
-        await evaluator.evaluate()
+        await task
     assert caught.value is cancellation
-    assert close_canary not in repr(caught.value)
     assert requests == 1
+    assert close_calls == 0
+    assert not close_release.is_set()
     assert route.calls == 1
     await client.aclose()
 
