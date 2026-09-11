@@ -980,6 +980,7 @@ class ReadinessEvaluator:
     _embedding_model: str
     _gemini_probe: GeminiReadinessProbe | None
     _catalog_probe: OllamaCatalogReadinessProbe | None
+    _budget_probe: BudgetReadinessProbe | None
     _sealed: bool
 
     __slots__ = (
@@ -996,6 +997,7 @@ class ReadinessEvaluator:
         "_embedding_model",
         "_gemini_probe",
         "_catalog_probe",
+        "_budget_probe",
         "_sealed",
     )
 
@@ -1047,7 +1049,7 @@ class ReadinessEvaluator:
         object.__setattr__(self, "_embedding_model", embedding_model)
         object.__setattr__(self, "_gemini_probe", gemini_probe)
         object.__setattr__(self, "_catalog_probe", ollama_catalog_probe)
-        del budget_probe
+        object.__setattr__(self, "_budget_probe", budget_probe)
         object.__setattr__(self, "_sealed", True)
 
     def __setattr__(self, name: str, value: object) -> None:
@@ -1118,6 +1120,19 @@ class ReadinessEvaluator:
             return _copy_catalog(raw), None
         except ReadinessError:
             return None, "unavailable"
+
+    async def _budget(
+        self,
+    ) -> tuple[BudgetReadiness | None, ReadinessReason | None]:
+        if self._budget_probe is None:
+            return None, "misconfigured"
+        raw, failure = await _call_readiness_probe(self._budget_probe)
+        if failure is not None:
+            return None, failure
+        try:
+            return _copy_budget(raw), None
+        except ReadinessError:
+            return None, "misconfigured"
 
     @staticmethod
     def _valid_model_name(value: str) -> bool:
@@ -1263,7 +1278,24 @@ class ReadinessEvaluator:
             exact = _check("exact_corpus", "ready", True, "ready")
         checks.append(exact)
 
-        budget = _check("budget", "not_required", False, "not_required")
+        if self._budget_probe is None:
+            budget = _check("budget", "not_required", False, "not_required")
+        else:
+            budget_result, budget_failure = await self._budget()
+            if budget_result is None:
+                budget = _check(
+                    "budget",
+                    "unknown",
+                    True,
+                    cast(ReadinessReason, budget_failure),
+                )
+            else:
+                budget = _check(
+                    "budget",
+                    budget_result.state,
+                    True,
+                    budget_result.reason,
+                )
         checks.append(budget)
         return ReadinessReport(checks=tuple(checks))
 
