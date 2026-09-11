@@ -8,6 +8,7 @@ citations are then derived from one immutable eligible chunk tuple.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import InitVar, dataclass
 from typing import Literal, cast
 
@@ -233,6 +234,46 @@ def _snapshot_result(value: object) -> RetrievalResult | object:
         return _SNAPSHOT_FAILED
 
 
+def _snapshot_compatibility_chunks(value: object) -> tuple[RetrievedChunk, ...] | object:
+    try:
+        if type(value) is list:
+            exact_values: list[object] | tuple[object, ...] = cast(list[object], value)
+        elif type(value) is tuple:
+            exact_values = cast(tuple[object, ...], value)
+        else:
+            return _SNAPSHOT_FAILED
+        if len(exact_values) > MAX_RETRIEVAL_RESULTS:
+            return _SNAPSHOT_FAILED
+        controlled_chunks: list[dict[str, object]] = []
+        for chunk in exact_values:
+            captured = _snapshot_chunk(chunk)
+            if captured is None:
+                return _SNAPSHOT_FAILED
+            controlled_chunks.append(captured)
+        validated = RetrievalResult.model_validate(
+            {
+                "contract_version": "1.0",
+                "scope": {
+                    "kind": "local_active",
+                    "local_corpus_compatibility": "2",
+                },
+                "distance_measure": "squared_l2",
+                "max_distance": 0.0,
+                "chunks": tuple(controlled_chunks),
+            },
+            strict=True,
+        )
+        return validated.chunks
+    except (ValidationError, TypeError, ValueError, AttributeError):
+        return _SNAPSHOT_FAILED
+
+
+def _select_eligible_chunks(
+    chunks: tuple[RetrievedChunk, ...], max_distance: float
+) -> tuple[RetrievedChunk, ...]:
+    return tuple(chunk for chunk in chunks if chunk.distance <= max_distance)
+
+
 def _serialize(chunks: tuple[RetrievedChunk, ...]) -> str | None:
     payload = {
         "schema": CONTEXT_SCHEMA,
@@ -276,6 +317,53 @@ def _citations(chunks: tuple[RetrievedChunk, ...]) -> tuple[CitationSource, ...]
     return tuple(citations)
 
 
+def _compatibility_eligible_chunks(
+    chunks: object, max_distance: object
+) -> tuple[RetrievedChunk, ...]:
+    """Revalidate legacy helper inputs and apply the canonical threshold policy."""
+
+    validated = _snapshot_compatibility_chunks(chunks)
+    valid_distance = (
+        type(max_distance) is float
+        and math.isfinite(max_distance)
+        and max_distance >= 0
+    )
+    exact_distance = cast(float, max_distance) if valid_distance else 0.0
+    del chunks, max_distance
+    if validated is _SNAPSHOT_FAILED or not valid_distance:
+        raise RetrievalError("malformed_result") from None
+    exact_chunks = cast(tuple[RetrievedChunk, ...], validated)
+    return _select_eligible_chunks(exact_chunks, exact_distance)
+
+
+def _compatibility_citations(chunks: object) -> tuple[CitationSource, ...]:
+    """Build citations through the canonical strict citation implementation."""
+
+    validated = _snapshot_compatibility_chunks(chunks)
+    del chunks
+    if validated is _SNAPSHOT_FAILED:
+        raise RetrievalError("malformed_result") from None
+    citations = _citations(cast(tuple[RetrievedChunk, ...], validated))
+    if citations is None or len(citations) > CITATIONS_MAX_COUNT:
+        raise RetrievalError("malformed_result") from None
+    return citations
+
+
+def _compatibility_context(chunks: object) -> str:
+    """Serialize legacy helper input through the canonical JSON implementation."""
+
+    validated = _snapshot_compatibility_chunks(chunks)
+    del chunks
+    if validated is _SNAPSHOT_FAILED:
+        raise RetrievalError("malformed_result") from None
+    context = _serialize(cast(tuple[RetrievedChunk, ...], validated))
+    if context is None:
+        raise RetrievalError("malformed_result") from None
+    if len(context) > RETRIEVED_CONTEXT_MAX_CHARS:
+        raise RetrievalError("context_too_large") from None
+    return context
+
+
 def _compile(request: object, adapter_result: object) -> GroundingBundle | None | _Failure:
     validated_request = _snapshot_request(request)
     if validated_request is _SNAPSHOT_FAILED:
@@ -292,8 +380,9 @@ def _compile(request: object, adapter_result: object) -> GroundingBundle | None 
         or len(exact_result.chunks) > exact_request.max_results
     ):
         return _Failure("malformed_result")
-    eligible = tuple(
-        chunk for chunk in exact_result.chunks if chunk.distance <= exact_request.max_distance
+    eligible = _select_eligible_chunks(
+        exact_result.chunks,
+        exact_request.max_distance,
     )
     if not eligible:
         return None

@@ -15,8 +15,17 @@ from app.api.contracts import (
     ProviderGenerationRequest,
 )
 from app.corpus_lifecycle import (
-    AttestationTrustPolicy,
-    ResolvedActiveState,
+    ActiveCorpusPointer,
+    ActivePointerSnapshot,
+    CorpusLifecycleRecord,
+    CorpusLifecycleService,
+    ExpectedActivePointer,
+    LifecycleAuditRecord,
+    LifecycleSnapshot,
+    MarkReadyRequest,
+    RemoveCorpusVersionRequest,
+    StoreMutationResult,
+    SwitchActiveRequest,
     VerifiedLifecycleEvidence,
 )
 from app.ingest.candidate_persistence import (
@@ -583,27 +592,117 @@ class _RouteTrustPolicy:
         return self.verifier
 
 
-class _PromotingActiveStateResolver:
-    def __init__(self, states: list[ResolvedActiveState]) -> None:
-        self.states = states
-        self.calls = 0
-        self.logically_removed: set[ExactCorpusReference] = set()
+class _RouteLifecycleMemoryStore:
+    def __init__(self) -> None:
+        self.lifecycle: dict[ExactCorpusReference, LifecycleSnapshot] = {}
+        self.active: dict[str, ActivePointerSnapshot] = {}
+        self.calls: list[tuple[str, object]] = []
+        self.close_calls = 0
+        self._lock = asyncio.Lock()
 
-    async def resolve_active_state(
+    async def read_lifecycle_snapshot(
+        self,
+        corpus: ExactCorpusReference,
+        *,
+        timeout_seconds: int,
+    ) -> LifecycleSnapshot:
+        assert timeout_seconds == 3
+        self.calls.append(("read_lifecycle", corpus))
+        return self.lifecycle.get(corpus, LifecycleSnapshot(record=None, audit=None))
+
+    async def read_active_snapshot(
         self,
         corpus_id: str,
-        trust_policy: AttestationTrustPolicy,
-    ) -> ResolvedActiveState:
-        del trust_policy
-        state = self.states[self.calls]
-        self.calls += 1
-        assert corpus_id == state.target.corpus_id
-        return state
+        *,
+        timeout_seconds: int,
+    ) -> ActivePointerSnapshot:
+        assert timeout_seconds == 3
+        self.calls.append(("read_active", corpus_id))
+        return self.active.get(
+            corpus_id,
+            ActivePointerSnapshot(pointer=None, audit=None, target_lifecycle=None),
+        )
 
-    def remove_inactive(self, corpus: ExactCorpusReference) -> None:
-        assert self.calls >= 2
-        assert corpus != self.states[self.calls - 1].target
-        self.logically_removed.add(corpus)
+    async def commit_ready(
+        self,
+        expected_absent: bool,
+        replacement: CorpusLifecycleRecord,
+        audit: LifecycleAuditRecord,
+        *,
+        timeout_seconds: int,
+    ) -> StoreMutationResult:
+        assert expected_absent is True
+        assert timeout_seconds == 3
+        self.calls.append(("ready", replacement.corpus))
+        async with self._lock:
+            if replacement.corpus in self.lifecycle:
+                return "conflict"
+            self.lifecycle[replacement.corpus] = LifecycleSnapshot(
+                record=replacement,
+                audit=audit,
+            )
+            return "applied"
+
+    async def compare_and_swap_active(
+        self,
+        expected: ActivePointerSnapshot,
+        replacement: ActiveCorpusPointer,
+        target_ready: CorpusLifecycleRecord,
+        audit: LifecycleAuditRecord,
+        *,
+        timeout_seconds: int,
+    ) -> StoreMutationResult:
+        assert timeout_seconds == 3
+        self.calls.append(("switch", replacement.target))
+        async with self._lock:
+            current = self.active.get(
+                replacement.corpus_id,
+                ActivePointerSnapshot(pointer=None, audit=None, target_lifecycle=None),
+            )
+            target = self.lifecycle.get(target_ready.corpus)
+            if (
+                current != expected
+                or target is None
+                or target.record != target_ready
+                or target_ready.state != "ready"
+            ):
+                return "conflict"
+            self.active[replacement.corpus_id] = ActivePointerSnapshot(
+                pointer=replacement,
+                audit=audit,
+                target_lifecycle=target,
+            )
+            return "applied"
+
+    async def compare_and_remove(
+        self,
+        expected_ready: LifecycleSnapshot,
+        replacement: CorpusLifecycleRecord,
+        expected_active: ActivePointerSnapshot,
+        audit: LifecycleAuditRecord,
+        *,
+        timeout_seconds: int,
+    ) -> StoreMutationResult:
+        assert timeout_seconds == 3
+        self.calls.append(("remove", replacement.corpus))
+        async with self._lock:
+            current = self.lifecycle.get(replacement.corpus)
+            active = self.active.get(
+                replacement.corpus.corpus_id,
+                ActivePointerSnapshot(pointer=None, audit=None, target_lifecycle=None),
+            )
+            if current != expected_ready or active != expected_active:
+                return "conflict"
+            if active.pointer is not None and active.pointer.target == replacement.corpus:
+                return "conflict"
+            self.lifecycle[replacement.corpus] = LifecycleSnapshot(
+                record=replacement,
+                audit=audit,
+            )
+            return "applied"
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
 
 
 def _route_row(version: str, label: str) -> FirestoreVectorRow:
@@ -673,21 +772,56 @@ async def test_chat_actual_lifecycle_route_keeps_inflight_a_bound_while_next_use
     client_b = _RouteVectorClient(rows=(_route_row("v2", "B"),))
     route_a, embedding_a = _exact_route("v1", client_a)
     route_b, embedding_b = _exact_route("v2", client_b)
-    state_a = ResolvedActiveState(
-        target=cast(ExactCorpusReference, route_a.scope),
-        pointer_revision=0,
-        lifecycle_revision=0,
-        evidence=_route_evidence(cast(ExactCorpusReference, route_a.scope)),
-    )
-    state_b = ResolvedActiveState(
-        target=cast(ExactCorpusReference, route_b.scope),
-        pointer_revision=1,
-        lifecycle_revision=0,
-        evidence=_route_evidence(cast(ExactCorpusReference, route_b.scope)),
-    )
-    active = _PromotingActiveStateResolver([state_a, state_b])
+    scope_a = cast(ExactCorpusReference, route_a.scope)
+    scope_b = cast(ExactCorpusReference, route_b.scope)
+    lifecycle_store = _RouteLifecycleMemoryStore()
+    lifecycle_candidate = _RouteCandidateVerifier()
     candidate = _RouteCandidateVerifier()
     policy = _RouteTrustPolicy()
+    lifecycle = CorpusLifecycleService(
+        store=lifecycle_store,
+        verify_attested_candidate=lifecycle_candidate,
+        expected_embedding_identity="embedding-v1",
+        expected_embedding_dimensions=2,
+        timeout_seconds=3,
+        max_retries=0,
+        sleep=asyncio.sleep,
+        owns_store=False,
+    )
+    identity = AttestationIdentity(
+        algorithm_id=policy.verifier.algorithm_id,
+        key_id=policy.verifier.key_id,
+    )
+    ready_a = await lifecycle.mark_ready(
+        MarkReadyRequest(
+            contract_version="1.0",
+            corpus=scope_a,
+            trusted_identity=identity,
+        ),
+        policy,
+    )
+    ready_b = await lifecycle.mark_ready(
+        MarkReadyRequest(
+            contract_version="1.0",
+            corpus=scope_b,
+            trusted_identity=identity,
+        ),
+        policy,
+    )
+    promoted_a = await lifecycle.switch_active(
+        SwitchActiveRequest(
+            contract_version="1.0",
+            action="promote",
+            target=scope_a,
+            expected=None,
+        ),
+        policy,
+    )
+    assert (ready_a.disposition, ready_b.disposition, promoted_a.disposition) == (
+        "applied",
+        "applied",
+        "applied",
+    )
     factory = _RouteAdapterFactory(
         {
             "v1": cast(ExactRetrievalAdapterBinding, route_a.exact_binding),
@@ -696,7 +830,7 @@ async def test_chat_actual_lifecycle_route_keeps_inflight_a_bound_while_next_use
     )
     resolver = LifecycleRetrievalRouteResolver(
         corpus_id="public-docs",
-        active_state_resolver=active,
+        active_state_resolver=lifecycle,
         verify_attested_candidate=candidate,
         trust_policy_supplier=lambda: policy,
         expected_embedding_identity="embedding-v1",
@@ -718,11 +852,25 @@ async def test_chat_actual_lifecycle_route_keeps_inflight_a_bound_while_next_use
 
     first_task = asyncio.create_task(collect())
     await client_a.entered.wait()
-    assert active.calls == 1
     assert client_b.calls == []
+    promoted_b = await lifecycle.switch_active(
+        SwitchActiveRequest(
+            contract_version="1.0",
+            action="promote",
+            target=scope_b,
+            expected=ExpectedActivePointer(target=scope_a, revision=0),
+        ),
+        policy,
+    )
+    removed_a = await lifecycle.remove_version(
+        RemoveCorpusVersionRequest(
+            contract_version="1.0",
+            corpus=scope_a,
+            expected_lifecycle_revision=0,
+        )
+    )
     second = await collect()
     assert not first_task.done()
-    active.remove_inactive(state_a.target)
     client_a.release.set()
     first = await first_task
 
@@ -742,10 +890,19 @@ async def test_chat_actual_lifecycle_route_keeps_inflight_a_bound_while_next_use
     ]
     assert [source.id for source in first[1].sources] == ["A-doc"]  # type: ignore[union-attr]
     assert [source.id for source in second[1].sources] == ["B-doc"]  # type: ignore[union-attr]
-    assert state_a.target in active.logically_removed
-    assert active.calls == 2
-    assert candidate.calls == [state_a.target, state_b.target]
-    assert factory.calls == [state_a.target, state_b.target]
+    assert (promoted_b.disposition, promoted_b.resulting_revision) == ("applied", 1)
+    assert (removed_a.disposition, removed_a.resulting_revision) == ("applied", 1)
+    assert lifecycle_store.active["public-docs"].pointer is not None
+    assert lifecycle_store.active["public-docs"].pointer.target == scope_b
+    assert lifecycle_store.lifecycle[scope_a].record is not None
+    assert lifecycle_store.lifecycle[scope_a].record.state == "logically_removed"  # type: ignore[union-attr]
+    assert ("switch", scope_a) in lifecycle_store.calls
+    assert ("switch", scope_b) in lifecycle_store.calls
+    assert ("remove", scope_a) in lifecycle_store.calls
+    assert lifecycle_store.close_calls == 0
+    assert lifecycle_candidate.calls == [scope_a, scope_b, scope_a, scope_b]
+    assert candidate.calls == [scope_a, scope_b]
+    assert factory.calls == [scope_a, scope_b]
     assert len(client_a.calls) == len(client_b.calls) == 1
     assert embedding_a.calls == embedding_b.calls == 1
     assert ("corpus_version", "v1") in client_a.calls[0].filters

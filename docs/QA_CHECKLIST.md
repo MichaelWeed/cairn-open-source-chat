@@ -40,10 +40,13 @@ all-above refusal, stable adapter order, exact 12,000/12,001-character boundarie
 and one-to-one correspondence between eligible context documents and first-seen
 citations. Poisoned source/text values containing closing tags, fake JSON, controls,
 Unicode, and instruction-shaped prose must round-trip as JSON strings without
-creating sibling chunks or server-owned fields. The adversarial profile also
-denies provider, DNS, socket, database, filesystem, environment, and subprocess
-access and directly proves those guards fire. It is structural offline evidence,
-not a live model or universal prompt-injection claim.
+creating sibling chunks or server-owned fields. The adversarial profile specifically
+denies DNS resolution; socket creation and connection; SQLite connection; built-in
+and `Path` open/read calls; `os.getenv` plus credential/emulator environment-key
+reads; subprocess run/Popen/check-output; the Firestore client factory; and
+Gemini/Ollama stream methods. Direct negative controls prove each patched channel
+fires. It is structural offline evidence, not a live model or universal
+prompt-injection claim.
 
 ## API / functional (curl against the live server, not TestClient)
 
