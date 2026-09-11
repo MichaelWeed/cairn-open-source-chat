@@ -16,9 +16,7 @@ DEFAULT_DB_PATH = Path("data/cairn.db")
 DEFAULT_CHROMA_PATH = Path("data/chroma")
 _CONCRETE_PATH_TYPE = type(Path())
 _FIRESTORE_PROJECT_PATTERN = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
-_SETTINGS_VALIDATION_DEPTH: ContextVar[int] = ContextVar(
-    "settings_validation_depth", default=0
-)
+_SETTINGS_VALIDATION_DEPTH: ContextVar[int] = ContextVar("settings_validation_depth", default=0)
 _SAFE_SETTING_NAMES = (
     "CAIRN_PORT",
     "CORPUS_PATH",
@@ -42,6 +40,23 @@ _SAFE_SETTING_NAMES = (
     "MAX_OUTPUT_CHARS",
     "MAX_OUTPUT_TOKENS",
     "PROVIDER",
+    "PUBLIC_BUDGET_CURRENCY",
+    "PUBLIC_BUDGET_DAILY",
+    "PUBLIC_BUDGET_HOURLY",
+    "PUBLIC_BUDGET_RESERVE_PER_ATTEMPT",
+    "PUBLIC_CONTROL_DIGEST_KEY",
+    "PUBLIC_CONTROL_MAX_KEYS",
+    "PUBLIC_ENDPOINT_CONTROLS_ENABLED",
+    "PUBLIC_LEASE_RENEW_SECONDS",
+    "PUBLIC_LEASE_TTL_SECONDS",
+    "PUBLIC_MAX_ACTIVE_REQUESTS",
+    "PUBLIC_MAX_QUEUED_REQUESTS",
+    "PUBLIC_QUEUE_WAIT_SECONDS",
+    "PUBLIC_RATE_IP_CAPACITY",
+    "PUBLIC_RATE_IP_REFILL_PER_MINUTE",
+    "PUBLIC_RATE_SESSION_CAPACITY",
+    "PUBLIC_RATE_SESSION_REFILL_PER_MINUTE",
+    "PUBLIC_RATE_STATE_TTL_SECONDS",
     "RETRIEVAL_BACKEND",
     "RETRIEVAL_MAX_DISTANCE",
     "RETRIEVAL_TOP_K",
@@ -69,10 +84,7 @@ class SettingsValidationError(ValidationError):
                     name
                     for name in _SAFE_SETTING_NAMES
                     if name in message
-                    or any(
-                        isinstance(part, str) and part.upper() == name
-                        for part in location
-                    )
+                    or any(isinstance(part, str) and part.upper() == name for part in location)
                 ),
                 None,
             )
@@ -113,9 +125,7 @@ class SettingsValidationError(ValidationError):
     def __str__(self) -> str:
         parts = []
         for item in self._safe_errors:
-            location = ".".join(
-                str(value) for value in cast(tuple[object, ...], item["loc"])
-            )
+            location = ".".join(str(value) for value in cast(tuple[object, ...], item["loc"]))
             prefix = f"{location}: " if location else ""
             parts.append(prefix + str(item["msg"]))
         return "Settings configuration is invalid. " + "; ".join(parts)
@@ -216,9 +226,7 @@ class ContentFreeBaseSettings(BaseSettings):
 
 
 class Settings(ContentFreeBaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=".env", extra="ignore", hide_input_in_errors=True
-    )
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
 
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b-instruct"
@@ -261,6 +269,25 @@ class Settings(ContentFreeBaseSettings):
     rate_limit_ip_refill_per_minute: float = 20
     rate_limit_session_capacity: float = 10
     rate_limit_session_refill_per_minute: float = 10
+
+    public_endpoint_controls_enabled: bool = False
+    trusted_proxy_cidrs: str = ""
+    public_control_digest_key: SecretStr | None = None
+    public_rate_ip_capacity: int | None = None
+    public_rate_ip_refill_per_minute: str = ""
+    public_rate_session_capacity: int | None = None
+    public_rate_session_refill_per_minute: str = ""
+    public_rate_state_ttl_seconds: int | None = None
+    public_control_max_keys: int | None = None
+    public_max_active_requests: int | None = None
+    public_max_queued_requests: int | None = None
+    public_queue_wait_seconds: str = ""
+    public_lease_ttl_seconds: str = ""
+    public_lease_renew_seconds: str = ""
+    public_budget_currency: str = ""
+    public_budget_hourly: str = ""
+    public_budget_daily: str = ""
+    public_budget_reserve_per_attempt: str = ""
 
     @model_validator(mode="before")
     @classmethod
@@ -340,7 +367,7 @@ class Settings(ContentFreeBaseSettings):
     @classmethod
     def validate_optional_strict_integer(cls, value: object, info: object) -> object:
         field_name = getattr(info, "field_name", "firestore setting")
-        if value == "":
+        if value is None or (type(value) is str and value == ""):
             return None
         if isinstance(value, bool):
             raise ValueError(f"{field_name.upper()} must be a strict integer")
@@ -351,6 +378,35 @@ class Settings(ContentFreeBaseSettings):
         if type(value) is not int and value is not None:
             raise ValueError(f"{field_name.upper()} must be a strict integer")
         return value
+
+    @field_validator(
+        "public_rate_ip_capacity",
+        "public_rate_session_capacity",
+        "public_rate_state_ttl_seconds",
+        "public_control_max_keys",
+        "public_max_active_requests",
+        "public_max_queued_requests",
+        mode="before",
+    )
+    @classmethod
+    def validate_public_control_integer(cls, value: object, info: object) -> object:
+        field_name = getattr(info, "field_name", "public control setting")
+        if value is None or (type(value) is str and value == ""):
+            return None
+        if type(value) is int:
+            return value
+        if type(value) is str and value.isascii() and value.isdecimal():
+            return int(value)
+        raise ValueError(f"{field_name.upper()} must be a strict integer")
+
+    @field_validator("public_endpoint_controls_enabled", mode="before")
+    @classmethod
+    def validate_public_controls_switch(cls, value: object) -> object:
+        if type(value) is bool:
+            return value
+        if type(value) is str and value.lower() in {"true", "false"}:
+            return value.lower() == "true"
+        raise ValueError("PUBLIC_ENDPOINT_CONTROLS_ENABLED must be a strict boolean")
 
     @field_validator("firestore_max_distance", mode="before")
     @classmethod
@@ -408,6 +464,7 @@ class Settings(ContentFreeBaseSettings):
             if _FIRESTORE_PROJECT_PATTERN.fullmatch(self.firestore_project_id) is None:
                 raise ValueError("FIRESTORE_PROJECT_ID is invalid")
             from app.retrieval_contracts import ExactCorpusReference
+
             try:
                 ExactCorpusReference(
                     corpus_id=self.firestore_corpus_id,

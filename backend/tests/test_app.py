@@ -14,6 +14,7 @@ from pydantic import SecretStr
 from app.config import Settings, SettingsValidationError
 from app.corpus_lifecycle import AttestationTrustPolicy, ResolvedActiveState
 from app.embedding_types import EmbeddingFunction
+from app.endpoint_controls import ControlConfigurationError
 from app.ingest.candidate_persistence import (
     AttestationIdentity,
     AttestationVerifier,
@@ -132,13 +133,12 @@ def test_injected_budget_probe_controls_internal_readyz_only(
         assert response.status_code == status
         expected_status = b"ok" if status == 200 else b"not_ready"
         assert response.content == (
-            b'{"status":"' + expected_status
+            b'{"status":"'
+            + expected_status
             + b'","checks":{"database":true,"vector_store":true,"corpus":true}}'
         )
         assert set(response.json()) == {"status", "checks"}
-        assert set(response.json()["checks"]) == {
-            "database", "vector_store", "corpus"
-        }
+        assert set(response.json()["checks"]) == {"database", "vector_store", "corpus"}
         assert probe.calls == 1
 
 
@@ -754,29 +754,23 @@ def test_production_lifecycle_composition_is_misconfigured_without_hooks(
 
     resolver, active, _ = _caller_owned_lifecycle_resolver()
     catalog = _Catalog()
-    app = create_app(
-        Settings(
-            deployment_mode="production",
-            provider="ollama",
-            ollama_model="generation-model",
-            embedding_provider="ollama",
-            embedding_model="embedding-model",
-            database_path=tmp_path / "test.db",
-            chroma_path=tmp_path / "chroma",
-        ),
-        provider=EchoProvider(),
-        retrieval_route_resolver=resolver,
-        ollama_catalog_probe=catalog,
-    )
-
-    with TestClient(app) as client:
-        response = client.get("/readyz")
-        assert response.status_code == 503
-        assert response.content == (
-            b'{"status":"not_ready","checks":{"database":true,"vector_store":false,"corpus":false}}'
+    with pytest.raises(ControlConfigurationError):
+        create_app(
+            Settings(
+                deployment_mode="production",
+                provider="ollama",
+                ollama_model="generation-model",
+                embedding_provider="ollama",
+                embedding_model="embedding-model",
+                database_path=tmp_path / "test.db",
+                chroma_path=tmp_path / "chroma",
+            ),
+            provider=EchoProvider(),
+            retrieval_route_resolver=resolver,
+            ollama_catalog_probe=catalog,
         )
     assert active.resolve_calls == 0
-    assert catalog.calls == 1
+    assert catalog.calls == 0
 
 
 def test_lifecycle_subclass_cannot_select_exact_profile(tmp_path: Path) -> None:

@@ -4,11 +4,12 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
-from starlette.types import Send
+from starlette.types import Receive, Scope, Send
 
 from app.api.contracts import (
     ChatEvent,
@@ -20,6 +21,20 @@ from app.api.contracts import (
     PingEvent,
     ProviderGenerationRequest,
     StatusEvent,
+)
+from app.endpoint_controls import (
+    Admitted,
+    ClientIdentityError,
+    ClientPeerError,
+    ControlLease,
+    ControlStoreError,
+    Denied,
+    EndpointController,
+    EndpointControllerError,
+    Lost,
+    Pending,
+    Queued,
+    Renewed,
 )
 from app.providers.base import Provider
 from app.providers.contracts import ProviderStreamEvent
@@ -277,6 +292,349 @@ def _terminal_completion(event: ChatEvent) -> RequestCompletion | None:
     return None
 
 
+def _control_denial(reason: str) -> ErrorEvent:
+    if reason == "ip_rate_limited":
+        return ErrorEvent(
+            code="rate_limited",
+            message="Too many requests from this network.",
+            retryable=True,
+        )
+    if reason == "session_rate_limited":
+        return ErrorEvent(
+            code="rate_limited",
+            message="Too many requests for this session.",
+            retryable=True,
+        )
+    if reason == "budget_exhausted":
+        return ErrorEvent(
+            code="budget_exhausted",
+            message="The assistant is temporarily unavailable. Please try again later.",
+            retryable=True,
+        )
+    return ErrorEvent(
+        code="concurrency_limited",
+        message="The assistant is busy. Please try again shortly.",
+        retryable=True,
+    )
+
+
+def _control_internal() -> ErrorEvent:
+    return ErrorEvent(
+        code="internal",
+        message="Cairn could not complete that answer. Please try again.",
+        retryable=True,
+    )
+
+
+async def _close_iterator(iterator: AsyncIterator[object]) -> None:
+    close = getattr(iterator, "aclose", None)
+    if close is not None:
+        await close()
+
+
+class _ControlledResponseOwner:
+    """Keep one lexical accounting session and lease through the final send."""
+
+    __slots__ = ("_controller", "_lease", "_session", "_cleanup_uncertain")
+
+    def __init__(self, controller: EndpointController) -> None:
+        self._controller = controller
+        self._lease: ControlLease | None = None
+        self._session: RequestAccountingSession | None = None
+        self._cleanup_uncertain = False
+
+    def bind(self, lease: ControlLease, session: RequestAccountingSession) -> None:
+        if self._lease is not None or self._session is not None:
+            raise EndpointControllerError from None
+        self._lease = lease
+        self._session = session
+
+    def mark_cleanup_uncertain(self) -> None:
+        self._cleanup_uncertain = True
+
+    async def finalize(
+        self,
+        completion: RequestCompletion,
+        *,
+        cleanup_failed: bool,
+    ) -> None:
+        lease = self._lease
+        session = self._session
+        self._lease = None
+        self._session = None
+        if lease is None and session is None:
+            return
+        if lease is None or session is None:
+            raise EndpointControllerError from None
+        if cleanup_failed or self._cleanup_uncertain:
+            try:
+                session.active_cleanup_uncertain()
+            except RequestAccountingError:
+                pass
+        try:
+            summary = session.finalize(completion)
+            await self._controller.finalize(lease, summary)
+        except asyncio.CancelledError:
+            raise
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            raise
+        except Exception:
+            raise EndpointControllerError from None
+
+
+async def _admitted_controlled_stream(
+    *,
+    request: Request,
+    body: ChatMessageRequest,
+    controller: EndpointController,
+    lease: ControlLease,
+    response_owner: _ControlledResponseOwner,
+) -> AsyncIterator[ChatEvent]:
+    settings = request.app.state.settings
+    provider: Provider = request.app.state.provider
+    binding = request.app.state.provider_accounting_binding
+    if binding is None:
+        yield _control_internal()
+        return
+    try:
+        validate_controlled_provider_binding(settings, provider, binding)
+        accounting_session = request.app.state.request_accounting_factory.create(
+            attempt_date=lease.attempt_date
+        )
+        provider_observer = controlled_provider_observer(
+            settings,
+            provider,
+            binding,
+            accounting_session,
+        )
+        response_owner.bind(lease, accounting_session)
+    except asyncio.CancelledError:
+        raise
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        raise
+    except Exception:
+        yield _control_internal()
+        return
+
+    source = chat_event_stream(
+        provider,
+        body,
+        request.app.state.retrieval_route_resolver,
+        top_k=settings.retrieval_top_k,
+        max_distance=request.app.state.retrieval_max_distance,
+        retrieval_distance_measure=request.app.state.retrieval_distance_measure,
+        system_instruction=settings.system_instruction,
+        max_output_tokens=settings.max_output_tokens,
+        max_output_chars=settings.max_output_chars,
+        accounting_session=accounting_session,
+        provider_observer=provider_observer,
+    )
+    iterator = source.__aiter__()
+    next_event: asyncio.Future[ChatEvent] | None = asyncio.ensure_future(iterator.__anext__())
+    renewal_interval = controller.lease_renew_seconds
+    first_delay = min(renewal_interval, controller.authority_remaining(lease))
+    renewal: asyncio.Task[None] | None = asyncio.create_task(controller.sleep(first_delay))
+    terminal_sent = False
+    cleanup_uncertain = False
+    primary: BaseException | None = None
+    ticks = 0
+    try:
+        while next_event is not None and renewal is not None:
+            admitted_waiters: tuple[asyncio.Future[Any], ...] = (next_event, renewal)
+            done, _ = await asyncio.wait(
+                admitted_waiters,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if renewal in done:
+                if ticks >= 60 or controller.authority_remaining(lease) <= 0:
+                    renewal_outcome: Renewed | Lost = Lost("lease_expired")
+                else:
+                    ticks += 1
+                    try:
+                        renewal_outcome = await controller.renew(lease)
+                    except asyncio.CancelledError:
+                        raise
+                    except (ControlStoreError, EndpointControllerError):
+                        renewal_outcome = Lost("fencing_lost")
+                if type(renewal_outcome) is not Renewed:
+                    next_event.cancel()
+                    with suppress(asyncio.CancelledError, StopAsyncIteration):
+                        await next_event
+                    next_event = None
+                    cleanup_uncertain = True
+                    if not terminal_sent:
+                        yield _control_internal()
+                        terminal_sent = True
+                    break
+                renewal = asyncio.create_task(
+                    controller.sleep(min(renewal_interval, controller.authority_remaining(lease)))
+                )
+            if next_event is not None and next_event in done:
+                try:
+                    event = next_event.result()
+                except StopAsyncIteration:
+                    next_event = None
+                    if not terminal_sent:
+                        yield _control_internal()
+                        terminal_sent = True
+                    break
+                yield event
+                terminal = _terminal_completion(event)
+                if terminal is not None:
+                    terminal_sent = True
+                    next_event = None
+                    break
+                next_event = asyncio.ensure_future(iterator.__anext__())
+    except asyncio.CancelledError as error:
+        primary = error
+    except BaseException as error:
+        primary = error
+    finally:
+        if next_event is not None and not next_event.done():
+            next_event.cancel()
+            with suppress(asyncio.CancelledError, StopAsyncIteration):
+                await next_event
+        if renewal is not None and not renewal.done():
+            renewal.cancel()
+            with suppress(asyncio.CancelledError):
+                await renewal
+        try:
+            await _close_iterator(iterator)
+        except asyncio.CancelledError as error:
+            cleanup_uncertain = True
+            if primary is None:
+                primary = error
+        except BaseException:
+            cleanup_uncertain = True
+
+    if cleanup_uncertain:
+        response_owner.mark_cleanup_uncertain()
+    if primary is not None:
+        failure = primary
+        del primary
+        raise failure.with_traceback(None)
+    if cleanup_uncertain and not terminal_sent:
+        yield _control_internal()
+
+
+async def _queued_controlled_stream(
+    *,
+    request: Request,
+    body: ChatMessageRequest,
+    controller: EndpointController,
+    queued: Queued,
+    response_owner: _ControlledResponseOwner,
+) -> AsyncIterator[ChatEvent]:
+    start = controller.monotonic()
+    deadline = start + controller.queue_wait_seconds
+    next_poll = start
+    next_ping = start + PING_INTERVAL_SECONDS
+    ticket_live = True
+    poll_task: asyncio.Task[Pending | Admitted | Denied] | None = None
+    timer: asyncio.Task[None] | None = None
+    try:
+        while True:
+            now = controller.monotonic()
+            if now >= deadline:
+                break
+            if poll_task is None and now >= next_poll:
+                poll_task = asyncio.create_task(
+                    controller.poll(queued.ticket, overall_deadline=deadline)
+                )
+            wake = min(next_ping, deadline)
+            timer = asyncio.create_task(controller.sleep(max(0.0, wake - now)))
+            waiters: set[asyncio.Task[object]] = {timer}
+            if poll_task is not None:
+                waiters.add(poll_task)
+            done, _ = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+            if timer not in done:
+                timer.cancel()
+                with suppress(asyncio.CancelledError):
+                    await timer
+            timer = None
+            now = controller.monotonic()
+            if now >= next_ping and now < deadline:
+                yield PingEvent()
+                while next_ping <= now:
+                    next_ping += PING_INTERVAL_SECONDS
+            if poll_task is not None and poll_task in done:
+                try:
+                    outcome = poll_task.result()
+                except asyncio.CancelledError:
+                    raise
+                except (ControlStoreError, EndpointControllerError):
+                    yield _control_internal()
+                    return
+                poll_task = None
+                elapsed = max(0.0, controller.monotonic() - start)
+                next_poll = start + (int(elapsed // 1.0) + 1) * 1.0
+                if type(outcome) is Pending:
+                    continue
+                ticket_live = False
+                if type(outcome) is Denied:
+                    yield _control_denial(outcome.reason)
+                    return
+                if type(outcome) is Admitted:
+                    async for event in _admitted_controlled_stream(
+                        request=request,
+                        body=body,
+                        controller=controller,
+                        lease=outcome.lease,
+                        response_owner=response_owner,
+                    ):
+                        yield event
+                    return
+                yield _control_internal()
+                return
+        yield _control_denial("concurrency_limited")
+    finally:
+        if poll_task is not None and not poll_task.done():
+            poll_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await poll_task
+        if timer is not None and not timer.done():
+            timer.cancel()
+            with suppress(asyncio.CancelledError):
+                await timer
+        if ticket_live:
+            try:
+                await controller.cancel(queued.ticket)
+            except asyncio.CancelledError:
+                raise
+            except (KeyboardInterrupt, SystemExit, GeneratorExit):
+                raise
+            except Exception:
+                pass
+
+
+async def _controlled_stream(
+    *,
+    request: Request,
+    body: ChatMessageRequest,
+    controller: EndpointController,
+    outcome: Admitted | Queued,
+    response_owner: _ControlledResponseOwner,
+) -> AsyncIterator[ChatEvent]:
+    if isinstance(outcome, Admitted):
+        async for event in _admitted_controlled_stream(
+            request=request,
+            body=body,
+            controller=controller,
+            lease=outcome.lease,
+            response_owner=response_owner,
+        ):
+            yield event
+        return
+    async for event in _queued_controlled_stream(
+        request=request,
+        body=body,
+        controller=controller,
+        queued=outcome,
+        response_owner=response_owner,
+    ):
+        yield event
+
+
 async def _formatted_sse_stream(
     events: AsyncIterator[ChatEvent], tracker: _DeliveryTracker | None = None
 ) -> AsyncIterator[str]:
@@ -301,10 +659,12 @@ class _ClosingStreamingResponse(StreamingResponse):
         *,
         accounting_session: RequestAccountingSession | None = None,
         summary_owner: Callable[[RequestAccountingSummary], Awaitable[None]] | None = None,
+        controlled_owner: _ControlledResponseOwner | None = None,
     ) -> None:
         self._delivery_tracker: _DeliveryTracker | None = _DeliveryTracker()
         self._accounting_session = accounting_session
         self._summary_owner = summary_owner
+        self._controlled_owner = controlled_owner
         self._disconnect_seen = False
         super().__init__(
             _formatted_sse_stream(events, self._delivery_tracker),
@@ -318,11 +678,11 @@ class _ClosingStreamingResponse(StreamingResponse):
                 self._disconnect_seen = True
                 break
 
-    async def stream_response(self, send: Send) -> None:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         primary: BaseException | None = None
         cleanup_failed = False
         try:
-            await super().stream_response(send)
+            await super().__call__(scope, receive, send)
         except BaseException as error:
             primary = error
         finally:
@@ -347,20 +707,22 @@ class _ClosingStreamingResponse(StreamingResponse):
         self._delivery_tracker = None
         self._accounting_session = None
         self._summary_owner = None
+        controlled_owner = self._controlled_owner
+        self._controlled_owner = None
         summary: RequestAccountingSummary | None = None
         accounting_failed = False
+        if isinstance(primary, asyncio.CancelledError) and not self._disconnect_seen:
+            completion: RequestCompletion = "cancelled"
+        elif primary is not None or cleanup_failed:
+            completion = "abandoned"
+        else:
+            completion = "abandoned" if tracker is None else tracker.completion or "abandoned"
         if session is not None:
             if cleanup_failed:
                 try:
                     session.active_cleanup_uncertain()
                 except RequestAccountingError:
                     pass
-            if isinstance(primary, asyncio.CancelledError) and not self._disconnect_seen:
-                completion: RequestCompletion = "cancelled"
-            elif primary is not None or cleanup_failed:
-                completion = "abandoned"
-            else:
-                completion = "abandoned" if tracker is None else tracker.completion or "abandoned"
             try:
                 summary = session.finalize(completion)
             except asyncio.CancelledError as error:
@@ -377,12 +739,26 @@ class _ClosingStreamingResponse(StreamingResponse):
                     primary = error
             except BaseException:
                 callback_failed = True
+        if controlled_owner is not None:
+            try:
+                await controlled_owner.finalize(
+                    completion,
+                    cleanup_failed=cleanup_failed,
+                )
+            except asyncio.CancelledError as error:
+                if primary is None:
+                    primary = error
+            except (KeyboardInterrupt, SystemExit, GeneratorExit) as error:
+                if primary is None:
+                    primary = error
+            except Exception:
+                callback_failed = True
         if primary is not None:
             failure = primary
-            del self, send, session, owner, tracker, summary, primary
+            del self, scope, receive, send, session, owner, tracker, summary, primary
             raise failure.with_traceback(None)
         if accounting_failed or callback_failed or cleanup_failed:
-            del self, send, session, owner, tracker, summary
+            del self, scope, receive, send, session, owner, tracker, summary
             raise RequestAccountingError from None
 
 
@@ -391,11 +767,13 @@ def _sse_response(
     *,
     accounting_session: RequestAccountingSession | None = None,
     summary_owner: Callable[[RequestAccountingSummary], Awaitable[None]] | None = None,
+    controlled_owner: _ControlledResponseOwner | None = None,
 ) -> StreamingResponse:
     return _ClosingStreamingResponse(
         events,
         accounting_session=accounting_session,
         summary_owner=summary_owner,
+        controlled_owner=controlled_owner,
     )
 
 
@@ -406,6 +784,52 @@ async def chat_message(request: Request, body: ChatMessageRequest) -> StreamingR
     origin = request.headers.get("origin")
     if origin is not None and origin not in settings.origins:
         raise HTTPException(status_code=403, detail="Origin not allowed")
+
+    controller: EndpointController | None = request.app.state.endpoint_controller
+    if controller is not None:
+        binding = request.app.state.provider_accounting_binding
+        try:
+            if binding is None:
+                raise EndpointControllerError
+            policy = validate_controlled_provider_binding(
+                settings,
+                request.app.state.provider,
+                binding,
+            )
+            outcome = await controller.admit(
+                request.client.host if request.client else None,
+                tuple(request.scope.get("headers", ())),
+                body.session_id,
+                policy.max_attempts,
+            )
+        except ClientPeerError:
+            return _sse_response(_single_event_stream(_control_internal()))
+        except ClientIdentityError:
+            event = ErrorEvent(
+                code="invalid_request",
+                message="The request could not be processed.",
+                retryable=False,
+            )
+            return _sse_response(_single_event_stream(event))
+        except asyncio.CancelledError:
+            raise
+        except (ControlStoreError, EndpointControllerError, RequestAccountingError):
+            return _sse_response(_single_event_stream(_control_internal()))
+        if isinstance(outcome, Denied):
+            return _sse_response(_single_event_stream(_control_denial(outcome.reason)))
+        if not isinstance(outcome, (Admitted, Queued)):
+            return _sse_response(_single_event_stream(_control_internal()))
+        response_owner = _ControlledResponseOwner(controller)
+        return _sse_response(
+            _controlled_stream(
+                request=request,
+                body=body,
+                controller=controller,
+                outcome=outcome,
+                response_owner=response_owner,
+            ),
+            controlled_owner=response_owner,
+        )
 
     client_host = request.client.host if request.client else "unknown"
     if not request.app.state.ip_rate_limiter.allow(client_host):
