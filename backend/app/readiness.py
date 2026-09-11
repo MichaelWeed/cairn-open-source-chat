@@ -536,10 +536,16 @@ class OllamaCatalogProbe:
         invalid = False
         try:
             async with asyncio.timeout(OLLAMA_CATALOG_TIMEOUT_SECONDS):
-                async with self._client.stream(
+                if self._client.is_closed:
+                    raise ReadinessError() from None
+                request = self._client.build_request(
                     "GET",
                     f"{self._base_url}/api/tags",
-                ) as response:
+                )
+                transport = self._client._transport_for_url(request.url)
+                response = await transport.handle_async_request(request)
+                response.request = request
+                try:
                     if response.status_code < 200 or response.status_code >= 300:
                         raise ReadinessError() from None
                     length = response.headers.get("content-length")
@@ -555,6 +561,8 @@ class OllamaCatalogProbe:
                         if len(body) + len(chunk) > OLLAMA_CATALOG_MAX_RESPONSE_BYTES:
                             raise ReadinessError() from None
                         body.extend(chunk)
+                finally:
+                    await response.aclose()
         except asyncio.CancelledError:
             raise
         except ReadinessError:

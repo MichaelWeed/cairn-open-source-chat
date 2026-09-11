@@ -823,6 +823,65 @@ def _stream_transport(
     )
 
 
+@pytest.mark.parametrize(
+    "outcome",
+    ["success", "negative", "error", "timeout", "cancellation"],
+)
+async def test_ollama_catalog_emits_no_endpoint_or_model_logs(
+    outcome: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    endpoint_canary = "private-readiness-endpoint.invalid"
+    model_canary = "PRIVATE-READINESS-MODEL-CANARY"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if outcome == "error":
+            raise RuntimeError(f"{endpoint_canary}:{model_canary}")
+        if outcome == "timeout":
+            raise httpx.ReadTimeout(endpoint_canary, request=request)
+        if outcome == "cancellation":
+            raise asyncio.CancelledError
+        status = 503 if outcome == "negative" else 200
+        return httpx.Response(
+            status,
+            content=json.dumps({"models": [{"name": model_canary}]}).encode(),
+            request=request,
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    probe = OllamaCatalogProbe(
+        base_url=f"http://{endpoint_canary}:11434",
+        client=client,
+        owns_client=False,
+    )
+    caplog.set_level("DEBUG")
+    caught: BaseException | None = None
+    try:
+        if outcome == "success":
+            assert (await probe.check_readiness()).model_names == (model_canary,)
+        elif outcome == "timeout":
+            assert await probe.check_readiness() == OllamaCatalogReadiness(
+                reachable=False,
+                model_names=(),
+            )
+        elif outcome == "cancellation":
+            with pytest.raises(asyncio.CancelledError) as cancellation_error:
+                await probe.check_readiness()
+            caught = cancellation_error.value
+        else:
+            with pytest.raises(ReadinessError) as readiness_error:
+                await probe.check_readiness()
+            caught = readiness_error.value
+    finally:
+        await probe.aclose()
+        await client.aclose()
+
+    assert caplog.records == []
+    if caught is not None:
+        _assert_content_free(caught, endpoint_canary)
+        _assert_content_free(caught, model_canary)
+
+
 async def test_ollama_catalog_exact_request_and_shape() -> None:
     captured: list[httpx.Request] = []
     client = httpx.AsyncClient(
