@@ -337,7 +337,7 @@ def create_app(
 
             app.state.readiness_evaluator = ReadinessEvaluator(
                 database_probe=database_readiness,
-                corpus_probe=lambda: bool(app.state.corpus_ready),
+                corpus_probe=lambda: app.state.corpus_ready,
                 local_vector_probe=vector_readiness,
                 retrieval_route_resolver=selected_resolver,
                 retrieval_profile=cast(

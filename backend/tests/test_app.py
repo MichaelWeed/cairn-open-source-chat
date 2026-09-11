@@ -132,6 +132,42 @@ def test_readyz_reports_unready_when_vector_store_unavailable(
     assert body["checks"]["database"] is True
 
 
+@pytest.mark.parametrize("truth", [True, False])
+def test_readyz_rejects_truthy_and_falsey_malformed_corpus_state_content_free(
+    app: FastAPI,
+    client: TestClient,
+    caplog: pytest.LogCaptureFixture,
+    truth: bool,
+) -> None:
+    canary = f"PRIVATE-MALFORMED-CORPUS-{truth}"
+
+    class MalformedCorpusState:
+        def __init__(self) -> None:
+            self.bool_calls = 0
+
+        def __bool__(self) -> bool:
+            self.bool_calls += 1
+            return truth
+
+        def __repr__(self) -> str:
+            return canary
+
+    malformed = MalformedCorpusState()
+    app.state.corpus_ready = malformed
+    caplog.set_level("DEBUG")
+
+    response = client.get("/readyz")
+
+    assert response.status_code == 503
+    assert response.content == (
+        b'{"status":"not_ready","checks":{"database":true,'
+        b'"vector_store":true,"corpus":false}}'
+    )
+    assert malformed.bool_calls == 0
+    assert canary not in response.text
+    assert canary not in caplog.text
+
+
 def test_database_file_created(tmp_path: Path) -> None:
     db_path = tmp_path / "nested" / "test.db"
     settings = Settings(database_path=db_path, chroma_path=tmp_path / "chroma")

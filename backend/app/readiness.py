@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable, Mapping
+import logging
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from threading import RLock
 from typing import Annotated, Any, Literal, Protocol, Self, cast
 
@@ -76,6 +79,47 @@ _DIMENSION_ORDER: tuple[ReadinessDimension, ...] = (
 _ERROR_MESSAGE = "Readiness input is invalid."
 _MISSING = object()
 _MODEL_REBUILD_LOCK = RLock()
+_SUPPRESS_TRANSPORT_LOGS = ContextVar("suppress_readiness_transport_logs", default=False)
+_TRANSPORT_LOG_FILTER_LOCK = RLock()
+_TRANSPORT_LOG_FILTER_USERS = 0
+_TRANSPORT_LOGGER_NAMES = (
+    "httpx",
+    "httpcore.connection",
+    "httpcore.http11",
+    "httpcore.http2",
+    "httpcore.proxy",
+    "httpcore.socks",
+)
+
+
+class _ReadinessTransportLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        del record
+        return not _SUPPRESS_TRANSPORT_LOGS.get()
+
+
+_TRANSPORT_LOG_FILTER = _ReadinessTransportLogFilter()
+
+
+@contextmanager
+def _without_transport_logs() -> Iterator[None]:
+    global _TRANSPORT_LOG_FILTER_USERS
+
+    token = _SUPPRESS_TRANSPORT_LOGS.set(True)
+    with _TRANSPORT_LOG_FILTER_LOCK:
+        if _TRANSPORT_LOG_FILTER_USERS == 0:
+            for name in _TRANSPORT_LOGGER_NAMES:
+                logging.getLogger(name).addFilter(_TRANSPORT_LOG_FILTER)
+        _TRANSPORT_LOG_FILTER_USERS += 1
+    try:
+        yield
+    finally:
+        _SUPPRESS_TRANSPORT_LOGS.reset(token)
+        with _TRANSPORT_LOG_FILTER_LOCK:
+            _TRANSPORT_LOG_FILTER_USERS -= 1
+            if _TRANSPORT_LOG_FILTER_USERS == 0:
+                for name in _TRANSPORT_LOGGER_NAMES:
+                    logging.getLogger(name).removeFilter(_TRANSPORT_LOG_FILTER)
 
 
 class ReadinessError(Exception):
@@ -86,6 +130,11 @@ class ReadinessError(Exception):
 
     def __repr__(self) -> str:
         return "ReadinessError()"
+
+    def __getattribute__(self, name: str) -> Any:
+        if name in {"__traceback__", "__cause__", "__context__"}:
+            return None
+        return super().__getattribute__(name)
 
     def errors(
         self,
@@ -530,39 +579,62 @@ class OllamaCatalogProbe:
             owns_client=True,
         )
 
+    async def _catalog_body(self) -> bytearray:
+        response: httpx.Response | None = None
+        cancellation: asyncio.CancelledError | None = None
+        failure: Exception | None = None
+        body = bytearray()
+        with _without_transport_logs():
+            try:
+                request = self._client.build_request(
+                    "GET",
+                    f"{self._base_url}/api/tags",
+                )
+                response = await self._client.send(
+                    request,
+                    stream=True,
+                    follow_redirects=False,
+                )
+                if response.status_code < 200 or response.status_code >= 300:
+                    raise ReadinessError() from None
+                length = response.headers.get("content-length")
+                if length is not None:
+                    if (
+                        not length.isascii()
+                        or not length.isdecimal()
+                        or int(length) > OLLAMA_CATALOG_MAX_RESPONSE_BYTES
+                    ):
+                        raise ReadinessError() from None
+                async for chunk in response.aiter_bytes():
+                    if len(body) + len(chunk) > OLLAMA_CATALOG_MAX_RESPONSE_BYTES:
+                        raise ReadinessError() from None
+                    body.extend(chunk)
+            except asyncio.CancelledError as error:
+                cancellation = error
+            except Exception as error:
+                failure = error
+            if response is not None:
+                try:
+                    await response.aclose()
+                except asyncio.CancelledError as error:
+                    if cancellation is None:
+                        cancellation = error
+                except Exception as error:
+                    if failure is None:
+                        failure = error
+        if cancellation is not None:
+            raise cancellation from None
+        if failure is not None:
+            raise failure from None
+        return body
+
     async def check_readiness(self) -> OllamaCatalogReadiness:
         if self._closed:
             raise ReadinessError() from None
         invalid = False
         try:
             async with asyncio.timeout(OLLAMA_CATALOG_TIMEOUT_SECONDS):
-                if self._client.is_closed:
-                    raise ReadinessError() from None
-                request = self._client.build_request(
-                    "GET",
-                    f"{self._base_url}/api/tags",
-                )
-                transport = self._client._transport_for_url(request.url)
-                response = await transport.handle_async_request(request)
-                response.request = request
-                try:
-                    if response.status_code < 200 or response.status_code >= 300:
-                        raise ReadinessError() from None
-                    length = response.headers.get("content-length")
-                    if length is not None:
-                        if (
-                            not length.isascii()
-                            or not length.isdecimal()
-                            or int(length) > OLLAMA_CATALOG_MAX_RESPONSE_BYTES
-                        ):
-                            raise ReadinessError() from None
-                    body = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        if len(body) + len(chunk) > OLLAMA_CATALOG_MAX_RESPONSE_BYTES:
-                            raise ReadinessError() from None
-                        body.extend(chunk)
-                finally:
-                    await response.aclose()
+                body = await self._catalog_body()
         except asyncio.CancelledError:
             raise
         except ReadinessError:
@@ -607,7 +679,8 @@ class OllamaCatalogProbe:
         if self._owns_client:
             failed = False
             try:
-                await self._client.aclose()
+                with _without_transport_logs():
+                    await self._client.aclose()
             except asyncio.CancelledError:
                 raise
             except Exception:

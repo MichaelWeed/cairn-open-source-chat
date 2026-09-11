@@ -1,12 +1,14 @@
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import socket
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, Literal, cast
 
+import httpcore
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -163,6 +165,8 @@ def _assert_content_free(error: BaseException, *canaries: str) -> None:
         seen.add(id(value))
         rendered.extend((str(value), repr(value)))
         if isinstance(value, BaseException):
+            if isinstance(value, ReadinessError):
+                assert value.__traceback__ is None
             pending.extend((value.args, value.__cause__, value.__context__, vars(value)))
             if hasattr(value, "errors"):
                 pending.append(cast(Any, value).errors(include_input=True))
@@ -882,6 +886,86 @@ async def test_ollama_catalog_emits_no_endpoint_or_model_logs(
         _assert_content_free(caught, model_canary)
 
 
+async def test_application_owned_real_transport_emits_no_httpcore_trace_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    endpoint_canary = "private-httpcore-endpoint.invalid"
+    model_canary = "PRIVATE-HTTPCORE-MODEL-CANARY"
+    body = json.dumps({"models": [{"name": model_canary}]}).encode()
+    response = (
+        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
+        + str(len(body)).encode()
+        + b"\r\n\r\n"
+        + body
+    )
+    probe = OllamaCatalogProbe.application_owned(
+        base_url=f"http://{endpoint_canary}:11434"
+    )
+    client = cast(httpx.AsyncClient, object.__getattribute__(probe, "_client"))
+    transport = cast(Any, object.__getattribute__(client, "_transport"))
+    transport._pool._network_backend = httpcore.AsyncMockBackend([response])
+
+    caplog.set_level("DEBUG")
+    try:
+        assert (await probe.check_readiness()).model_names == (model_canary,)
+    finally:
+        await probe.aclose()
+
+    assert caplog.records == []
+
+
+async def test_overlapping_catalog_suppression_preserves_unrelated_task_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    arrivals = 0
+    both_entered = asyncio.Event()
+    unrelated_logged = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal arrivals
+        arrivals += 1
+        if arrivals == 2:
+            both_entered.set()
+        await release.wait()
+        return httpx.Response(200, json={"models": []}, request=request)
+
+    async def unrelated() -> None:
+        await both_entered.wait()
+        logging.getLogger("httpx").info("UNRELATED-TRANSPORT-LOG")
+        unrelated_logged.set()
+
+    caplog.set_level("DEBUG")
+    unrelated_task = asyncio.create_task(unrelated())
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    probes = tuple(
+        OllamaCatalogProbe(
+            base_url="http://private-overlap.invalid:11434",
+            client=client,
+            owns_client=False,
+        )
+        for _ in range(2)
+    )
+    readiness_tasks = tuple(
+        asyncio.create_task(probe.check_readiness()) for probe in probes
+    )
+    await asyncio.wait_for(unrelated_logged.wait(), timeout=1)
+    release.set()
+    await asyncio.gather(*readiness_tasks, unrelated_task)
+    logging.getLogger("httpcore.connection").debug("AFTER-TRANSPORT-LOG")
+    await client.aclose()
+
+    transport_records = [
+        record
+        for record in caplog.records
+        if record.name == "httpx" or record.name.startswith("httpcore.")
+    ]
+    assert [(record.name, record.getMessage()) for record in transport_records] == [
+        ("httpx", "UNRELATED-TRANSPORT-LOG"),
+        ("httpcore.connection", "AFTER-TRANSPORT-LOG"),
+    ]
+
+
 async def test_ollama_catalog_exact_request_and_shape() -> None:
     captured: list[httpx.Request] = []
     client = httpx.AsyncClient(
@@ -1240,6 +1324,61 @@ async def test_ollama_catalog_malformed_or_oversized_is_content_free(body: bytes
         await probe.check_readiness()
     assert "same" not in str(caught.value)
     await probe.aclose()
+
+
+async def test_malformed_catalog_error_hides_response_and_endpoint_traceback() -> None:
+    endpoint_canary = "private-malformed-endpoint.invalid"
+    body_canary = b"PRIVATE-MALFORMED-RESPONSE-CANARY"
+    probe = OllamaCatalogProbe(
+        base_url=f"http://{endpoint_canary}:11434",
+        client=httpx.AsyncClient(transport=_catalog_transport(body_canary)),
+        owns_client=True,
+    )
+    with pytest.raises(ReadinessError) as caught:
+        await probe.check_readiness()
+    _assert_content_free(caught.value, endpoint_canary, body_canary.decode())
+    assert caught.value.__traceback__ is None
+    await probe.aclose()
+
+
+async def test_body_cancellation_wins_over_response_close_failure_and_stops_evaluation() -> None:
+    close_canary = "PRIVATE-CLOSE-AFTER-CANCELLATION"
+    cancellation = asyncio.CancelledError()
+    requests = 0
+
+    class CancelThenFailClose(httpx.AsyncByteStream):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            raise cancellation
+            yield b""
+
+        async def aclose(self) -> None:
+            raise RuntimeError(close_canary)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(200, stream=CancelThenFailClose(), request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    probe = OllamaCatalogProbe(
+        base_url="http://private-cancel.invalid:11434",
+        client=client,
+        owns_client=False,
+    )
+    evaluator, route = _evaluator(
+        provider="ollama",
+        provider_model="generation-model",
+        embedding="ollama",
+        embedding_model="embedding-model",
+        catalog_probe=probe,
+    )
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await evaluator.evaluate()
+    assert caught.value is cancellation
+    assert close_canary not in repr(caught.value)
+    assert requests == 1
+    assert route.calls == 1
+    await client.aclose()
 
 
 async def test_ollama_catalog_model_count_bound() -> None:
