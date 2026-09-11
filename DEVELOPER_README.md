@@ -149,7 +149,9 @@ The fixed settings are `GEMINI_MODEL=gemini-3.8-flash`,
 default to Echo plus fake embeddings. Production accepts only Ollama or Gemini
 generation paired with Ollama embeddings; Gemini also requires its key and optional
 runtime profile. The adapter and content-free model probe are mocked in tests. No
-live Gemini call is part of validation, and `/readyz` does not probe Gemini.
+live Gemini call is part of validation. When Gemini is selected, `/readyz` uses
+that bounded model probe and exposes only the unchanged aggregate status and three
+boolean checks.
 
 | Mode | Generation | Embeddings | Result |
 | --- | --- | --- | --- |
@@ -192,8 +194,8 @@ Authentication is Application Default Credentials at runtime. Cairn never accept
 credential JSON, credential paths, endpoints, or emulator addresses as Firestore
 settings. `GOOGLE_SDK_PYTHON_LOGGING_SCOPE` must be blank. Focused tests inject a
 fake transport, deny DNS, sockets, providers, ADC, and the production factory, and
-make no live or credentialed call. `/readyz` intentionally does not probe
-Firestore in this milestone.
+make no live or credentialed call. `/readyz` calls the selected Firestore route's
+existing content-free readiness probe in development/test only.
 
 Chat consumes one internal retrieval-route resolver per request. The default
 resolver preserves `local_active`; development Firestore preserves its configured
@@ -203,7 +205,8 @@ verification for each new content-free pointer/policy fingerprint, and construct
 M6 adapter bound to the same exact reference. The binding is checked against M6's
 authoritative scope, embedding identity, and dimensions immediately before readiness
 or retrieval I/O. Cairn ships no production lifecycle factory, trust loader, key, or
-new environment setting, and `/readyz` remains unchanged.
+new environment setting. The route and public response shape remain unchanged;
+`/readyz` now requires the selected route and exact lifecycle facts internally.
 
 ### Immutable candidate persistence (development only)
 
@@ -375,7 +378,7 @@ No core changes required; the registry injects enabled tool schemas into the pro
 
 ## 9. Operations
 
-* `GET /healthz` provides liveness. `GET /readyz` checks the database, local vector store, and corpus state; hosted-provider readiness remains planned. Neither response contains sensitive data.
+* `GET /healthz` provides liveness without probes. `GET /readyz` aggregates database, selected retrieval route, corpus, selected provider/model, embedding, optional exact-corpus, and future budget readiness while preserving the existing three public booleans. Hosted readiness remains development-only and neither response contains sensitive data.
 * Structured JSON logs: latency, guardrail stage outcomes, error codes, query counts. No message bodies.
 * Backup = copy the SQLite metadata database and
   `CHROMA_PATH/cairn-vectors-v1.sqlite3` (volume-mounted).

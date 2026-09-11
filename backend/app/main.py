@@ -1,10 +1,11 @@
+import asyncio
 import importlib
 import logging
 import sqlite3
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +26,15 @@ from app.providers.base import Provider
 from app.providers.echo import EchoProvider
 from app.providers.ollama import OllamaProvider
 from app.ratelimit import RateLimiter
+from app.readiness import (
+    BudgetReadinessProbe,
+    GeminiReadinessProbe,
+    OllamaCatalogProbe,
+    OllamaCatalogReadinessProbe,
+    ReadinessError,
+    ReadinessEvaluator,
+    public_readiness,
+)
 from app.retrieval import LocalRetrievalAdapter
 from app.retrieval_contracts import (
     DistanceMeasure,
@@ -35,6 +45,7 @@ from app.retrieval_contracts import (
     RetrievalScope,
 )
 from app.retrieval_route import (
+    LifecycleRetrievalRouteResolver,
     ResolvedRetrievalRoute,
     RetrievalRouteResolver,
     StaticRetrievalRouteResolver,
@@ -165,6 +176,50 @@ async def _close_owned_retrieval(adapter: RetrievalAdapter) -> None:
         await close()
 
 
+async def _close_application_resources(
+    *,
+    owns_retrieval: bool,
+    retrieval: RetrievalAdapter | None,
+    vector_client: Any,
+    db: sqlite3.Connection | None,
+    catalog_probe: OllamaCatalogProbe | None,
+    owns_provider: bool,
+    provider: Provider,
+) -> None:
+    """Close owned resources in order, stopping immediately on cancellation."""
+
+    close_failed = False
+
+    async def close_async(operation: Callable[[], Any]) -> None:
+        nonlocal close_failed
+        try:
+            await operation()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            close_failed = True
+
+    def close_sync(operation: Callable[[], Any]) -> None:
+        nonlocal close_failed
+        try:
+            operation()
+        except Exception:
+            close_failed = True
+
+    if owns_retrieval and retrieval is not None:
+        await close_async(lambda: _close_owned_retrieval(retrieval))
+    if vector_client is not None:
+        close_sync(vector_client.close)
+    if db is not None:
+        close_sync(db.close)
+    if catalog_probe is not None:
+        await close_async(catalog_probe.aclose)
+    if owns_provider:
+        await close_async(lambda: _close_owned_provider(provider))
+    if close_failed:
+        raise ReadinessError() from None
+
+
 def create_app(
     settings: Settings | None = None,
     provider: Provider | None = None,
@@ -173,6 +228,8 @@ def create_app(
     retrieval_distance_measure: DistanceMeasure | None = None,
     retrieval_max_distance: float | None = None,
     retrieval_route_resolver: RetrievalRouteResolver | None = None,
+    ollama_catalog_probe: OllamaCatalogReadinessProbe | None = None,
+    budget_readiness_probe: BudgetReadinessProbe | None = None,
 ) -> FastAPI:
     settings = validated_settings_snapshot(settings)
     configure_logging()
@@ -208,6 +265,7 @@ def create_app(
         vector_client = None
         selected_retrieval: RetrievalAdapter | None = retrieval_adapter
         selected_resolver = retrieval_route_resolver
+        owned_catalog_probe: OllamaCatalogProbe | None = None
         try:
             db = bootstrap(settings.database_path)
             app.state.db = db
@@ -237,6 +295,79 @@ def create_app(
                 )
                 app.state.retrieval_adapter = selected_retrieval
             app.state.retrieval_route_resolver = selected_resolver
+            uses_ollama_catalog = (
+                settings.provider == "ollama" or settings.embedding_provider == "ollama"
+            )
+            selected_catalog_probe = (
+                ollama_catalog_probe if uses_ollama_catalog else None
+            )
+            if uses_ollama_catalog and selected_catalog_probe is None:
+                owned_catalog_probe = OllamaCatalogProbe.application_owned(
+                    base_url=settings.ollama_base_url
+                )
+                selected_catalog_probe = owned_catalog_probe
+
+            exact_lifecycle = type(selected_resolver) is LifecycleRetrievalRouteResolver
+            if exact_lifecycle:
+                retrieval_profile = "lifecycle_exact"
+                expected_readiness_scope = None
+                retrieval_composition_valid = settings.deployment_mode in {
+                    "development",
+                    "test",
+                }
+            elif settings.retrieval_backend == "firestore":
+                retrieval_profile = "firestore_static"
+                expected_readiness_scope = selected_scope
+                retrieval_composition_valid = True
+            else:
+                retrieval_profile = "local_static"
+                expected_readiness_scope = selected_scope
+                retrieval_composition_valid = True
+
+            def database_readiness() -> bool:
+                try:
+                    app.state.db.execute("SELECT 1").fetchone()
+                except sqlite3.Error:
+                    return False
+                return True
+
+            def vector_readiness() -> bool:
+                app.state.vector_client.heartbeat()
+                return True
+
+            app.state.readiness_evaluator = ReadinessEvaluator(
+                database_probe=database_readiness,
+                corpus_probe=lambda: bool(app.state.corpus_ready),
+                local_vector_probe=vector_readiness,
+                retrieval_route_resolver=selected_resolver,
+                retrieval_profile=cast(
+                    "Literal['local_static', 'firestore_static', 'lifecycle_exact']",
+                    retrieval_profile,
+                ),
+                expected_retrieval_scope=expected_readiness_scope,
+                provider_name=settings.provider,
+                provider_model=(
+                    settings.ollama_model
+                    if settings.provider == "ollama"
+                    else settings.gemini_model
+                    if settings.provider == "gemini"
+                    else ""
+                ),
+                embedding_name=settings.embedding_provider,
+                embedding_model=(
+                    settings.embedding_model
+                    if settings.embedding_provider == "ollama"
+                    else ""
+                ),
+                gemini_probe=(
+                    cast(GeminiReadinessProbe, selected_provider)
+                    if settings.provider == "gemini"
+                    else None
+                ),
+                ollama_catalog_probe=selected_catalog_probe,
+                budget_probe=budget_readiness_probe,
+                retrieval_composition_valid=retrieval_composition_valid,
+            )
             if settings.corpus_path is not None:
                 summary = ingest_corpus(
                     db=app.state.db,
@@ -253,20 +384,15 @@ def create_app(
                 )
             app.state.corpus_ready = True
         except Exception:
-            try:
-                if owns_retrieval and selected_retrieval is not None:
-                    await _close_owned_retrieval(selected_retrieval)
-            finally:
-                try:
-                    if vector_client is not None:
-                        vector_client.close()
-                finally:
-                    try:
-                        if db is not None:
-                            db.close()
-                    finally:
-                        if owns_provider:
-                            await _close_owned_provider(selected_provider)
+            await _close_application_resources(
+                owns_retrieval=owns_retrieval,
+                retrieval=selected_retrieval,
+                vector_client=vector_client,
+                db=db,
+                catalog_probe=owned_catalog_probe,
+                owns_provider=owns_provider,
+                provider=selected_provider,
+            )
             raise
         logger.info(
             "app started",
@@ -278,18 +404,15 @@ def create_app(
         try:
             yield
         finally:
-            try:
-                if owns_retrieval and selected_retrieval is not None:
-                    await _close_owned_retrieval(selected_retrieval)
-            finally:
-                try:
-                    vector_client.close()
-                finally:
-                    try:
-                        app.state.db.close()
-                    finally:
-                        if owns_provider:
-                            await _close_owned_provider(selected_provider)
+            await _close_application_resources(
+                owns_retrieval=owns_retrieval,
+                retrieval=selected_retrieval,
+                vector_client=vector_client,
+                db=app.state.db,
+                catalog_probe=owned_catalog_probe,
+                owns_provider=owns_provider,
+                provider=selected_provider,
+            )
 
     app = FastAPI(title="Cairn", lifespan=lifespan)
     app.state.settings = settings
@@ -323,25 +446,8 @@ def create_app(
 
     @app.get("/readyz")
     async def readyz() -> JSONResponse:
-        db: sqlite3.Connection = app.state.db
-        try:
-            db.execute("SELECT 1").fetchone()
-            db_ok = True
-        except sqlite3.Error:
-            db_ok = False
-
-        try:
-            app.state.vector_client.heartbeat()
-            vector_store_ok = True
-        except Exception:
-            vector_store_ok = False
-
-        checks = {
-            "database": db_ok,
-            "vector_store": vector_store_ok,
-            "corpus": bool(app.state.corpus_ready),
-        }
-        ready = all(checks.values())
+        report = await app.state.readiness_evaluator.evaluate()
+        ready, checks = public_readiness(report)
         body = {"status": "ok" if ready else "not_ready", "checks": checks}
         return JSONResponse(body, status_code=200 if ready else 503)
 

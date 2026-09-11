@@ -58,7 +58,7 @@ validation.
       "liveness": "available",
       "local_readiness": "available",
       "capability_discovery": "available",
-      "hosted_readiness": "planned",
+      "hosted_readiness": "development_only",
       "provider_usage_cost": "available"
     }
   }
@@ -96,10 +96,12 @@ Capability state is descriptive, not a runtime health signal. `available` means 
 feature is built for its documented path, `development_only` identifies deterministic
 development/test implementations, and `planned` means callers must not depend on it.
 Gemini availability requires the optional dependency or image profile, an explicit
-provider selection, and a server-side key. `operations.hosted_readiness` remains
-`planned`; `/readyz` does not probe Gemini or Firestore. `hosted_durable` is
+provider selection, and a server-side key. `operations.hosted_readiness` is
+`development_only`: `/readyz` evaluates the selected provider/model, embedding,
+and selected local or hosted retrieval route through bounded content-free probes.
+This does not make hosted retrieval production-selectable. `hosted_durable` is
 `development_only`: the optional Firestore adapter can perform bounded exact-scope
-reads in development and tests. Chat now consumes one internal scope-plus-adapter route
+reads in development and tests. Chat consumes one internal scope-plus-adapter route
 per request. Explicit development/test injection may bind validated active lifecycle
 state to a separately exact-bound M6 adapter; no production trust/factory or lifecycle
 mutation surface is supplied. The chat and SSE compatibility versions are unchanged.
@@ -165,8 +167,11 @@ and logically remove an inactive version with immutable audits. It accepts an in
 immutable trust policy but ships no real signer or production trust selection and is
 not selected by default startup or exposed through an endpoint. Its read-only active
 seam can be composed explicitly with the internal route resolver for development/tests.
-That resolver's exact-version probe is not wired into public `/readyz`; hosted readiness
-remains planned.
+That resolver's exact-version probe can be aggregated by `/readyz` when the resolver
+is explicitly injected in development/test. The public response retains only the
+existing database, vector-store, and corpus booleans; no scope, version, model,
+reason, or endpoint is exposed. Production lifecycle injection fails readiness as
+misconfigured.
 
 The public chat API remains `1.0`, SSE remains `1.1`, local corpus remains `2`, and
 local retrieval store remains `1`. Existing deployments require no migration or

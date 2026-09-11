@@ -41,6 +41,7 @@ from app.ingest.planner import (
     EmbeddingSpecification,
     plan_candidate,
 )
+from app.readiness import ReadinessEvaluator
 from app.retrieval_contracts import (
     ExactCorpusReference,
     LocalActiveScope,
@@ -857,6 +858,67 @@ async def test_lifecycle_readiness_composes_exact_fact_and_preserves_m6_booleans
     assert client.readiness_calls == 1
     assert client.vector_calls == 0
     assert embedder.calls == 0
+
+
+@pytest.mark.parametrize(
+    ("reachable", "store_ready", "vector_state", "exact_state"),
+    [
+        (False, False, "not_ready", "unknown"),
+        (True, False, "not_ready", "unknown"),
+        (True, True, "ready", "ready"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_aggregate_readiness_uses_one_actual_lifecycle_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    reachable: bool,
+    store_ready: bool,
+    vector_state: str,
+    exact_state: str,
+) -> None:
+    probe_calls = 0
+
+    async def probe(
+        adapter: FirestoreRetrievalAdapter, scope: RetrievalScope
+    ) -> RetrievalProbe:
+        nonlocal probe_calls
+        del adapter
+        probe_calls += 1
+        return RetrievalProbe(
+            scope=scope,
+            reachable=reachable,
+            store_ready=store_ready,
+            exact_version_ready=False,
+        )
+
+    monkeypatch.setattr(FirestoreRetrievalAdapter, "check_readiness", probe)
+    resolver, active, verifier, _, _, client, embedder, _ = _lifecycle_resolver()
+
+    def forbidden_heartbeat() -> object:
+        raise AssertionError("lifecycle readiness must not use local heartbeat")
+
+    evaluator = ReadinessEvaluator(
+        database_probe=lambda: True,
+        corpus_probe=lambda: True,
+        local_vector_probe=forbidden_heartbeat,
+        retrieval_route_resolver=resolver,
+        retrieval_profile="lifecycle_exact",
+        expected_retrieval_scope=None,
+        provider_name="echo",
+        provider_model="",
+        embedding_name="fake",
+        embedding_model="",
+        gemini_probe=None,
+        ollama_catalog_probe=None,
+        budget_probe=None,
+    )
+
+    report = await evaluator.evaluate()
+
+    assert report.checks[1].state == vector_state
+    assert report.checks[6].state == exact_state
+    assert active.calls == verifier.calls == probe_calls == 1
+    assert client.readiness_calls == client.vector_calls == embedder.calls == 0
 
 
 @pytest.mark.asyncio

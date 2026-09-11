@@ -1,7 +1,9 @@
+import asyncio
 import hashlib
 import sqlite3
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from fastapi import FastAPI
@@ -17,8 +19,9 @@ from app.ingest.candidate_persistence import (
     VerifiedCandidateEvidence,
 )
 from app.ingest.startup import CorpusStartupError
-from app.main import create_app
+from app.main import _close_application_resources, create_app
 from app.providers.echo import EchoProvider
+from app.readiness import OllamaCatalogReadiness, ReadinessError
 from app.retrieval_contracts import (
     ExactCorpusReference,
     LocalActiveScope,
@@ -38,7 +41,12 @@ from app.vectorstore import DocumentCollection, VectorStoreClient, get_vector_cl
 
 @pytest.fixture
 def app(tmp_path: Path) -> FastAPI:
-    settings = Settings(database_path=tmp_path / "test.db", chroma_path=tmp_path / "chroma")
+    settings = Settings(
+        provider="echo",
+        embedding_provider="fake",
+        database_path=tmp_path / "test.db",
+        chroma_path=tmp_path / "chroma",
+    )
     return create_app(settings)
 
 
@@ -184,6 +192,14 @@ def test_invalid_snapshot_is_rejected_before_every_application_side_effect(
             "app.main.StaticRetrievalRouteResolver",
             tripwire("lifecycle"),
         ),
+        "readiness": (
+            "app.main.ReadinessEvaluator",
+            tripwire("readiness"),
+        ),
+        "catalog": (
+            "app.main.OllamaCatalogProbe.application_owned",
+            tripwire("catalog"),
+        ),
         "candidate_store": (
             "app.ingest.candidate_firestore.create_candidate_store",
             tripwire("candidate_store"),
@@ -238,6 +254,8 @@ def test_create_app_isolates_snapshot_from_pre_lifespan_caller_mutation(
     original_db = tmp_path / "original.db"
     original_chroma = tmp_path / "original-chroma"
     source = Settings(
+        provider="echo",
+        embedding_provider="fake",
         database_path=original_db,
         chroma_path=original_chroma,
         admin_bootstrap_password="original-secret",
@@ -322,6 +340,7 @@ class _InjectedAdapter:
 class _CloseTrackedActiveStateResolver:
     def __init__(self) -> None:
         self.close_calls = 0
+        self.resolve_calls = 0
 
     async def resolve_active_state(
         self,
@@ -329,6 +348,7 @@ class _CloseTrackedActiveStateResolver:
         trust_policy: AttestationTrustPolicy,
     ) -> ResolvedActiveState:
         del corpus_id, trust_policy
+        self.resolve_calls += 1
         raise AssertionError("active state must not be read during application lifespan")
 
     async def aclose(self) -> None:
@@ -449,6 +469,75 @@ def test_injected_lifecycle_dependencies_are_not_closed_after_startup_failure(
     assert candidate.close_calls == 0
 
 
+def test_production_lifecycle_composition_is_misconfigured_without_hooks(
+    tmp_path: Path,
+) -> None:
+    class _Catalog:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def check_readiness(self) -> object:
+            self.calls += 1
+            return OllamaCatalogReadiness(
+                reachable=True,
+                model_names=("generation-model", "embedding-model"),
+            )
+
+    resolver, active, _ = _caller_owned_lifecycle_resolver()
+    catalog = _Catalog()
+    app = create_app(
+        Settings(
+            deployment_mode="production",
+            provider="ollama",
+            ollama_model="generation-model",
+            embedding_provider="ollama",
+            embedding_model="embedding-model",
+            database_path=tmp_path / "test.db",
+            chroma_path=tmp_path / "chroma",
+        ),
+        provider=EchoProvider(),
+        retrieval_route_resolver=resolver,
+        ollama_catalog_probe=catalog,
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/readyz")
+        assert response.status_code == 503
+        assert response.content == (
+            b'{"status":"not_ready","checks":{"database":true,'
+            b'"vector_store":false,"corpus":false}}'
+        )
+    assert active.resolve_calls == 0
+    assert catalog.calls == 1
+
+
+def test_lifecycle_subclass_cannot_select_exact_profile(tmp_path: Path) -> None:
+    class _LifecycleSubclass(LifecycleRetrievalRouteResolver):
+        pass
+
+    resolver, active, candidate = _caller_owned_lifecycle_resolver()
+    subclass = _LifecycleSubclass(
+        corpus_id="public-docs",
+        active_state_resolver=active,
+        verify_attested_candidate=candidate.verify_attested_candidate,
+        trust_policy_supplier=lambda: _UnusedTrustPolicy(),
+        expected_embedding_identity="embedding-v1",
+        expected_embedding_dimensions=2,
+        adapter_factory=_UnusedExactAdapterFactory(),
+    )
+    app = create_app(
+        Settings(database_path=tmp_path / "test.db", chroma_path=tmp_path / "chroma"),
+        provider=EchoProvider(),
+        retrieval_route_resolver=subclass,
+    )
+    with TestClient(app) as client:
+        response = client.get("/readyz")
+        assert response.status_code == 503
+        report = asyncio.run(app.state.readiness_evaluator.evaluate())
+        assert report.checks[6].state == "not_required"
+    assert active.resolve_calls == 2
+
+
 @pytest.mark.parametrize(
     "legacy",
     ["adapter", "scope"],
@@ -549,3 +638,89 @@ def test_lifespan_closes_vector_client_after_failed_startup(
 
     assert observed[0].closed is True
     assert observed[0].close_calls == 1
+
+
+async def test_resource_close_cancellation_stops_every_later_close() -> None:
+    events: list[str] = []
+
+    class _CancelledRetrieval:
+        async def aclose(self) -> None:
+            events.append("retrieval")
+            raise asyncio.CancelledError
+
+    class _SyncResource:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def close(self) -> None:
+            events.append(self.name)
+
+    class _AsyncResource:
+        def __init__(self, name: str, cancel: bool = False) -> None:
+            self.name = name
+            self.cancel = cancel
+
+        async def aclose(self) -> None:
+            events.append(self.name)
+            if self.cancel:
+                raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await _close_application_resources(
+            owns_retrieval=True,
+            retrieval=cast(Any, _CancelledRetrieval()),
+            vector_client=_SyncResource("vector"),
+            db=cast(Any, _SyncResource("database")),
+            catalog_probe=cast(Any, _AsyncResource("catalog")),
+            owns_provider=True,
+            provider=cast(Any, _AsyncResource("provider")),
+        )
+    assert events == ["retrieval"]
+
+    events.clear()
+    with pytest.raises(asyncio.CancelledError):
+        await _close_application_resources(
+            owns_retrieval=False,
+            retrieval=None,
+            vector_client=_SyncResource("vector"),
+            db=cast(Any, _SyncResource("database")),
+            catalog_probe=cast(Any, _AsyncResource("catalog", cancel=True)),
+            owns_provider=True,
+            provider=cast(Any, _AsyncResource("provider")),
+        )
+    assert events == ["vector", "database", "catalog"]
+
+
+async def test_ordinary_resource_close_failure_is_content_free_and_finishes_cleanup() -> None:
+    canary = "PRIVATE-RESOURCE-CLOSE-CANARY"
+    events: list[str] = []
+
+    class _Broken:
+        def close(self) -> None:
+            events.append("broken")
+            raise RuntimeError(canary)
+
+    class _Closed:
+        def close(self) -> None:
+            events.append("closed")
+
+    with pytest.raises(ReadinessError) as caught:
+        await _close_application_resources(
+            owns_retrieval=False,
+            retrieval=None,
+            vector_client=_Broken(),
+            db=cast(Any, _Closed()),
+            catalog_probe=None,
+            owns_provider=False,
+            provider=EchoProvider(),
+        )
+    rendered = (
+        str(caught.value)
+        + repr(caught.value)
+        + repr(caught.value.args)
+        + repr(vars(caught.value))
+        + repr(caught.value.__cause__)
+        + repr(caught.value.__context__)
+    )
+    assert canary not in rendered
+    assert events == ["broken", "closed"]

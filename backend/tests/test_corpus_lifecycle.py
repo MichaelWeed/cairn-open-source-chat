@@ -704,7 +704,9 @@ def test_public_and_local_compatibility_surfaces_match_accepted_base_bytes(
     # test makes it work in history-free archives and shallow CI checkouts.
     accepted_sha256 = {
         "backend/app/capabilities.json": (
-            "0c1f398299025543a55e13798479cfade8710aec255f27399d3308f0f796a422"
+            # KAN-44a changes only operations.hosted_readiness, whose exact
+            # one-leaf transition is independently frozen in test_capabilities.py.
+            "570c0cb3334f7720bf3c43eea8dbd760c96c52a2972dc7c0fb7e52b72f03f61e"
         ),
         "backend/app/capabilities.py": (
             "c53c439bbb18a7be4dc6031cde1892072a3c7248e4a8f6cd3b37effe0f4e0c7e"
