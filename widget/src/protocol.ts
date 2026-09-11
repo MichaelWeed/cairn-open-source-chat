@@ -14,6 +14,7 @@ export const CAPABILITY_DEADLINE_SECONDS = 5;
 const HISTORY_EDGE_WHITESPACE = /^[\p{White_Space}\u001c-\u001f\ufeff]+|[\p{White_Space}\u001c-\u001f\ufeff]+$/gu;
 const FORBIDDEN_CONTROL = /[\u0000-\u001f\u007f-\u009f]/u;
 const NONCE_PATTERN = /^[A-Za-z0-9+/_-]+={0,2}$/u;
+const CAPABILITY_SCHEMA_PATTERN = /^1\.[1-9][0-9]*$/u;
 
 export type WidgetTheme = "auto" | "light" | "dark";
 
@@ -397,12 +398,16 @@ export function parseWidgetConfiguration(
 
 export function validateCapabilityManifest(value: unknown): boolean {
   if (!isRecord(value)) return false;
+  const schemaVersion = value.schema_version;
+  if (
+    typeof schemaVersion !== "string" ||
+    CAPABILITY_SCHEMA_PATTERN.exec(schemaVersion)?.[0] !== schemaVersion
+  ) return false;
   const compatibility = value.compatibility;
   const capabilities = value.capabilities;
   if (!isRecord(compatibility) || !isRecord(capabilities)) return false;
   const widget = capabilities.widget;
   return (
-    value.schema_version === "1.1" &&
     compatibility.chat_api === "1.0" &&
     compatibility.sse_events === "1.1" &&
     compatibility.widget === "0.2.0" &&

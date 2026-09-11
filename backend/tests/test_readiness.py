@@ -77,10 +77,10 @@ def test_accepted_m10_and_widget_frozen_surfaces_are_byte_identical() -> None:
             "fe5727fba0ee4a410c2b30f62cb728e9eee67c68ac040115fe922b7492309ee7"
         ),
         "widget/src/protocol.ts": (
-            "cd4c993803e0ac05e4dd8b7f19b138d0eb814907f4e6200a51f17ee37506ec58"
+            "7c26838110c75e789d2f87d72bd37afb14131d326fbb72ddae6956d97f9d2ccb"
         ),
         "backend/app/static/widget/widget.js": (
-            "bb170dfe776e16a07c9ee51cd8ff4958e58e9caf84d10c0b1475b31e299bc9a2"
+            "f5db38adc8b53fbb3584278334945062d0a25737d8720754c6602544a261158c"
         ),
     }
     for relative, expected in accepted.items():

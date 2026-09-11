@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { build } from "esbuild";
 
 import {
@@ -11,11 +12,12 @@ import {
 
 const NONCE = "YWJjZGVmZ2hpamtsbW5vcA==";
 const CANARY = "PRIVATE-CONTENT-CANARY";
-const capabilities = {
-  schema_version: "1.1",
-  compatibility: { chat_api: "1.0", sse_events: "1.1", widget: "0.2.0" },
-  capabilities: { widget: { production_configuration: "available" } },
-};
+const capabilities = JSON.parse(
+  await readFile(
+    new URL("../../backend/app/capabilities.json", import.meta.url),
+    "utf8",
+  ),
+);
 
 const bundle = await build({
   entryPoints: [new URL("../src/index.ts", import.meta.url).pathname],
@@ -23,7 +25,16 @@ const bundle = await build({
   minify: true,
   write: false,
 });
-const widgetSource = bundle.outputFiles[0].text;
+const widgetBytes = bundle.outputFiles[0].contents;
+const servedWidgetBytes = await readFile(
+  new URL("../../backend/app/static/widget/widget.js", import.meta.url),
+);
+assert.deepEqual(
+  Buffer.from(widgetBytes),
+  servedWidgetBytes,
+  "the served widget distribution must match the in-memory production build byte-for-byte",
+);
+const widgetSource = new TextDecoder().decode(widgetBytes);
 const browser = await browserPath();
 const apiRequests = [];
 const siteMarkers = [];
