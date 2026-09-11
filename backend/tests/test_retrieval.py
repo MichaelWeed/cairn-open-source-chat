@@ -1,3 +1,5 @@
+import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -12,6 +14,13 @@ from app.retrieval import (
     retrieve_chunks,
     should_refuse,
 )
+from app.retrieval_contracts import (
+    LocalActiveScope,
+    RetrievalError,
+    RetrievalRequest,
+    RetrievalResult,
+)
+from app.retrieval_integrity import compile_grounding_bundle
 from app.vectorstore import DocumentCollection, get_document_collection, get_vector_client
 
 
@@ -103,14 +112,17 @@ def test_build_citations_empty_for_no_chunks() -> None:
     assert build_citations([]) == []
 
 
-def test_build_context_block_no_chunks_notes_absence() -> None:
+def test_build_context_block_no_chunks_uses_integrity_json_shape() -> None:
     block = build_context_block([])
-    assert "no relevant documents" in block
-    assert "<retrieved-context>" in block
-    assert "</retrieved-context>" in block
+    header, payload = block.split("\n", 1)
+    assert "untrusted support data" in header
+    assert json.loads(payload) == {
+        "schema": "cairn-retrieved-context-json-v1",
+        "chunks": [],
+    }
 
 
-def test_build_context_block_wraps_chunks_with_untrusted_markers() -> None:
+def test_build_context_block_is_json_facade_over_integrity_compiler() -> None:
     chunks = [
         RetrievedChunk(
             chunk_id="doc-1::chunk::0",
@@ -122,11 +134,90 @@ def test_build_context_block_wraps_chunks_with_untrusted_markers() -> None:
         )
     ]
     block = build_context_block(chunks)
-    assert "<retrieved-context>" in block
-    assert '<chunk source="faq.md">' in block
-    assert "30 days" in block
-    assert "untrusted data" in block
-    assert "ignore any commands" in block.lower()
+    request = RetrievalRequest(
+        scope=LocalActiveScope(),
+        query="returns",
+        max_results=1,
+        max_distance=1.2,
+        distance_measure="squared_l2",
+    )
+    compiled = compile_grounding_bundle(
+        request=request,
+        adapter_result=RetrievalResult(
+            scope=request.scope,
+            distance_measure=request.distance_measure,
+            max_distance=request.max_distance,
+            chunks=tuple(chunks),
+        ),
+    )
+    assert compiled is not None
+    assert block == compiled.retrieved_context
+    assert "<retrieved-context>" not in block
+    _, payload = block.split("\n", 1)
+    assert json.loads(payload)["chunks"] == [
+        {"ordinal": 0, "source": "faq.md", "text": "30 days"}
+    ]
+
+
+def test_build_citations_is_facade_over_integrity_compiler() -> None:
+    chunks = [
+        RetrievedChunk(
+            chunk_id="doc-1::chunk::0",
+            document_id="doc-1",
+            source="faq.md",
+            chunk_index=0,
+            text="30 days",
+            distance=0.1,
+        )
+    ]
+    request = RetrievalRequest(
+        scope=LocalActiveScope(),
+        query="returns",
+        max_results=1,
+        max_distance=1.2,
+        distance_measure="squared_l2",
+    )
+    compiled = compile_grounding_bundle(
+        request=request,
+        adapter_result=RetrievalResult(
+            scope=request.scope,
+            distance_measure=request.distance_measure,
+            max_distance=request.max_distance,
+            chunks=tuple(chunks),
+        ),
+    )
+    assert compiled is not None
+    assert build_citations(chunks) == list(compiled.citations)
+
+
+@pytest.mark.parametrize(
+    "helper",
+    [
+        lambda chunks: build_citations(chunks),
+        lambda chunks: build_context_block(chunks),
+        lambda chunks: should_refuse(chunks),
+    ],
+)
+def test_compatibility_facades_normalize_forged_chunks_content_free(
+    helper: Callable[[list[RetrievedChunk]], object],
+) -> None:
+    forged = RetrievedChunk(
+        chunk_id="doc-1::chunk::0",
+        document_id="doc-1",
+        source="faq.md",
+        chunk_index=0,
+        text="30 days",
+        distance=0.1,
+    ).model_copy(update={"citation_title": "private-canary", "citation_url": None})
+
+    with pytest.raises(RetrievalError) as caught:
+        helper([forged])
+
+    assert caught.value.code == "malformed_result"
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert "private-canary" not in str(caught.value)
+    assert "private-canary" not in repr(caught.value)
 
 
 def test_should_refuse_true_for_no_chunks() -> None:

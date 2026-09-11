@@ -383,7 +383,18 @@ def test_retrieval_grounds_the_reply_and_emits_citations(tmp_path: Path) -> None
 
     assert provider.last_request is not None
     assert "30 days" in provider.last_request.retrieved_context
-    assert "<retrieved-context>" in provider.last_request.retrieved_context
+    header, encoded = provider.last_request.retrieved_context.split("\n", 1)
+    assert "untrusted support data" in header
+    assert json.loads(encoded) == {
+        "schema": "cairn-retrieved-context-json-v1",
+        "chunks": [
+            {
+                "ordinal": 0,
+                "source": "returns.md",
+                "text": "Our return window is 30 days from delivery.",
+            }
+        ],
+    }
 
 
 def test_public_context_never_becomes_provider_instruction_or_retrieved_context(

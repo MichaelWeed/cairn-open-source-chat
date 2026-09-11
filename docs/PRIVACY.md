@@ -51,7 +51,11 @@ message is never added to the retrievable corpus.
   up to five bounded history turns, the server instruction, and retrieved support
   context leave the operator's infrastructure for Google. Public widget context,
   session IDs, client IPs, and database paths are not included in that provider
-  request. Gemini may return token counts and a service tier, which Cairn normalizes
+  request. Retrieved support contains only server-derived ordinals plus the validated
+  opaque `source` and text for chunks at or below the request threshold. It excludes
+  citation title/URL, chunk/document/corpus IDs, distance, active pointer, public
+  widget context, session/IP data, storage paths derived by Cairn, and credentials.
+  Gemini may return token counts and a service tier, which Cairn normalizes
   in memory without retaining raw provider metadata. Cairn does not persist chat
   transcripts or normalized usage metadata.
 * **Firestore retrieval (optional, development/test only).** The current question is

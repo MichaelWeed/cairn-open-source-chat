@@ -33,6 +33,21 @@ or expose an `/admin` route.
 Re-running `make demo` is safe — `ingest_upload()`'s content-hash reindex
 reports `unchanged` for anything already ingested rather than duplicating it.
 
+## Deterministic retrieval-integrity gate
+
+The non-live backend suite covers mixed below/equal/above-threshold results,
+all-above refusal, stable adapter order, exact 12,000/12,001-character boundaries,
+and one-to-one correspondence between eligible context documents and first-seen
+citations. Poisoned source/text values containing closing tags, fake JSON, controls,
+Unicode, and instruction-shaped prose must round-trip as JSON strings without
+creating sibling chunks or server-owned fields. The adversarial profile specifically
+denies DNS resolution; socket creation and connection; SQLite connection; built-in
+and `Path` open/read calls; `os.getenv` plus credential/emulator environment-key
+reads; subprocess run/Popen/check-output; the Firestore client factory; and
+Gemini/Ollama stream methods. Direct negative controls prove each patched channel
+fires. It is structural offline evidence, not a live model or universal
+prompt-injection claim.
+
 ## API / functional (curl against the live server, not TestClient)
 
 `backend/tests/` covers this in-process; these rows exist because the real
@@ -84,4 +99,6 @@ tracking.
   responsive geometry, computed contrast, safe areas, strict CSP, CORS denial,
   keyboard/focus, reduced motion, forced colors, history, and clear behavior. This
   manual checklist still covers the separate demo page only.
-* Adversarial/prompt-injection cases — that's the adversarial suite, task 4.4, a `make validate` gate item, not manual QA.
+* Live semantic prompt-injection resistance remains outside this manual checklist;
+  the built adversarial retrieval gate proves deterministic structural properties
+  without contacting a model.

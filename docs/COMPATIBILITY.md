@@ -139,6 +139,14 @@ identifiers, provenance URLs, result count, and assembled context are bounded.
 Malformed or oversized results take the existing content-free refusal path without
 partial citations or a provider call.
 
+The internal retrieval-evidence compiler enforces the existing threshold per chunk,
+preserving adapter order and threshold equality. It serializes the exact eligible
+support as deterministic JSON and derives every citation from the same tuple in
+first-seen document order. Reviewed title/HTTP(S) URL pairs remain exact; direct
+ingestion retains the title-truncated-to-160 and `document://<document_id>` fallback.
+The public chat API remains `1.0`, SSE remains `1.1`, and no capability, retrieval,
+corpus, or store compatibility value changes.
+
 ## Internal ingestion-plan contract 1.0
 
 The pure ingestion planner consumes in-memory version 1 manifest bytes, exact

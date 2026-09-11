@@ -40,13 +40,14 @@ this stage.
   Snapshot source URLs reject credentials, query strings, and fragments. Errors do
   not echo raw provider metadata, rates, or content, and this component has no
   authority to enforce budgets or persist records.
-* **Prompt-injection defense around retrieved content.** The retrieval pipeline (`app/retrieval.py`,
-  task 2.4) wraps retrieved document chunks in an explicit `<retrieved-context>` block with a system
-  prompt instructing the model to treat that block as untrusted data, not instructions, and to
-  ignore any commands embedded inside it. **This is the prompt-level mitigation only.** The
-  adversarial test suite that actually proves it holds under attack (poisoned-document retrieval
-  cases) is task 4.4, not built yet — treat this defense as unverified against a determined attacker
-  until that suite exists and passes.
+* **Structural boundary around retrieved content.** The pure retrieval-evidence
+  compiler revalidates exact built-in snapshots, filters each chunk against the
+  application request threshold, and serializes eligible `source` and text strings
+  into one deterministic JSON object after a fixed untrusted-data instruction.
+  Literal tag-shaped characters are escaped and offline adversarial tests prove
+  exact parsing, sibling-field resistance, hook safety, content-free failures, and
+  no external calls. This structural guarantee does not prove universal semantic
+  prompt-injection resistance or model compliance.
 * **No message bodies in logs.** Structured JSON logging (`app/logging_config.py`) is a thin
   formatter with no built-in field allowlist/denylist — the "never log message content" rule is
   enforced by code convention and review today, not by a runtime filter. A future contributor who
@@ -108,7 +109,7 @@ this stage.
   the admin account (Argon2id, SameSite=Strict session cookie, CSRF token, optional TOTP) protects
   configuration surfaces only — end-user auth is an explicit non-goal; Cairn
   never gates answers by end-user identity.
-* **No always-on guardrail middleware beyond the prompt-level defense above.** Tier 1 (input caps,
+* **No always-on guardrail middleware beyond the structural retrieval boundary above.** Tier 1 (input caps,
   injection heuristics, topic/PII input filters — task 4.1) and Tier 2 (Llama Guard 3 toggle — task
   4.2) don't exist yet.
 * **No output PII scrubbing.** Responses are not currently filtered for PII before being streamed
