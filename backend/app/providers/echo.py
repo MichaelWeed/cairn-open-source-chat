@@ -1,9 +1,15 @@
+from __future__ import annotations
+
 import asyncio
 from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 from app.api.contracts import ProviderGenerationRequest
 from app.providers.base import Provider
 from app.providers.contracts import ProviderStreamEvent, ProviderTextChunk
+
+if TYPE_CHECKING:
+    from app.request_accounting import ProviderAttemptObserver
 
 
 class EchoProvider(Provider):
@@ -18,8 +24,12 @@ class EchoProvider(Provider):
         self._delay_seconds = delay_seconds
 
     async def stream(
-        self, request: ProviderGenerationRequest
+        self,
+        request: ProviderGenerationRequest,
+        *,
+        observer: ProviderAttemptObserver | None = None,
     ) -> AsyncIterator[ProviderStreamEvent]:
+        del observer
         words = request.message.split()
         for i, word in enumerate(words):
             if self._delay_seconds:

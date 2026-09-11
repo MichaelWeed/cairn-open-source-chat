@@ -120,6 +120,10 @@ attempt, and optional service tier; token fields remain nullable when a provider
 does not report them. Cost calculation requires an operator-supplied immutable
 price snapshot with a canonical SHA-256 identity. Cairn does not ship a live price
 catalog, persist accounting records, enforce budgets, or expose usage over SSE.
+The request-scoped handoff composes those existing 1.0 records without changing any
+public compatibility version. Built-in application-owned providers have exact attempt
+limits of Echo 0, Ollama 1, and Gemini 1 or 2; caller-injected providers receive no
+authoritative accounting observer.
 
 ## Internal retrieval contract 1.0
 

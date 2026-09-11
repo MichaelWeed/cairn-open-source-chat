@@ -1,4 +1,5 @@
 import json
+from datetime import date
 
 import httpx
 import pytest
@@ -10,6 +11,11 @@ from app.providers.contracts import (
     ProviderUsageChunk,
 )
 from app.providers.ollama import OllamaProvider
+from app.request_accounting import (
+    ProviderAttemptPolicy,
+    RequestAccountingError,
+    RequestAccountingSession,
+)
 
 
 def request(**changes: object) -> ProviderGenerationRequest:
@@ -107,6 +113,78 @@ async def test_ollama_sends_expected_request_body() -> None:
         "options": {"num_predict": 321},
         "messages": [{"role": "user", "content": "prior"}, {"role": "user", "content": "hi"}],
     }
+
+
+async def test_ollama_observer_records_start_before_http_and_completion_after_close() -> None:
+    order: list[str] = []
+
+    def handler(request_value: httpx.Request) -> httpx.Response:
+        order.append("http")
+        body = json.dumps(
+            {
+                "message": {"content": "ok"},
+                "done": True,
+                "prompt_eval_count": 2,
+                "eval_count": 1,
+            }
+        ).encode()
+        return httpx.Response(200, content=body, request=request_value)
+
+    class RecordingSession(RequestAccountingSession):
+        def attempt_started(self, identity):  # type: ignore[no-untyped-def]
+            order.append("start")
+            super().attempt_started(identity)
+
+        def usage_observed(self, usage):  # type: ignore[no-untyped-def]
+            order.append("usage")
+            super().usage_observed(usage)
+
+        def attempt_finished(self, identity, completion):  # type: ignore[no-untyped-def]
+            order.append(completion)
+            super().attempt_finished(identity, completion)
+
+    session = RecordingSession(
+        attempt_date=date(2026, 9, 10),
+        price_snapshots=(),
+        policy=ProviderAttemptPolicy(provider="ollama", model="test-model", max_attempts=1),
+    )
+    provider = OllamaProvider(
+        base_url="http://ollama:11434",
+        model="test-model",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    assert [event.kind async for event in provider.stream(request(), observer=session)] == [
+        "usage",
+        "text",
+    ]
+    assert order == ["start", "http", "usage", "completed"]
+    assert session.finalize("completed").attempts[0].kind == "settled"
+
+
+async def test_ollama_observer_start_failure_prevents_http() -> None:
+    called = False
+
+    def handler(request_value: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, content=b"", request=request_value)
+
+    class FailedObserver:
+        def attempt_started(self, identity: object) -> None:
+            del identity
+            raise RuntimeError("OBSERVER-CANARY")
+
+    provider = OllamaProvider(
+        base_url="http://ollama:11434",
+        model="test-model",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(RequestAccountingError) as caught:
+        async for _ in provider.stream(request(), observer=FailedObserver()):  # type: ignore[arg-type]
+            pass
+    assert called is False
+    assert "OBSERVER-CANARY" not in str(caught.value)
 
 
 async def test_ollama_prepends_context_as_system_message() -> None:
@@ -213,9 +291,7 @@ async def test_ollama_preserves_trailing_whitespace_at_exact_chunk_boundary(
         ]
     )
     client = httpx.AsyncClient(transport=transport)
-    provider = OllamaProvider(
-        base_url="http://ollama:11434", model="test-model", client=client
-    )
+    provider = OllamaProvider(base_url="http://ollama:11434", model="test-model", client=client)
 
     chunks = await _collect_text(provider)
 

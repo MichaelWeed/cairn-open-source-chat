@@ -30,7 +30,7 @@ def fake_embeddings(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class FailingProvider(Provider):
-    async def stream(
+    async def stream(  # type: ignore[override]
         self, request: ProviderGenerationRequest
     ) -> AsyncIterator[ProviderStreamEvent]:
         raise ConnectionError("simulated provider outage")
@@ -46,7 +46,7 @@ class CapturingProvider(Provider):
     def __init__(self) -> None:
         self.last_request: ProviderGenerationRequest | None = None
 
-    async def stream(
+    async def stream(  # type: ignore[override]
         self, request: ProviderGenerationRequest
     ) -> AsyncIterator[ProviderStreamEvent]:
         self.last_request = request
@@ -54,7 +54,7 @@ class CapturingProvider(Provider):
 
 
 class WhitespaceLimitProvider(Provider):
-    async def stream(
+    async def stream(  # type: ignore[override]
         self, request: ProviderGenerationRequest
     ) -> AsyncIterator[ProviderStreamEvent]:
         yield ProviderTextChunk(delta="abc")

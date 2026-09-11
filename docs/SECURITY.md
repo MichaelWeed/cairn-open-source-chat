@@ -40,6 +40,10 @@ this stage.
   Snapshot source URLs reject credentials, query strings, and fragments. Errors do
   not echo raw provider metadata, rates, or content, and this component has no
   authority to enforce budgets or persist records.
+  Application-owned provider bindings are revalidated immediately before provider
+  work. Request accounting finalizes after stream cleanup, preserves cancellation,
+  and marks incomplete observation or uncertain cleanup as uncertain rather than
+  manufacturing a settled value.
 * **Structural boundary around retrieved content.** The pure retrieval-evidence
   compiler revalidates exact built-in snapshots, filters each chunk against the
   application request threshold, and serializes eligible `source` and text strings

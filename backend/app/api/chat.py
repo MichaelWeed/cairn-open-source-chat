@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 
 from fastapi import APIRouter, HTTPException, Request
@@ -24,6 +24,16 @@ from app.api.contracts import (
 from app.providers.base import Provider
 from app.providers.contracts import ProviderStreamEvent
 from app.providers.gemini import GeminiProviderError
+from app.request_accounting import (
+    ProviderAttemptObserver,
+    RequestAccountingError,
+    RequestAccountingSession,
+    RequestAccountingSummary,
+    RequestCompletion,
+    controlled_provider_observer,
+    observer_matches_session,
+    validate_controlled_provider_binding,
+)
 from app.retrieval import (
     DEFAULT_MAX_DISTANCE,
     DEFAULT_TOP_K,
@@ -122,13 +132,21 @@ async def chat_event_stream(
     system_instruction: str = "",
     max_output_tokens: int = 1500,
     max_output_chars: int = 6000,
+    accounting_session: RequestAccountingSession | None = None,
+    provider_observer: ProviderAttemptObserver | None = None,
 ) -> AsyncIterator[ChatEvent]:
+    if provider_observer is not None and (
+        accounting_session is None
+        or (
+            provider_observer is not accounting_session
+            and not observer_matches_session(provider_observer, accounting_session)
+        )
+    ):
+        raise RequestAccountingError from None
     yield StatusEvent(state="retrieving", label="Searching the knowledge base")
     grounding_bundle = None
     try:
-        route = validate_route_authority(
-            await retrieval_route_resolver.resolve_route()
-        )
+        route = validate_route_authority(await retrieval_route_resolver.resolve_route())
         retrieval_request = RetrievalRequest(
             scope=route.scope,
             query=body.message,
@@ -159,9 +177,7 @@ async def chat_event_stream(
             logger.warning("retrieval failed", extra={"retrieval_error_code": error.code})
             grounding_bundle = None
         except Exception:
-            logger.warning(
-                "retrieval failed", extra={"retrieval_error_code": "malformed_result"}
-            )
+            logger.warning("retrieval failed", extra={"retrieval_error_code": "malformed_result"})
             grounding_bundle = None
 
     if grounding_bundle is None:
@@ -175,6 +191,7 @@ async def chat_event_stream(
         yield CitationsEvent(sources=citations)
 
     yield StatusEvent(state="generating", label="Generating a reply")
+    terminal_produced = False
     try:
         provider_request = ProviderGenerationRequest(
             system_instruction=system_instruction,
@@ -184,7 +201,11 @@ async def chat_event_stream(
             max_output_tokens=max_output_tokens,
             max_output_chars=max_output_chars,
         )
-        provider_stream = provider.stream(provider_request)
+        provider_stream = (
+            provider.stream(provider_request)
+            if provider_observer is None
+            else provider.stream(provider_request, observer=provider_observer)
+        )
         provider_events = stream_with_pings(
             provider_stream, ping_interval, max_output_chars=max_output_chars
         )
@@ -192,12 +213,15 @@ async def chat_event_stream(
             async for event in provider_events:
                 yield event
                 if isinstance(event, DoneEvent):
+                    terminal_produced = True
                     return
         finally:
             close = getattr(provider_events, "aclose", None)
             if close is not None:
                 await close()
     except GeminiProviderError as exc:
+        if terminal_produced:
+            raise RequestAccountingError from None
         logger.error(
             "provider stream failed",
             extra={
@@ -210,10 +234,15 @@ async def chat_event_stream(
         )
         yield ErrorEvent(code=exc.code, message=exc.message, retryable=exc.retryable)
         return
-    except Exception as exc:
+    except Exception:
+        if terminal_produced:
+            raise RequestAccountingError from None
         logger.error(
             "provider stream failed",
-            extra={"session_id": body.session_id, "error_type": type(exc).__name__},
+            extra={
+                "event": "provider_stream_failed",
+                "code": "provider_unavailable",
+            },
         )
         yield ErrorEvent(
             code="provider_unavailable",
@@ -228,11 +257,37 @@ async def _single_event_stream(event: ChatEvent) -> AsyncIterator[ChatEvent]:
     yield event
 
 
-async def _formatted_sse_stream(events: AsyncIterator[ChatEvent]) -> AsyncIterator[str]:
+async def _empty_byte_stream() -> AsyncIterator[bytes]:
+    if False:
+        yield b""
+
+
+class _DeliveryTracker:
+    __slots__ = ("completion",)
+
+    def __init__(self) -> None:
+        self.completion: RequestCompletion | None = None
+
+
+def _terminal_completion(event: ChatEvent) -> RequestCompletion | None:
+    if isinstance(event, ErrorEvent):
+        return "error"
+    if isinstance(event, DoneEvent):
+        return "completed" if event.finish_reason == "stop" else event.finish_reason
+    return None
+
+
+async def _formatted_sse_stream(
+    events: AsyncIterator[ChatEvent], tracker: _DeliveryTracker | None = None
+) -> AsyncIterator[str]:
     iterator = events.__aiter__()
     try:
         async for event in iterator:
             yield format_sse(event)
+            if tracker is not None:
+                completion = _terminal_completion(event)
+                if completion is not None:
+                    tracker.completion = completion
     finally:
         close = getattr(iterator, "aclose", None)
         if close is not None:
@@ -240,19 +295,107 @@ async def _formatted_sse_stream(events: AsyncIterator[ChatEvent]) -> AsyncIterat
 
 
 class _ClosingStreamingResponse(StreamingResponse):
+    def __init__(
+        self,
+        events: AsyncIterator[ChatEvent],
+        *,
+        accounting_session: RequestAccountingSession | None = None,
+        summary_owner: Callable[[RequestAccountingSummary], Awaitable[None]] | None = None,
+    ) -> None:
+        self._delivery_tracker: _DeliveryTracker | None = _DeliveryTracker()
+        self._accounting_session = accounting_session
+        self._summary_owner = summary_owner
+        self._disconnect_seen = False
+        super().__init__(
+            _formatted_sse_stream(events, self._delivery_tracker),
+            media_type="text/event-stream",
+        )
+
+    async def listen_for_disconnect(self, receive: object) -> None:
+        while True:
+            message = await receive()  # type: ignore[operator]
+            if message["type"] == "http.disconnect":
+                self._disconnect_seen = True
+                break
+
     async def stream_response(self, send: Send) -> None:
+        primary: BaseException | None = None
+        cleanup_failed = False
         try:
             await super().stream_response(send)
+        except BaseException as error:
+            primary = error
         finally:
             close = getattr(self.body_iterator, "aclose", None)
             if close is not None:
-                await close()
+                try:
+                    await close()
+                except asyncio.CancelledError as error:
+                    cleanup_failed = True
+                    if primary is None:
+                        primary = error
+                except BaseException as error:
+                    cleanup_failed = True
+                    del error
+            del close
+
+        self.body_iterator = _empty_byte_stream()
+
+        session = self._accounting_session
+        owner = self._summary_owner
+        tracker = self._delivery_tracker
+        self._delivery_tracker = None
+        self._accounting_session = None
+        self._summary_owner = None
+        summary: RequestAccountingSummary | None = None
+        accounting_failed = False
+        if session is not None:
+            if cleanup_failed:
+                try:
+                    session.active_cleanup_uncertain()
+                except RequestAccountingError:
+                    pass
+            if isinstance(primary, asyncio.CancelledError) and not self._disconnect_seen:
+                completion: RequestCompletion = "cancelled"
+            elif primary is not None or cleanup_failed:
+                completion = "abandoned"
+            else:
+                completion = "abandoned" if tracker is None else tracker.completion or "abandoned"
+            try:
+                summary = session.finalize(completion)
+            except asyncio.CancelledError as error:
+                if primary is None:
+                    primary = error
+            except BaseException:
+                accounting_failed = True
+        callback_failed = False
+        if summary is not None and owner is not None:
+            try:
+                await owner(summary)
+            except asyncio.CancelledError as error:
+                if primary is None:
+                    primary = error
+            except BaseException:
+                callback_failed = True
+        if primary is not None:
+            failure = primary
+            del self, send, session, owner, tracker, summary, primary
+            raise failure.with_traceback(None)
+        if accounting_failed or callback_failed or cleanup_failed:
+            del self, send, session, owner, tracker, summary
+            raise RequestAccountingError from None
 
 
-def _sse_response(events: AsyncIterator[ChatEvent]) -> StreamingResponse:
+def _sse_response(
+    events: AsyncIterator[ChatEvent],
+    *,
+    accounting_session: RequestAccountingSession | None = None,
+    summary_owner: Callable[[RequestAccountingSummary], Awaitable[None]] | None = None,
+) -> StreamingResponse:
     return _ClosingStreamingResponse(
-        _formatted_sse_stream(events),
-        media_type="text/event-stream",
+        events,
+        accounting_session=accounting_session,
+        summary_owner=summary_owner,
     )
 
 
@@ -278,9 +421,18 @@ async def chat_message(request: Request, body: ChatMessageRequest) -> StreamingR
         return _sse_response(_single_event_stream(event))
 
     provider: Provider = request.app.state.provider
-    retrieval_route_resolver: RetrievalRouteResolver = (
-        request.app.state.retrieval_route_resolver
+    retrieval_route_resolver: RetrievalRouteResolver = request.app.state.retrieval_route_resolver
+    binding = request.app.state.provider_accounting_binding
+    if binding is not None:
+        validate_controlled_provider_binding(settings, provider, binding)
+    accounting_session = request.app.state.request_accounting_factory.create()
+    provider_observer = (
+        None
+        if binding is None
+        else controlled_provider_observer(settings, provider, binding, accounting_session)
     )
+    from app.request_accounting import discard_accounting_summary
+
     return _sse_response(
         chat_event_stream(
             provider,
@@ -292,5 +444,9 @@ async def chat_message(request: Request, body: ChatMessageRequest) -> StreamingR
             system_instruction=settings.system_instruction,
             max_output_tokens=settings.max_output_tokens,
             max_output_chars=settings.max_output_chars,
-        )
+            accounting_session=accounting_session,
+            provider_observer=provider_observer,
+        ),
+        accounting_session=accounting_session,
+        summary_owner=discard_accounting_summary,
     )

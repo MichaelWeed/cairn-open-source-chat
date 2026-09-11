@@ -4,13 +4,15 @@ The Google SDK is imported only by ``create_gemini_provider`` so Cairn's
 default local installation remains free of hosted-provider dependencies.
 """
 
+from __future__ import annotations
+
 import asyncio
 import importlib
 import json
 import math
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import httpx
 
@@ -28,6 +30,9 @@ from app.providers.contracts import (
     ProviderUsageValidationError,
     merge_cumulative_usage,
 )
+
+if TYPE_CHECKING:
+    from app.request_accounting import ProviderAttemptObserver
 
 _RETRY_DELAY_SECONDS = 0.1
 _SAFETY_REASONS = {"SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"}
@@ -133,9 +138,7 @@ def _usage_chunk(
             service_tier=tier,
             usage=ProviderUsage(
                 input_tokens=getattr(metadata, "prompt_token_count", None),
-                cached_input_tokens=getattr(
-                    metadata, "cached_content_token_count", None
-                ),
+                cached_input_tokens=getattr(metadata, "cached_content_token_count", None),
                 output_tokens=getattr(metadata, "candidates_token_count", None),
                 thinking_tokens=getattr(metadata, "thoughts_token_count", None),
                 total_tokens=getattr(metadata, "total_token_count", None),
@@ -239,9 +242,7 @@ class GeminiProvider(Provider):
             separators=(",", ":"),
         )
         contents.append(
-            self._types.Content(
-                role="user", parts=[self._types.Part.from_text(text=current)]
-            )
+            self._types.Content(role="user", parts=[self._types.Part.from_text(text=current)])
         )
         return contents
 
@@ -255,32 +256,102 @@ class GeminiProvider(Provider):
         )
 
     async def stream(
-        self, request: ProviderGenerationRequest
+        self,
+        request: ProviderGenerationRequest,
+        *,
+        observer: ProviderAttemptObserver | None = None,
     ) -> AsyncIterator[ProviderStreamEvent]:
-        for attempt_count in range(1, self._max_retries + 2):
+        from app.request_accounting import AttemptIdentity, RequestAccountingError
+
+        client = self._client
+        types_module = self._types
+        model = self._model
+        timeout_seconds = self._timeout_seconds
+        timeout_milliseconds = self._timeout_milliseconds
+        max_retries = self._max_retries
+        sleep = self._sleep
+
+        for attempt_count in range(1, max_retries + 2):
+            identity = AttemptIdentity(
+                provider="gemini",
+                model=model,
+                provider_attempt=attempt_count,
+            )
             observed_item = False
             cumulative_usage: ProviderUsageChunk | None = None
             iterator: object | None = None
             failure: _NormalizedFailure | None = None
-            caller_exit = False
+            caller_cancelled = False
+            generator_exit = False
+            started = False
+            cleanup_uncertain = False
+            cleanup_cancelled = False
             try:
-                async with asyncio.timeout(self._timeout_seconds):
-                    iterator = await self._client.models.generate_content_stream(
-                        model=self._model,
-                        contents=self._contents(request),
-                        config=self._config(request),
+                if observer is not None:
+                    try:
+                        observer.attempt_started(identity)
+                    except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
+                        raise
+                    except BaseException:
+                        raise RequestAccountingError from None
+                    started = True
+                contents = [
+                    types_module.Content(
+                        role="model" if turn.role == "assistant" else "user",
+                        parts=[types_module.Part.from_text(text=turn.content)],
+                    )
+                    for turn in request.history
+                ]
+                current = json.dumps(
+                    {
+                        "retrieved_support_context": request.retrieved_context,
+                        "visitor_question": request.message,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                contents.append(
+                    types_module.Content(
+                        role="user",
+                        parts=[types_module.Part.from_text(text=current)],
+                    )
+                )
+                config = types_module.GenerateContentConfig(
+                    system_instruction=request.system_instruction,
+                    temperature=0.2,
+                    max_output_tokens=request.max_output_tokens,
+                    thinking_config=types_module.ThinkingConfig(thinking_level="low"),
+                    http_options=types_module.HttpOptions(timeout=timeout_milliseconds),
+                )
+                async with asyncio.timeout(timeout_seconds):
+                    iterator = await client.models.generate_content_stream(
+                        model=model,
+                        contents=contents,
+                        config=config,
                     )
                     pending_content = ""
                     async for item in iterator:
                         observed_item = True
                         usage = _usage_chunk(
                             item,
-                            model=self._model,
+                            model=model,
                             provider_attempt=attempt_count,
                             current=cumulative_usage,
                         )
                         if usage is not None:
                             cumulative_usage = usage
+                            if observer is not None:
+                                try:
+                                    observer.usage_observed(usage)
+                                except (
+                                    KeyboardInterrupt,
+                                    SystemExit,
+                                    asyncio.CancelledError,
+                                    RequestAccountingError,
+                                ):
+                                    raise
+                                except BaseException:
+                                    raise RequestAccountingError from None
                             yield usage
                         if _is_safety_block(item):
                             raise _NormalizedFailure("guardrail_block", False)
@@ -293,18 +364,14 @@ class GeminiProvider(Provider):
                                 and pending_content.strip()
                                 and len(pending_content) <= CHUNK_MAX_CHARS
                             ):
-                                ready, pending_content = _split_complete_chunks(
-                                    pending_content
-                                )
+                                ready, pending_content = _split_complete_chunks(pending_content)
                                 for chunk in ready:
                                     yield chunk
                                 if pending_content.strip():
                                     yield _provider_chunk(pending_content)
                                     pending_content = ""
                             pending_content += content
-                            ready, pending_content = _split_complete_chunks(
-                                pending_content
-                            )
+                            ready, pending_content = _split_complete_chunks(pending_content)
                             for chunk in ready:
                                 yield chunk
 
@@ -314,8 +381,13 @@ class GeminiProvider(Provider):
                     if not pending_content.strip():
                         raise _NormalizedFailure("provider_unavailable", False)
                     yield _provider_chunk(pending_content)
-            except (asyncio.CancelledError, GeneratorExit):
-                caller_exit = True
+            except asyncio.CancelledError:
+                caller_cancelled = True
+                raise
+            except GeneratorExit:
+                generator_exit = True
+                raise
+            except RequestAccountingError:
                 raise
             except Exception as exc:
                 failure = _normalize_exception(exc)
@@ -332,18 +404,58 @@ class GeminiProvider(Provider):
                         and cleanup_task.cancelling() > cancelling_before_cleanup
                     )
                     if cancellation_arrived:
+                        cleanup_uncertain = True
+                        cleanup_cancelled = True
                         raise
-                    if failure is None and not caller_exit:
+                    cleanup_uncertain = True
+                    if failure is None and not caller_cancelled and not generator_exit:
                         failure = _NormalizedFailure("provider_unavailable", False)
                 except Exception:
-                    if failure is None and not caller_exit:
+                    cleanup_uncertain = True
+                    if failure is None and not caller_cancelled and not generator_exit:
                         failure = _NormalizedFailure("provider_unavailable", False)
+                finally:
+                    if observer is not None and started:
+                        try:
+                            if cleanup_uncertain:
+                                observer.attempt_uncertain(identity, "cleanup_uncertain")
+                            elif caller_cancelled:
+                                observer.attempt_finished(identity, "cancelled")
+                            elif generator_exit:
+                                observer.attempt_uncertain(identity, "finish_missing")
+                        except BaseException:
+                            if (
+                                not caller_cancelled
+                                and not generator_exit
+                                and not cleanup_cancelled
+                            ):
+                                raise RequestAccountingError from None
 
             if failure is None:
+                if observer is not None and started:
+                    try:
+                        observer.attempt_finished(identity, "completed")
+                    except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
+                        raise
+                    except BaseException:
+                        raise RequestAccountingError from None
                 return
 
-            if failure.retryable and not observed_item and attempt_count <= self._max_retries:
-                await self._sleep(_RETRY_DELAY_SECONDS)
+            if observer is not None and started and not cleanup_uncertain:
+                try:
+                    observer.attempt_finished(identity, "error")
+                except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
+                    raise
+                except BaseException:
+                    raise RequestAccountingError from None
+
+            if (
+                not cleanup_uncertain
+                and failure.retryable
+                and not observed_item
+                and attempt_count <= max_retries
+            ):
+                await sleep(_RETRY_DELAY_SECONDS)
                 continue
             raise GeminiProviderError(
                 code=failure.code,

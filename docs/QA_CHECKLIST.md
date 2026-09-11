@@ -56,6 +56,10 @@ and injected lifecycle-exact profiles. They verify exact byte/model/name limits,
 one shared Ollama catalog call, one selected route probe, cancellation, ownership,
 and absence of raw model, endpoint, scope, error, or credential data. Validation
 never contacts a live provider or store.
+The focused request-accounting matrix also verifies exact 0/1/1-to-2 attempt policy,
+cumulative usage, immutable price snapshots, retry and cleanup uncertainty,
+final-send/callback ordering, cancellation identity, no public usage events, and no
+live provider or store access.
 
 `backend/tests/` covers this in-process; these rows exist because the real
 ASGI server + real HTTP transport can behave differently than `TestClient`

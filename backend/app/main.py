@@ -35,6 +35,13 @@ from app.readiness import (
     ReadinessEvaluator,
     public_readiness,
 )
+from app.request_accounting import (
+    _APPLICATION_BINDING_AUTHORITY,
+    RequestAccountingError,
+    RequestAccountingSessionFactory,
+    bind_application_owned_provider,
+    provider_attempt_policy,
+)
 from app.retrieval import LocalRetrievalAdapter
 from app.retrieval_contracts import (
     DistanceMeasure,
@@ -230,6 +237,7 @@ def create_app(
     retrieval_route_resolver: RetrievalRouteResolver | None = None,
     ollama_catalog_probe: OllamaCatalogReadinessProbe | None = None,
     budget_readiness_probe: BudgetReadinessProbe | None = None,
+    request_accounting_factory: RequestAccountingSessionFactory | None = None,
 ) -> FastAPI:
     settings = validated_settings_snapshot(settings)
     configure_logging()
@@ -241,21 +249,48 @@ def create_app(
         retrieval_route_resolver, RetrievalRouteResolver
     ):
         raise RetrievalError("invalid_request") from None
+    accounting_policy = provider_attempt_policy(settings)
+    if request_accounting_factory is not None:
+        if (
+            provider is not None
+            or type(request_accounting_factory) is not RequestAccountingSessionFactory
+        ):
+            del provider, request_accounting_factory
+            raise RequestAccountingError from None
+        factory_matches = False
+        try:
+            factory_matches = request_accounting_factory.matches_policy(accounting_policy)
+        except RequestAccountingError:
+            pass
+        if not factory_matches:
+            del request_accounting_factory
+            raise RequestAccountingError from None
+        selected_accounting_factory = request_accounting_factory
+    else:
+        selected_accounting_factory = RequestAccountingSessionFactory(policy=accounting_policy)
     owns_provider = provider is None
     selected_provider = _default_provider(settings) if provider is None else provider
+    provider_accounting_binding = None
+    if owns_provider:
+        try:
+            provider_accounting_binding = bind_application_owned_provider(
+                settings,
+                selected_provider,
+                authority=_APPLICATION_BINDING_AUTHORITY,
+            )
+        except RequestAccountingError:
+            # Test-only substituted defaults remain usable in controls-disabled
+            # composition, but never receive accounting authority.
+            provider_accounting_binding = None
     selected_scope: RetrievalScope
     selected_measure: DistanceMeasure
     selected_max_distance: float
     if retrieval_adapter is None and settings.retrieval_backend == "firestore":
         selected_scope, selected_measure, selected_max_distance = _firestore_policy(settings)
     else:
-        selected_scope = (
-            retrieval_scope if retrieval_scope is not None else LocalActiveScope()
-        )
+        selected_scope = retrieval_scope if retrieval_scope is not None else LocalActiveScope()
         selected_measure = (
-            retrieval_distance_measure
-            if retrieval_distance_measure is not None
-            else "squared_l2"
+            retrieval_distance_measure if retrieval_distance_measure is not None else "squared_l2"
         )
         if type(selected_measure) is not str or selected_measure not in {
             "cosine",
@@ -309,9 +344,7 @@ def create_app(
             uses_ollama_catalog = (
                 settings.provider == "ollama" or settings.embedding_provider == "ollama"
             )
-            selected_catalog_probe = (
-                ollama_catalog_probe if uses_ollama_catalog else None
-            )
+            selected_catalog_probe = ollama_catalog_probe if uses_ollama_catalog else None
             if uses_ollama_catalog and selected_catalog_probe is None:
                 owned_catalog_probe = OllamaCatalogProbe.application_owned(
                     base_url=settings.ollama_base_url
@@ -367,9 +400,7 @@ def create_app(
                 ),
                 embedding_name=settings.embedding_provider,
                 embedding_model=(
-                    settings.embedding_model
-                    if settings.embedding_provider == "ollama"
-                    else ""
+                    settings.embedding_model if settings.embedding_provider == "ollama" else ""
                 ),
                 gemini_probe=(
                     cast(GeminiReadinessProbe, selected_provider)
@@ -429,6 +460,8 @@ def create_app(
     app = FastAPI(title="Cairn", lifespan=lifespan)
     app.state.settings = settings
     app.state.provider = selected_provider
+    app.state.provider_accounting_binding = provider_accounting_binding
+    app.state.request_accounting_factory = selected_accounting_factory
     app.state.retrieval_scope = selected_scope
     app.state.retrieval_distance_measure = selected_measure
     app.state.retrieval_max_distance = selected_max_distance

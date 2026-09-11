@@ -148,6 +148,10 @@ usage records internally. The chat endpoint consumes and filters those records s
 the frozen SSE payload is unchanged; usage is not persisted. Pure cost helpers can
 apply an operator-supplied, hash-identified price snapshot without owning a price
 catalog, budget policy, or sink.
+For each admitted request, a lexical owner captures zero Echo attempts, one Ollama
+attempt, or one to two Gemini attempts. It finalizes only after the provider iterator,
+SSE formatter, and response body have shut down. Cleanup ambiguity is recorded as
+uncertain, and the private summary is discarded by the current no-op owner.
 
 Errors ride the SSE stream rather than the HTTP status code — a rate-limited
 request returns HTTP 200 with a `rate_limited` error event. This surprises people

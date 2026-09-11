@@ -2,16 +2,17 @@ import asyncio
 import gc
 import weakref
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from starlette.types import Message, Scope, Send
 
-from app.api.chat import _sse_response, chat_event_stream, stream_with_pings
+from app.api.chat import _single_event_stream, _sse_response, chat_event_stream, stream_with_pings
 from app.api.contracts import (
     RETRIEVED_CONTEXT_MAX_CHARS,
     ChatEvent,
     ChatMessageRequest,
+    DoneEvent,
     ProviderGenerationRequest,
 )
 from app.corpus_lifecycle import (
@@ -41,6 +42,11 @@ from app.providers.contracts import (
     ProviderUsageChunk,
 )
 from app.providers.gemini import GeminiProviderError
+from app.request_accounting import (
+    RequestAccountingError,
+    RequestAccountingSession,
+    RequestAccountingSummary,
+)
 from app.retrieval import DEFAULT_MAX_DISTANCE, LocalRetrievalAdapter
 from app.retrieval_contracts import (
     ExactCorpusReference,
@@ -101,7 +107,7 @@ class _LifecycleProvider(Provider):
         self.closed = False
         self.never_finishes = asyncio.Event()
 
-    async def stream(
+    async def stream(  # type: ignore[override]
         self, request: ProviderGenerationRequest
     ) -> AsyncIterator[ProviderStreamEvent]:
         try:
@@ -112,25 +118,23 @@ class _LifecycleProvider(Provider):
 
 
 class _SensitiveInvalidProvider(Provider):
-    async def stream(
+    async def stream(  # type: ignore[override]
         self, request: ProviderGenerationRequest
     ) -> AsyncIterator[ProviderStreamEvent]:
         yield ProviderTextChunk(delta="provider-response-sentinel\x00")
 
 
 class _NormalizedGeminiFailureProvider(Provider):
-    async def stream(
+    async def stream(  # type: ignore[override]
         self, request: ProviderGenerationRequest
     ) -> AsyncIterator[ProviderStreamEvent]:
         if False:
             yield ProviderTextChunk(delta="unreachable")
-        raise GeminiProviderError(
-            code="rate_limited", retryable=True, attempt_count=2
-        )
+        raise GeminiProviderError(code="rate_limited", retryable=True, attempt_count=2)
 
 
 class _UsageThenGuardrailProvider(Provider):
-    async def stream(
+    async def stream(  # type: ignore[override]
         self, request: ProviderGenerationRequest
     ) -> AsyncIterator[ProviderStreamEvent]:
         del request
@@ -140,9 +144,7 @@ class _UsageThenGuardrailProvider(Provider):
             provider_attempt=1,
             usage=ProviderUsage(input_tokens=17, total_tokens=17),
         )
-        raise GeminiProviderError(
-            code="guardrail_block", retryable=False, attempt_count=1
-        )
+        raise GeminiProviderError(code="guardrail_block", retryable=False, attempt_count=1)
 
 
 async def _slow_source() -> AsyncIterator[ProviderStreamEvent]:
@@ -405,6 +407,258 @@ async def test_sse_response_disconnect_cancellation_closes_provider() -> None:
     assert provider.closed is True
 
 
+def _empty_accounting_session() -> RequestAccountingSession:
+    from datetime import date
+
+    return RequestAccountingSession(
+        attempt_date=date(2026, 9, 10),
+        price_snapshots=(),
+        max_attempts=0,
+    )
+
+
+def _traceback_local_ids(error: BaseException) -> set[int]:
+    found: set[int] = set()
+    traceback = error.__traceback__
+    while traceback is not None:
+        if traceback.tb_frame.f_code.co_filename.endswith("app/api/chat.py"):
+            found.update(id(value) for value in traceback.tb_frame.f_locals.values())
+        traceback = traceback.tb_next
+    return found
+
+
+async def test_response_finalizes_after_terminal_send_and_invokes_owner_once() -> None:
+    session = _empty_accounting_session()
+    summaries: list[RequestAccountingSummary] = []
+    sends: list[Message] = []
+
+    async def owner(summary: RequestAccountingSummary) -> None:
+        assert sends[-1] == {
+            "type": "http.response.body",
+            "body": b"",
+            "more_body": False,
+        }
+        summaries.append(summary)
+
+    async def send(message: Message) -> None:
+        sends.append(message)
+
+    response = _sse_response(
+        _single_event_stream(DoneEvent(finish_reason="stop")),
+        accounting_session=session,
+        summary_owner=owner,
+    )
+    await response.stream_response(cast(Send, send))
+
+    assert len(summaries) == 1
+    assert summaries[0].request_completion == "completed"
+    assert summaries[0].attempts == ()
+    assert session.finalize("completed") is summaries[0]
+
+
+class _CloseFailureBody:
+    def __init__(self, close_error: BaseException, *, yield_body: bool = False) -> None:
+        self.close_error = close_error
+        self.yield_body = yield_body
+        self.yielded = False
+        self.close_calls = 0
+
+    def __aiter__(self) -> "_CloseFailureBody":
+        return self
+
+    async def __anext__(self) -> bytes:
+        if self.yield_body and not self.yielded:
+            self.yielded = True
+            return b"frame"
+        raise StopAsyncIteration
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
+        raise self.close_error
+
+
+async def test_close_window_cancellation_is_primary_and_summary_is_frozen() -> None:
+    cancellation = asyncio.CancelledError("close-cancel-canary")
+    body = _CloseFailureBody(cancellation)
+    session = _empty_accounting_session()
+    summaries: list[RequestAccountingSummary] = []
+
+    async def send(message: Message) -> None:
+        del message
+
+    async def owner(summary: RequestAccountingSummary) -> None:
+        summaries.append(summary)
+
+    response = _sse_response(
+        _single_event_stream(DoneEvent(finish_reason="stop")),
+        accounting_session=session,
+        summary_owner=owner,
+    )
+    response.body_iterator = body
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await response.stream_response(cast(Send, send))
+    assert caught.value is cancellation
+    assert body.close_calls == 1
+    assert len(summaries) == 1
+    assert summaries[0].request_completion == "cancelled"
+
+
+async def test_cleanup_only_failure_is_fixed_after_abandoned_summary() -> None:
+    body = _CloseFailureBody(RuntimeError("CLOSE-FAILURE-CANARY"))
+    session = _empty_accounting_session()
+    summaries: list[RequestAccountingSummary] = []
+
+    async def send(message: Message) -> None:
+        del message
+
+    async def owner(summary: RequestAccountingSummary) -> None:
+        summaries.append(summary)
+
+    response = _sse_response(
+        _single_event_stream(DoneEvent(finish_reason="stop")),
+        accounting_session=session,
+        summary_owner=owner,
+    )
+    response.body_iterator = body
+    with pytest.raises(RequestAccountingError) as caught:
+        await response.stream_response(cast(Send, send))
+    assert "CLOSE-FAILURE-CANARY" not in str(caught.value)
+    assert caught.value.__context__ is None
+    assert body.close_calls == 1
+    assert [summary.request_completion for summary in summaries] == ["abandoned"]
+
+
+async def test_send_failure_precedes_cancellation_during_close() -> None:
+    cancellation = asyncio.CancelledError("close-cancel-canary")
+    body = _CloseFailureBody(cancellation, yield_body=True)
+    primary = OSError("send-primary")
+    session = _empty_accounting_session()
+    summaries: list[RequestAccountingSummary] = []
+
+    async def send(message: Message) -> None:
+        if message.get("type") == "http.response.body" and message.get("body") == b"frame":
+            raise primary
+
+    async def owner(summary: RequestAccountingSummary) -> None:
+        summaries.append(summary)
+
+    response = _sse_response(
+        _single_event_stream(DoneEvent(finish_reason="stop")),
+        accounting_session=session,
+        summary_owner=owner,
+    )
+    response.body_iterator = body
+    with pytest.raises(OSError) as caught:
+        await response.stream_response(cast(Send, send))
+    assert caught.value is primary
+    assert body.close_calls == 1
+    assert [summary.request_completion for summary in summaries] == ["abandoned"]
+
+
+async def test_final_empty_send_failure_finalizes_abandoned_once() -> None:
+    primary = OSError("FINAL-SEND-CANARY")
+    session = _empty_accounting_session()
+    summaries: list[RequestAccountingSummary] = []
+    final_send_calls = 0
+
+    async def send(message: Message) -> None:
+        nonlocal final_send_calls
+        if message.get("type") == "http.response.body" and not message.get("more_body", False):
+            final_send_calls += 1
+            raise primary
+
+    async def owner(summary: RequestAccountingSummary) -> None:
+        summaries.append(summary)
+
+    response = _sse_response(
+        _single_event_stream(DoneEvent(finish_reason="stop")),
+        accounting_session=session,
+        summary_owner=owner,
+    )
+    tracker = cast(Any, response)._delivery_tracker
+    with pytest.raises(OSError) as caught:
+        await response.stream_response(cast(Send, send))
+    assert caught.value is primary
+    assert final_send_calls == 1
+    assert [summary.request_completion for summary in summaries] == ["abandoned"]
+    retained = _traceback_local_ids(caught.value)
+    assert id(session) not in retained
+    assert id(summaries[0]) not in retained
+    assert id(owner) not in retained
+    assert id(tracker) not in retained
+
+
+async def test_owner_ordinary_failure_is_fixed_after_summary_freezes() -> None:
+    session = _empty_accounting_session()
+    seen: list[RequestAccountingSummary] = []
+
+    async def send(message: Message) -> None:
+        del message
+
+    async def owner(summary: RequestAccountingSummary) -> None:
+        seen.append(summary)
+        raise RuntimeError("OWNER-CANARY")
+
+    response = _sse_response(
+        _single_event_stream(DoneEvent(finish_reason="stop")),
+        accounting_session=session,
+        summary_owner=owner,
+    )
+    with pytest.raises(RequestAccountingError) as caught:
+        await response.stream_response(cast(Send, send))
+    assert "OWNER-CANARY" not in str(caught.value)
+    assert caught.value.__context__ is None
+    assert len(seen) == 1
+    assert session.finalize("completed") is seen[0]
+
+
+async def test_owner_cancellation_is_preserved_after_summary_freezes() -> None:
+    cancellation = asyncio.CancelledError("OWNER-CANCEL-CANARY")
+    session = _empty_accounting_session()
+    seen: list[RequestAccountingSummary] = []
+
+    async def send(message: Message) -> None:
+        del message
+
+    async def owner(summary: RequestAccountingSummary) -> None:
+        seen.append(summary)
+        raise cancellation
+
+    response = _sse_response(
+        _single_event_stream(DoneEvent(finish_reason="stop")),
+        accounting_session=session,
+        summary_owner=owner,
+    )
+    tracker = cast(Any, response)._delivery_tracker
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await response.stream_response(cast(Send, send))
+    assert caught.value is cancellation
+    assert len(seen) == 1
+    assert session.finalize("completed") is seen[0]
+    retained = _traceback_local_ids(caught.value)
+    assert id(session) not in retained
+    assert id(seen[0]) not in retained
+    assert id(owner) not in retained
+    assert id(tracker) not in retained
+
+
+async def test_legacy_provider_is_called_without_observer_keyword() -> None:
+    provider = _CountingProvider()
+    session = _empty_accounting_session()
+    events = [
+        event
+        async for event in chat_event_stream(
+            provider,
+            ChatMessageRequest(session_id="s1", message="hi"),
+            _static_route(_grounded_adapter()),
+            accounting_session=session,
+            provider_observer=None,
+        )
+    ]
+    assert provider.calls == 1
+    assert events[-1].type == "done"
+
+
 async def test_provider_failure_log_excludes_provider_content(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -492,9 +746,7 @@ class _RouteVectorClient:
         if not blocked:
             self.release.set()
 
-    async def vector_get(
-        self, request: FirestoreVectorQuery
-    ) -> tuple[FirestoreVectorRow, ...]:
+    async def vector_get(self, request: FirestoreVectorQuery) -> tuple[FirestoreVectorRow, ...]:
         self.calls.append(request)
         self.entered.set()
         await self.release.wait()
@@ -581,9 +833,7 @@ class _RouteTrustPolicy:
     def __init__(self) -> None:
         self.verifier = _RouteAttestationVerifier()
 
-    def verifier_for(
-        self, identity: AttestationIdentity
-    ) -> _RouteAttestationVerifier | None:
+    def verifier_for(self, identity: AttestationIdentity) -> _RouteAttestationVerifier | None:
         if (identity.algorithm_id, identity.key_id) != (
             self.verifier.algorithm_id,
             self.verifier.key_id,
@@ -741,9 +991,7 @@ class _RouteCandidateVerifier:
             verifier.key_id,
         )
         self.calls.append(corpus)
-        return VerifiedCandidateEvidence.model_validate(
-            _route_evidence(corpus).model_dump()
-        )
+        return VerifiedCandidateEvidence.model_validate(_route_evidence(corpus).model_dump())
 
 
 class _RouteAdapterFactory:
@@ -1063,7 +1311,7 @@ class _CountingProvider(Provider):
         self.last_request: ProviderGenerationRequest | None = None
         self.requests: list[ProviderGenerationRequest] = []
 
-    async def stream(
+    async def stream(  # type: ignore[override]
         self, request: ProviderGenerationRequest
     ) -> AsyncIterator[ProviderStreamEvent]:
         self.calls += 1
@@ -1156,9 +1404,7 @@ async def test_chat_does_not_close_or_retain_route_adapter(outcome: str) -> None
         close_calls=close_calls,
     )
     adapter_reference = weakref.ref(adapter)
-    resolver = _OneShotResolver(
-        ResolvedRetrievalRoute(scope=LocalActiveScope(), adapter=adapter)
-    )
+    resolver = _OneShotResolver(ResolvedRetrievalRoute(scope=LocalActiveScope(), adapter=adapter))
 
     events = [
         event
@@ -1192,9 +1438,7 @@ async def test_cancellation_does_not_close_or_retain_route_adapter() -> None:
     close_calls: list[str] = []
     adapter = _RetentionProbeAdapter(result, blocked=True, close_calls=close_calls)
     adapter_reference = weakref.ref(adapter)
-    resolver = _OneShotResolver(
-        ResolvedRetrievalRoute(scope=LocalActiveScope(), adapter=adapter)
-    )
+    resolver = _OneShotResolver(ResolvedRetrievalRoute(scope=LocalActiveScope(), adapter=adapter))
 
     async def collect(active_resolver: _OneShotResolver = resolver) -> None:
         async for _ in chat_event_stream(
@@ -1221,7 +1465,7 @@ class _UsageAccountingProbeProvider(Provider):
         self.calls = 0
         self.usage_events = 0
 
-    async def stream(
+    async def stream(  # type: ignore[override]
         self, request: ProviderGenerationRequest
     ) -> AsyncIterator[ProviderStreamEvent]:
         del request
@@ -1401,9 +1645,7 @@ async def test_retrieval_refusal_skips_provider_and_internal_usage_accounting() 
             provider,
             ChatMessageRequest(session_id="s1", message="hi"),
             _static_route(
-                _StaticAdapter(
-                    _result_with_context_length(RETRIEVED_CONTEXT_MAX_CHARS + 1)
-                )
+                _StaticAdapter(_result_with_context_length(RETRIEVED_CONTEXT_MAX_CHARS + 1))
             ),
         )
     ]
@@ -1632,9 +1874,7 @@ async def test_structurally_malformed_adapter_result_uses_malformed_result_code(
         async for event in chat_event_stream(
             provider,
             ChatMessageRequest(session_id="s1", message="hi"),
-            _static_route(
-                _MalformedResultAdapter(_result_with_context_length(1_000))
-            ),
+            _static_route(_MalformedResultAdapter(_result_with_context_length(1_000))),
         )
     ]
     assert events[-1].finish_reason == "refused"  # type: ignore[union-attr]
