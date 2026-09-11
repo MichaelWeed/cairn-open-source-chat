@@ -8,7 +8,9 @@
 - Branch: `mara/KAN-45b-active-corpus-routing`
 - Worktree: `/Users/johndoe/Projects/Cairn/.claude/worktrees/kan45b-active-corpus-routing`
 - Exact base: `dbc7d77d17bea366cce41e1726a469229a491d39`
-- Final commit: the single normal implementation commit containing this report; exact object ID is returned to control after commit
+- Implementation commit: `a8cb07eed23601d9d662284893236316ab17dda0`
+- Final commit: the normal post-review repair commit; exact object ID is returned to
+  control after commit
 - Model/context telemetry: unavailable
 
 ## Changed files
@@ -154,6 +156,18 @@ guard now handles that missing parent, includes a direct regression, and preserv
 the ADC denial when installed. The corrected default profile is green below. This was
 a test-only portability repair; runtime source did not change.
 
+After the implementation commit, independent full-diff review found that
+`_InjectedAdapter.check_readiness` had been indented after an unconditional helper
+return, making it unreachable. The method was moved onto `_InjectedAdapter` and the
+dead block was removed without changing runtime source. Post-repair evidence is:
+
+- `uv run --locked --extra gemini --extra firestore pytest -q tests/test_app.py`:
+  exit `0`; 13 passed, 1 upstream warning, 0.89 s pytest time.
+- `uv run --locked pytest -q tests/test_retrieval_route.py tests/test_retrieval_conformance.py tests/test_chat_stream.py tests/test_chat_endpoint.py tests/test_app.py tests/test_config.py tests/test_capabilities.py tests/test_live_startup.py`:
+  exit `0`; 367 passed, 1 upstream warning, 0.83 s pytest time.
+- `make lint-backend`: exit `0`; Ruff passed and mypy reported success across 78
+  source files, 0.90 s observed command time.
+
 ## Focused verification
 
 All commands ran from `backend/` unless noted.
@@ -204,14 +218,16 @@ Control serialized and observed every required repository gate on the frozen tre
 - No dependency was added and no install outside the locked repository environment
   occurred.
 - The only deviations were adversarial test-matrix expansion requested by independent
-  review and the corrected optional-package availability probe described above. Both
-  stayed inside the accepted component and file allowlist.
+  review, the corrected optional-package availability probe, and the post-review
+  unreachable test-helper repair described above. All stayed inside the accepted
+  component and file allowlist.
 
 ## Reviewer focus and next action
 
 Review the private-authority bridge at route return and immediately before readiness
 or retrieval, lock-before-verifier ordering, exact 11-field M8 projection, one-entry
 cache rotation invariants, actual A-to-B in-flight separation, content-free exception
-construction, and caller ownership. After all control-owned gates are exit `0`, create
-the single normal commit and send the exact clean candidate for independent full-diff
-acceptance. Do not push or merge from this lane.
+construction, and caller ownership. All control-owned gates are exit `0`. The
+implementation commit is followed by one normal narrow repair commit, after which the
+clean candidate returns for independent full-diff acceptance. Do not push or merge from
+this lane.

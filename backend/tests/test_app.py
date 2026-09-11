@@ -164,6 +164,14 @@ class _InjectedAdapter:
             chunks=(),
         )
 
+    async def check_readiness(self, scope: RetrievalScope) -> RetrievalProbe:
+        return RetrievalProbe(
+            scope=scope,
+            reachable=True,
+            store_ready=True,
+            exact_version_ready=False,
+        )
+
 
 class _CloseTrackedActiveStateResolver:
     def __init__(self) -> None:
@@ -237,14 +245,6 @@ def _caller_owned_lifecycle_resolver() -> tuple[
         adapter_factory=_UnusedExactAdapterFactory(),
     )
     return resolver, active, candidate
-
-    async def check_readiness(self, scope: RetrievalScope) -> RetrievalProbe:
-        return RetrievalProbe(
-            scope=scope,
-            reachable=True,
-            store_ready=True,
-            exact_version_ready=False,
-        )
 
 
 def test_injected_route_resolver_is_caller_owned_and_selected_once(tmp_path: Path) -> None:
