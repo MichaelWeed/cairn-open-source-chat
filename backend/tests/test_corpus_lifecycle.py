@@ -720,7 +720,7 @@ def test_public_and_local_compatibility_surfaces_match_accepted_base_bytes(
         "backend/app/capabilities.json": (
             # KAN-44a changes only operations.hosted_readiness, whose exact
             # one-leaf transition is independently frozen in test_capabilities.py.
-            "0ad496e6484d38699a60ef2f357f527324ef3cc70cfb91cb21351da993912b69"
+            "f290f17d31cab2bcfc5bd94768056ef848b6aa4ad8fd765756327a6bbb4ec115"
         ),
         "backend/app/capabilities.py": (
             "65f70f760e7c64afb5835e05cb3a1058061b9cd87909aad62fc99b92518a679a"

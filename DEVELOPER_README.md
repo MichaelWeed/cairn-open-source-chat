@@ -393,6 +393,68 @@ No core changes required; the registry injects enabled tool schemas into the pro
 * Structured JSON logs use fixed typed application variants and mechanically omit
   message bodies, identities, paths, endpoints, credentials, exceptions, and
   arbitrary extras. Malformed or external records serialize as `external_log`.
+* Deployment-wide public controls are opt-in and development-only in this tree.
+  Enabling them requires every blank `PUBLIC_*` control value, a strict 32-byte
+  base64url digest key, and an injected atomic store. The controller combines keyed
+  IP/session buckets, bounded FIFO admission, fenced 30-600 second leases (renewed
+  no faster than 10 seconds, at most 60 logical ticks), and Decimal UTC hour/day
+  application budgets. Calls time out at five seconds with at most one same-ID
+  replay; queue polls use an absolute one-second cadence while preserving 15-second
+  pings. The included in-memory store is conformance-only, so production fails
+  closed without a separate adapter. This is not a vendor billing cap; configure
+  provider-side quotas and alerts separately.
+
+  `TRUSTED_PROXY_CIDRS` is empty by default, so forwarding headers are ignored.
+  For a configured trusted immediate peer, Cairn accepts one bounded
+  `X-Forwarded-For` chain and walks it right-to-left through trusted hops; the first
+  untrusted canonical IP is the client. Duplicate or malformed forwarding is an
+  invalid request, while missing or malformed immediate-peer transport state is an
+  internal failure. Origin/CORS remains a browser embedding control and does not
+  authenticate direct clients. Rotate the digest key only with an operator-planned
+  expiry of old keyed state; rotation changes every stored IP/session digest.
+
+  The shared store must atomically enforce limiter expiry/cardinality, global
+  concurrency, FIFO queueing, lease recovery, UTC budget windows, and expired-only
+  pruning across all application instances. It is borrowed: Cairn never invokes its
+  close, async-close, or context hooks. A store call has a fixed five-second
+  deadline; only a timeout or retryable unknown mutation gets one byte-identical,
+  same-operation-ID replay. Queue polling starts on an absolute positive one-second
+  cadence, permits 15-second ping events, and is capped at
+  `P = 0 if W == 0 else ceil(W / 1)`; each ticket expires exactly `W + 10`
+  seconds after creation. A rate record becomes eligible for removal only after it
+  is inactive and has fully refilled. Renewal is at least ten seconds apart, is
+  separately identified on each logical tick, and stops after exactly 60 ticks.
+  Uncertain acquisition or renewal stops protected work and fails closed.
+
+  Store sizing is exact: `A = PUBLIC_MAX_ACTIVE_REQUESTS`,
+  `Q = PUBLIC_MAX_QUEUED_REQUESTS`, `R = 60`,
+  `C_min = 1 + A * (R + 2) + Q * (P + 2)`,
+  `S = 4 + 5 * A + 3 * Q`, `K_min = S + C_min`, and
+  `C_max = PUBLIC_CONTROL_MAX_KEYS - S`. Receipts expire exactly at the greater of
+  600 seconds, rate-state TTL, ticket TTL, and lease TTL. Capacity is reserved for
+  live lifecycle receipts; nothing is evicted early or by LRU.
+
+  Admission reserves the configured per-attempt amount for every possible provider
+  attempt before work begins. Priced settled attempts commit observed cost;
+  unpriced, incomplete, retried, abandoned, or cleanup-uncertain work retains the
+  conservative reservation. Provider billing may continue after cancellation.
+  No prices or budget values are built in. Operators must separately set provider
+  quotas and alerts. Existing development deployments can roll back by disabling
+  the feature; production cannot disable it or silently translate the four legacy
+  rate settings, and must explicitly supply the complete policy plus a conforming
+  non-memory adapter.
+
+  Public policy terminals retain the existing wire contract: the two rate messages
+  are "Too many requests from this network." and "Too many requests for this
+  session."; budget is "The assistant is temporarily unavailable. Please try again
+  later.", concurrency is "The assistant is busy. Please try again shortly.", and
+  trusted-proxy-invalid is "The request could not be processed." A queued policy
+  denial preserves any already-sent absolute-schedule pings, then sends that one
+  terminal denial. Before any event,
+  internal failure returns only one internal
+  terminal. After nonterminal events, already-sent bytes remain and one internal
+  terminal follows while writable. After a terminal event or the last send, no new
+  event is manufactured; known resources are reconciled conservatively.
 * Backup = copy the SQLite metadata database and
   `CHROMA_PATH/cairn-vectors-v1.sqlite3` (volume-mounted).
 
@@ -406,7 +468,7 @@ the SQLite connection inside this one process;
 it does not make multiple application instances a supported configuration. Two
 other pieces are also scoped to one instance rather than made distributed, by design:
 
-* **Rate limiting** (`app/ratelimit.py`) is an in-process, in-memory token-bucket dict keyed by IP/session. Fine for one instance; behind multiple replicas each one enforces its own limits independently, so the effective cap for a client is `limit x replica_count`, not `limit`.
+* **Rate limiting** (`app/ratelimit.py`) is the controls-disabled in-process fallback. Behind multiple replicas each one enforces its own limits independently, so the effective cap for a client is `limit x replica_count`, not `limit`.
 * **SQLite (WAL)** supports many concurrent readers and one writer *on one host*. It is not safe for multiple hosts writing over a shared network filesystem (NFS/EFS) — don't reach for that as a scaling shortcut.
 
 Within those bounds, a single instance's practical ceiling for concurrent users is set by Ollama's own inference concurrency (typically low — see `OLLAMA_NUM_PARALLEL`) more than by the FastAPI layer, since a local model serves one or a few generations in parallel per GPU/CPU budget regardless of how many requests are queued.

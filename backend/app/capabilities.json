@@ -40,7 +40,7 @@
     "safety": {
       "origin_allowlist": "available",
       "single_instance_rate_limits": "available",
-      "deployment_wide_controls": "planned"
+      "deployment_wide_controls": "development_only"
     },
     "operations": {
       "liveness": "available",

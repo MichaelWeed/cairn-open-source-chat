@@ -20,6 +20,14 @@ from app.api.contracts import REQUEST_BODY_MAX_BYTES
 from app.config import Settings, validated_settings_snapshot
 from app.db import bootstrap
 from app.embeddings import default_embedding_function
+from app.endpoint_controls import (
+    ControlConfigurationError,
+    EndpointController,
+    EndpointControlStore,
+    InMemoryEndpointControlStore,
+    ProductionEndpointControlStore,
+    endpoint_control_config_from_settings,
+)
 from app.ingest.startup import ingest_corpus
 from app.logging_config import (
     AppStartedLog,
@@ -248,11 +256,33 @@ def create_app(
     ollama_catalog_probe: OllamaCatalogReadinessProbe | None = None,
     budget_readiness_probe: BudgetReadinessProbe | None = None,
     request_accounting_factory: RequestAccountingSessionFactory | None = None,
+    endpoint_control_store: EndpointControlStore | None = None,
     telemetry_sink: TelemetrySink | None = None,
     telemetry_monotonic_ns: Callable[[], int] | None = None,
     telemetry_utc_clock: Callable[[], datetime] | None = None,
 ) -> FastAPI:
     settings = validated_settings_snapshot(settings)
+    endpoint_control_config = endpoint_control_config_from_settings(settings)
+    endpoint_controller: EndpointController | None = None
+    if endpoint_control_config is None:
+        if endpoint_control_store is not None:
+            raise ControlConfigurationError from None
+    else:
+        if endpoint_control_store is None or not isinstance(
+            endpoint_control_store, EndpointControlStore
+        ):
+            raise ControlConfigurationError from None
+        if settings.deployment_mode == "production" and (
+            isinstance(endpoint_control_store, InMemoryEndpointControlStore)
+            or not isinstance(endpoint_control_store, ProductionEndpointControlStore)
+        ):
+            raise ControlConfigurationError from None
+        if provider is not None or budget_readiness_probe is not None:
+            raise ControlConfigurationError from None
+        endpoint_controller = EndpointController(
+            endpoint_control_store,
+            endpoint_control_config,
+        )
     configure_logging(utc_clock=telemetry_utc_clock)
     if retrieval_route_resolver is not None and (
         retrieval_adapter is not None or retrieval_scope is not None
@@ -430,7 +460,11 @@ def create_app(
                     else None
                 ),
                 ollama_catalog_probe=selected_catalog_probe,
-                budget_probe=budget_readiness_probe,
+                budget_probe=(
+                    endpoint_controller
+                    if endpoint_controller is not None
+                    else budget_readiness_probe
+                ),
                 retrieval_composition_valid=retrieval_composition_valid,
             )
             if settings.corpus_path is not None:
@@ -474,18 +508,22 @@ def create_app(
     app.state.provider = selected_provider
     app.state.provider_accounting_binding = provider_accounting_binding
     app.state.request_accounting_factory = selected_accounting_factory
+    app.state.endpoint_controller = endpoint_controller
+    app.state.endpoint_control_config = endpoint_control_config
     app.state.telemetry_projector = telemetry_projector
     app.state.telemetry_sink = selected_telemetry_sink
     app.state.telemetry_monotonic_ns = selected_telemetry_clock
     app.state.retrieval_scope = selected_scope
     app.state.retrieval_distance_measure = selected_measure
     app.state.retrieval_max_distance = selected_max_distance
-    app.state.ip_rate_limiter = RateLimiter(
-        settings.rate_limit_ip_capacity, settings.rate_limit_ip_refill_per_minute
-    )
-    app.state.session_rate_limiter = RateLimiter(
-        settings.rate_limit_session_capacity, settings.rate_limit_session_refill_per_minute
-    )
+    if endpoint_controller is None:
+        app.state.ip_rate_limiter = RateLimiter(
+            settings.rate_limit_ip_capacity, settings.rate_limit_ip_refill_per_minute
+        )
+        app.state.session_rate_limiter = RateLimiter(
+            settings.rate_limit_session_capacity,
+            settings.rate_limit_session_refill_per_minute,
+        )
 
     app.add_middleware(
         CORSMiddleware,

@@ -87,6 +87,10 @@ EXPECTED_MANIFEST: dict[str, Any] = {
             "hosted_readiness": "development_only",
             "safe_telemetry": "available",
         },
+        "safety": {
+            **ACCEPTED_BASE_MANIFEST["capabilities"]["safety"],
+            "deployment_wide_controls": "development_only",
+        },
     },
 }
 
@@ -118,10 +122,10 @@ def test_endpoint_matches_packaged_manifest_exactly(client: TestClient) -> None:
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/json"
     assert response.json() == asset == EXPECTED_MANIFEST
-    assert len(response.content) == 1037
+    assert len(response.content) == 1046
     assert (
         hashlib.sha256(response.content).hexdigest()
-        == "ca1199cf865b746e1850fa55a20ed0b883beab976258badff3376677dcd00978"
+        == "9b07d653e5bd0afc05562761b6f3995813cac2b3d5d73e935915bab330f9d588"
     )
 
 
@@ -131,11 +135,12 @@ def test_packaged_manifest_changes_only_accepted_capability_leaves() -> None:
 
     assert (
         hashlib.sha256(asset_bytes).hexdigest()
-        == "0ad496e6484d38699a60ef2f357f527324ef3cc70cfb91cb21351da993912b69"
+        == "f290f17d31cab2bcfc5bd94768056ef848b6aa4ad8fd765756327a6bbb4ec115"
     )
     assert asset["schema_version"] == "1.2"
     assert asset["compatibility"]["safe_telemetry"] == "1.0"
     assert asset["capabilities"]["operations"]["safe_telemetry"] == "available"
+    assert asset["capabilities"]["safety"]["deployment_wide_controls"] == "development_only"
 
 
 @pytest.mark.parametrize(

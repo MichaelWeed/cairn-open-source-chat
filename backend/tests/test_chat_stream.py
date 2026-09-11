@@ -7,7 +7,13 @@ from typing import Any, cast
 import pytest
 from starlette.types import Message, Scope, Send
 
-from app.api.chat import _single_event_stream, _sse_response, chat_event_stream, stream_with_pings
+from app.api.chat import (
+    _cancel_stream_tasks,
+    _single_event_stream,
+    _sse_response,
+    chat_event_stream,
+    stream_with_pings,
+)
 from app.api.contracts import (
     RETRIEVED_CONTEXT_MAX_CHARS,
     ChatEvent,
@@ -82,6 +88,22 @@ from app.retrieval_route import (
     validate_route_authority as _validate_route_authority,
 )
 from app.telemetry import ChatTelemetryUnit
+
+
+@pytest.mark.asyncio
+async def test_stream_cleanup_preserves_pending_caller_cancellation_before_child_cancel() -> None:
+    child = asyncio.create_task(asyncio.Event().wait())
+    current = asyncio.current_task()
+    assert current is not None
+    current.cancel("CALLER-CLEANUP-CANCEL")
+    primary, cleanup_failed = await _cancel_stream_tasks(
+        None, cast(asyncio.Future[object], child)
+    )
+    assert isinstance(primary, asyncio.CancelledError)
+    assert primary.args == ("CALLER-CLEANUP-CANCEL",)
+    assert cleanup_failed is False
+    assert child.done()
+    current.uncancel()
 
 
 class _GroundedCollection:

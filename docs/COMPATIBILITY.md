@@ -53,7 +53,7 @@ validation.
     "safety": {
       "origin_allowlist": "available",
       "single_instance_rate_limits": "available",
-      "deployment_wide_controls": "planned"
+      "deployment_wide_controls": "development_only"
     },
     "operations": {
       "liveness": "available",
@@ -121,7 +121,10 @@ event stream and pure cost helpers. Usage records identify their provider, model
 attempt, and optional service tier; token fields remain nullable when a provider
 does not report them. Cost calculation requires an operator-supplied immutable
 price snapshot with a canonical SHA-256 identity. Cairn does not ship a live price
-catalog, persist accounting records, enforce budgets, or expose usage over SSE.
+catalog, persist accounting records, or expose usage over SSE. Opt-in public endpoint
+controls enforce configured application admission-budget reservations and reconcile
+them only from the private request-scoped accounting handoff; they are not a billing
+ledger or a provider-side spending limit.
 The request-scoped handoff composes those existing 1.0 records without changing any
 public compatibility version. Built-in application-owned providers have exact attempt
 limits of Echo 0, Ollama 1, and Gemini 1 or 2; caller-injected providers receive no
