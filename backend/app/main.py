@@ -31,7 +31,14 @@ from app.retrieval_contracts import (
     ExactCorpusReference,
     LocalActiveScope,
     RetrievalAdapter,
+    RetrievalError,
     RetrievalScope,
+)
+from app.retrieval_route import (
+    ResolvedRetrievalRoute,
+    RetrievalRouteResolver,
+    StaticRetrievalRouteResolver,
+    binding_from_firestore_adapter,
 )
 from app.vectorstore import get_document_collection, get_vector_client
 
@@ -165,9 +172,18 @@ def create_app(
     retrieval_scope: RetrievalScope | None = None,
     retrieval_distance_measure: DistanceMeasure | None = None,
     retrieval_max_distance: float | None = None,
+    retrieval_route_resolver: RetrievalRouteResolver | None = None,
 ) -> FastAPI:
     configure_logging()
     settings = settings or get_settings()
+    if retrieval_route_resolver is not None and (
+        retrieval_adapter is not None or retrieval_scope is not None
+    ):
+        raise RetrievalError("invalid_request") from None
+    if retrieval_route_resolver is not None and not isinstance(
+        retrieval_route_resolver, RetrievalRouteResolver
+    ):
+        raise RetrievalError("invalid_request") from None
     owns_provider = provider is None
     selected_provider = _default_provider(settings) if provider is None else provider
     selected_scope: RetrievalScope
@@ -191,6 +207,7 @@ def create_app(
         db: sqlite3.Connection | None = None
         vector_client = None
         selected_retrieval: RetrievalAdapter | None = retrieval_adapter
+        selected_resolver = retrieval_route_resolver
         try:
             db = bootstrap(settings.database_path)
             app.state.db = db
@@ -198,12 +215,28 @@ def create_app(
             app.state.vector_client = vector_client
             app.state.document_collection = get_document_collection(vector_client, settings)
             if selected_retrieval is None:
-                selected_retrieval = (
-                    _default_firestore_adapter(settings)
-                    if settings.retrieval_backend == "firestore"
-                    else LocalRetrievalAdapter(app.state.document_collection)
+                if selected_resolver is None:
+                    selected_retrieval = (
+                        _default_firestore_adapter(settings)
+                        if settings.retrieval_backend == "firestore"
+                        else LocalRetrievalAdapter(app.state.document_collection)
+                    )
+            if selected_resolver is None:
+                assert selected_retrieval is not None
+                exact_binding = (
+                    binding_from_firestore_adapter(selected_scope, selected_retrieval)
+                    if type(selected_scope) is ExactCorpusReference
+                    else None
                 )
-            app.state.retrieval_adapter = selected_retrieval
+                selected_resolver = StaticRetrievalRouteResolver(
+                    ResolvedRetrievalRoute(
+                        scope=selected_scope,
+                        adapter=selected_retrieval,
+                        exact_binding=exact_binding,
+                    )
+                )
+                app.state.retrieval_adapter = selected_retrieval
+            app.state.retrieval_route_resolver = selected_resolver
             if settings.corpus_path is not None:
                 summary = ingest_corpus(
                     db=app.state.db,

@@ -85,6 +85,14 @@ this stage.
   are domain-separated hashes, SDK retries are disabled, and ambiguous commits are
   read-confirmed before the sole optional service retry. No production trust policy,
   key loader, physical delete, repair, provider call, or application route is added.
+* **Exact active retrieval routing boundary.** Chat awaits one route per request and
+  keeps its exact scope and M6 adapter together. Lifecycle composition revalidates 45a
+  state, single-flights an accepted M8 signer-free refresh on a cache miss, and accepts
+  only an exact Firestore adapter whose authoritative private scope, embedding identity,
+  and dimensions match the public binding. The same bridge runs before route return,
+  readiness, and retrieval, preventing descriptor lies or post-resolution mutation from
+  reaching embedding or vector I/O. This path is explicit development/test injection;
+  it adds no trust loader, key lookup, production factory, or lifecycle mutation.
 * **Supply chain.** `uv.lock`/`package-lock.json` with hashes; CycloneDX SBOM regenerated and
   diffed against the committed one on every `make validate` run; `osv-scanner` (lockfiles) and
   `grype` (built images) gates; container images pinned by digest; a 14-day dependency cooldown
@@ -111,6 +119,8 @@ this stage.
   seam defines strict ready/active transitions, rollback, and logical removal around an
   injected immutable trust policy. Cairn does not ship a production policy, configure
   trusted signer identities, or expose lifecycle mutation through startup, HTTP, or UI.
+  Its read-only resolver can be injected programmatically for development/tests, but no
+  environment or production composition selects it.
 * **No HTTP ingestion endpoint.** `ingest_upload()` (task 2.2) exists as a callable but nothing
   routes an HTTP request to it yet (task 2.7). Today, the only way content enters the vector store
   is a direct function call (tests, or an operator-run script) — there's no attacker-reachable

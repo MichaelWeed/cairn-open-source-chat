@@ -55,7 +55,7 @@ Three properties of this diagram carry most of the design weight:
 | Provider adapters | `backend/app/providers/` | Built: echo, Ollama, optional Gemini generation |
 | Embeddings | `backend/app/embeddings/` | Built: fake, Ollama |
 | Vector store | `backend/app/vectorstore.py` | Built. SQLite flat index, version 1, see [ADR-0007](adr/0007-sqlite-flat-vector-index.md) |
-| Retrieval protocol + adapters + refusal | `backend/app/retrieval_contracts.py`, `backend/app/retrieval.py`, `backend/app/retrieval_firestore.py` | Built. Contract 1.0; default `local_active` SQLite plus optional development-only exact-scope Firestore reads |
+| Retrieval protocol + adapters + routing + refusal | `backend/app/retrieval_contracts.py`, `backend/app/retrieval.py`, `backend/app/retrieval_firestore.py`, `backend/app/retrieval_route.py` | Built. Contract 1.0; one route per request, default `local_active` SQLite, configured static Firestore, or explicitly injected development-only attested active routing |
 | Ingestion pipeline | `backend/app/ingest/` | Built; mounted startup requires a versioned provenance manifest, while direct callable ingestion retains internal citations |
 | Immutable candidate planner, persistence, and lifecycle registry | `backend/app/ingest/planner.py`, `backend/app/ingest/candidate_persistence.py`, `backend/app/ingest/candidate_firestore.py`, `backend/app/corpus_lifecycle.py`, `backend/app/corpus_lifecycle_firestore.py` | Built internally for development. Pure plan, create-or-confirm storage, full attestation readback, ready state, exact active-pointer CAS, rollback, logical removal, and immutable audits; no production trust policy or application wiring |
 | Rate limiting | `backend/app/ratelimit.py` | Built. In-process, single-instance |
@@ -82,13 +82,16 @@ Built and tested today, in order:
    `Origin` is not blocked by it, and the security documentation says so.
 3. **Rate limiting.** Per-IP and per-session token buckets, checked before any
    provider call, so an abusive client cannot burn inference capacity.
-4. **Retrieval.** Chat builds a bounded version 1.0 retrieval request for the
-   `local_active` scope. The async adapter yields once for cancellation and then the
+4. **Retrieval.** Chat resolves one internal scope-plus-adapter route, then builds a
+   bounded version 1.0 request for that exact scope. The default route is
+   `local_active`. The async local adapter yields once for cancellation and then the
    local SQLite implementation embeds the exact query and returns the closest
    squared-L2 chunks. The adapter validates result shape, stable chunk identity,
    ordering, bounds, and provenance before returning any row. Exact immutable
-   corpus references are part of the internal protocol but are not implemented by
-   this local adapter, so they fail closed before store access.
+   corpus references are not implemented by this local adapter. A static or explicitly
+   injected lifecycle Firestore route carries a separately constructed exact M6 adapter;
+   its descriptor and M6 private binding authority are rechecked immediately before I/O,
+   so an in-flight request cannot mix active versions.
 5. **The refusal gate.** If the closest chunk exceeds the distance threshold, the
    request is refused *mechanically* and **the provider is never called**. This
    ordering is the substance of the no-hallucination claim: the cheapest and most
@@ -128,8 +131,11 @@ from a fresh complete durable readback. It does not select trust or lifecycle
 state. The separate lifecycle registry borrows that verifier, captures one injected
 immutable trust-policy snapshot, and records only strict content-free evidence. Ready
 registration, promotion, rollback, and inactive terminal logical removal use exact
-state-plus-audit transactions. It is not selected by production configuration and is
-not part of the chat or mounted startup path.
+state-plus-audit transactions. An explicitly injected read-only resolver may consume
+the active-state seam for chat or a content-free exact-version probe. It single-flights
+full M8 refresh for one content-free fingerprint and retains no adapter, verifier, or
+policy object. No production lifecycle or trust factory is selected by configuration,
+and mounted startup ingestion remains separate.
 
 The Gemini adapter imports its SDK only after explicit selection. It maps history
 roles, keeps retrieved context and the current visitor question as separate JSON
@@ -166,7 +172,9 @@ not a bug fix.
   immutable attestation last. A failed operation may leave an unattested prefix;
   it never cleans up or promotes that prefix. Its signer-free verifier repeats the
   exact durable readback and returns identity-bound evidence without signing or
-  writing. Promotion/readiness and trusted identity selection belong to KAN-45.
+  writing. The development-only route resolver binds one validated active state to one
+  exact M6 adapter and repeats the authority check before retrieval or readiness.
+  Aggregate hosted readiness remains planned.
 * **Contracts change only with their consumers.** The wire format is a frozen
   Pydantic model; changing it requires updating widget, tests, and documentation in
   the same change. See [ADR-0002](adr/0002-frozen-wire-contracts.md).

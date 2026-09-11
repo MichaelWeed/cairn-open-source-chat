@@ -76,6 +76,13 @@ message is never added to the retrievable corpus.
   actor, time, request, path, URL, project, database, credential, or key material.
   Logical removal retains evidence and all audits; there is no TTL, garbage collector,
   physical delete, or automatic rollback.
+* **Active retrieval routing (optional, development/test only).** Each request resolves
+  one exact route and retains it only for that request. The lifecycle resolver keeps at
+  most one content-free verification fingerprint and its policy version/generation; it
+  retains no query, content, vector, signature, adapter, verifier, policy object, path,
+  URL, credential, SDK result, or provider data. Binding and lifecycle failures take the
+  existing content-free refusal path before embedding, Firestore vector-query, citation,
+  or provider work.
 
 ## Backups
 

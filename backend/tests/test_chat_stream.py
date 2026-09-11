@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from typing import cast
 
 import pytest
@@ -11,6 +11,16 @@ from app.api.contracts import (
     ChatEvent,
     ChatMessageRequest,
     ProviderGenerationRequest,
+)
+from app.corpus_lifecycle import (
+    AttestationTrustPolicy,
+    ResolvedActiveState,
+    VerifiedLifecycleEvidence,
+)
+from app.ingest.candidate_persistence import (
+    AttestationIdentity,
+    AttestationVerifier,
+    VerifiedCandidateEvidence,
 )
 from app.providers.base import Provider
 from app.providers.contracts import (
@@ -24,11 +34,27 @@ from app.retrieval import DEFAULT_MAX_DISTANCE, LocalRetrievalAdapter, build_con
 from app.retrieval_contracts import (
     ExactCorpusReference,
     LocalActiveScope,
+    RetrievalAdapter,
+    RetrievalError,
     RetrievalProbe,
     RetrievalRequest,
     RetrievalResult,
     RetrievalScope,
     RetrievedChunk,
+)
+from app.retrieval_firestore import (
+    FirestoreRetrievalAdapter,
+    FirestoreVectorQuery,
+    FirestoreVectorRow,
+)
+from app.retrieval_route import (
+    ExactRetrievalAdapterBinding,
+    LifecycleRetrievalRouteResolver,
+    ResolvedRetrievalRoute,
+    StaticRetrievalRouteResolver,
+)
+from app.retrieval_route import (
+    validate_route_authority as _validate_route_authority,
 )
 
 
@@ -47,6 +73,12 @@ class _GroundedCollection:
 
 def _grounded_adapter() -> LocalRetrievalAdapter:
     return LocalRetrievalAdapter(_GroundedCollection())
+
+
+def _static_route(adapter: RetrievalAdapter) -> StaticRetrievalRouteResolver:
+    return StaticRetrievalRouteResolver(
+        ResolvedRetrievalRoute(scope=LocalActiveScope(), adapter=adapter)
+    )
 
 
 class _LifecycleProvider(Provider):
@@ -264,7 +296,7 @@ async def test_chat_event_stream_closes_provider_after_output_limit() -> None:
         async for event in chat_event_stream(
             provider,
             ChatMessageRequest(session_id="s1", message="hi"),
-            _grounded_adapter(),
+            _static_route(_grounded_adapter()),
             max_output_chars=5,
         )
     ]
@@ -281,7 +313,7 @@ async def test_closing_chat_event_stream_closes_provider() -> None:
         chat_event_stream(
             provider,
             ChatMessageRequest(session_id="s1", message="hi"),
-            _grounded_adapter(),
+            _static_route(_grounded_adapter()),
             ping_interval=60,
         ),
     )
@@ -299,7 +331,7 @@ async def test_sse_response_send_failure_closes_provider() -> None:
         chat_event_stream(
             provider,
             ChatMessageRequest(session_id="s1", message="hi"),
-            _grounded_adapter(),
+            _static_route(_grounded_adapter()),
             ping_interval=60,
         )
     )
@@ -322,7 +354,7 @@ async def test_sse_response_disconnect_cancellation_closes_provider() -> None:
         chat_event_stream(
             provider,
             ChatMessageRequest(session_id="s1", message="hi"),
-            _grounded_adapter(),
+            _static_route(_grounded_adapter()),
             ping_interval=60,
         )
     )
@@ -367,7 +399,7 @@ async def test_provider_failure_log_excludes_provider_content(
         async for event in chat_event_stream(
             _SensitiveInvalidProvider(),
             ChatMessageRequest(session_id="s1", message="hi"),
-            _grounded_adapter(),
+            _static_route(_grounded_adapter()),
         )
     ]
 
@@ -382,7 +414,7 @@ async def test_guardrail_usage_is_hidden_before_public_content_free_error() -> N
         async for event in chat_event_stream(
             _UsageThenGuardrailProvider(),
             ChatMessageRequest(session_id="s1", message="hi"),
-            _grounded_adapter(),
+            _static_route(_grounded_adapter()),
         )
     ]
 
@@ -416,6 +448,397 @@ class _StaticAdapter:
             store_ready=True,
             exact_version_ready=False,
         )
+
+
+class _SequencedResolver:
+    def __init__(self, routes: list[ResolvedRetrievalRoute]) -> None:
+        self.routes = routes
+        self.calls = 0
+
+    async def resolve_route(self) -> ResolvedRetrievalRoute:
+        route = self.routes[self.calls]
+        self.calls += 1
+        return route
+
+    async def check_readiness(self) -> RetrievalProbe:
+        raise AssertionError("chat must not call readiness")
+
+
+class _RouteVectorClient:
+    def __init__(self, *, blocked: bool = False) -> None:
+        self.calls: list[FirestoreVectorQuery] = []
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        if not blocked:
+            self.release.set()
+
+    async def vector_get(
+        self, request: FirestoreVectorQuery
+    ) -> tuple[FirestoreVectorRow, ...]:
+        self.calls.append(request)
+        self.entered.set()
+        await self.release.wait()
+        return ()
+
+    async def readiness_get(self, request: object) -> None:
+        raise AssertionError("chat must not call readiness")
+
+    async def aclose(self) -> None:
+        raise AssertionError("caller-owned adapter must not close")
+
+
+class _RouteEmbedding:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, input: Sequence[str]) -> list[list[float]]:
+        self.calls += 1
+        return [[0.0, 0.0] for _ in input]
+
+
+def _exact_route(
+    version: str,
+    client: _RouteVectorClient,
+) -> tuple[ResolvedRetrievalRoute, _RouteEmbedding]:
+    scope = ExactCorpusReference(corpus_id="public-docs", corpus_version=version)
+    embedding = _RouteEmbedding()
+    adapter = FirestoreRetrievalAdapter(
+        client=client,
+        embedding_function=embedding,
+        scope=scope,
+        embedding_identity="embedding-v1",
+        embedding_dimensions=2,
+        distance_measure="cosine",
+        timeout_seconds=3,
+        max_retries=0,
+        owns_client=False,
+    )
+    binding = ExactRetrievalAdapterBinding(
+        scope=scope,
+        embedding_identity="embedding-v1",
+        embedding_dimensions=2,
+        adapter=adapter,
+    )
+    return (
+        ResolvedRetrievalRoute(
+            scope=scope,
+            adapter=adapter,
+            exact_binding=binding,
+        ),
+        embedding,
+    )
+
+
+def _route_evidence(scope: ExactCorpusReference) -> VerifiedLifecycleEvidence:
+    return VerifiedLifecycleEvidence(
+        corpus=scope,
+        plan_sha256="1" * 64,
+        semantic_manifest_sha256="2" * 64,
+        embedding_identity="embedding-v1",
+        embedding_dimensions=2,
+        document_count=1,
+        chunk_count=1,
+        inventory_sha256="3" * 64,
+        attestation_payload_sha256="4" * 64,
+        signature_algorithm_id="test-algorithm",
+        signing_key_id="test-key",
+    )
+
+
+class _RouteAttestationVerifier:
+    algorithm_id = "test-algorithm"
+    key_id = "test-key"
+
+    async def verify(self, payload: bytes, signature: bytes) -> bool:
+        del payload, signature
+        return True
+
+
+class _RouteTrustPolicy:
+    policy_version = "policy-v1"
+    policy_generation = 1
+
+    def __init__(self) -> None:
+        self.verifier = _RouteAttestationVerifier()
+
+    def verifier_for(
+        self, identity: AttestationIdentity
+    ) -> _RouteAttestationVerifier | None:
+        if (identity.algorithm_id, identity.key_id) != (
+            self.verifier.algorithm_id,
+            self.verifier.key_id,
+        ):
+            return None
+        return self.verifier
+
+
+class _PromotingActiveStateResolver:
+    def __init__(self, states: list[ResolvedActiveState]) -> None:
+        self.states = states
+        self.calls = 0
+
+    async def resolve_active_state(
+        self,
+        corpus_id: str,
+        trust_policy: AttestationTrustPolicy,
+    ) -> ResolvedActiveState:
+        del trust_policy
+        state = self.states[self.calls]
+        self.calls += 1
+        assert corpus_id == state.target.corpus_id
+        return state
+
+
+class _RouteCandidateVerifier:
+    def __init__(self) -> None:
+        self.calls: list[ExactCorpusReference] = []
+
+    async def __call__(
+        self,
+        corpus: ExactCorpusReference,
+        identity: AttestationIdentity,
+        verifier: AttestationVerifier,
+    ) -> VerifiedCandidateEvidence:
+        assert (identity.algorithm_id, identity.key_id) == (
+            verifier.algorithm_id,
+            verifier.key_id,
+        )
+        self.calls.append(corpus)
+        return VerifiedCandidateEvidence.model_validate(
+            _route_evidence(corpus).model_dump()
+        )
+
+
+class _RouteAdapterFactory:
+    def __init__(
+        self,
+        bindings: dict[str, ExactRetrievalAdapterBinding],
+    ) -> None:
+        self.bindings = bindings
+        self.calls: list[ExactCorpusReference] = []
+
+    def adapter_for(
+        self,
+        scope: ExactCorpusReference,
+        *,
+        embedding_identity: str,
+        embedding_dimensions: int,
+    ) -> ExactRetrievalAdapterBinding:
+        assert embedding_identity == "embedding-v1"
+        assert embedding_dimensions == 2
+        self.calls.append(scope)
+        return self.bindings[scope.corpus_version]
+
+
+async def test_chat_actual_lifecycle_route_keeps_inflight_a_bound_while_next_uses_b() -> None:
+    client_a = _RouteVectorClient(blocked=True)
+    client_b = _RouteVectorClient()
+    route_a, embedding_a = _exact_route("v1", client_a)
+    route_b, embedding_b = _exact_route("v2", client_b)
+    state_a = ResolvedActiveState(
+        target=cast(ExactCorpusReference, route_a.scope),
+        pointer_revision=0,
+        lifecycle_revision=0,
+        evidence=_route_evidence(cast(ExactCorpusReference, route_a.scope)),
+    )
+    state_b = ResolvedActiveState(
+        target=cast(ExactCorpusReference, route_b.scope),
+        pointer_revision=1,
+        lifecycle_revision=0,
+        evidence=_route_evidence(cast(ExactCorpusReference, route_b.scope)),
+    )
+    active = _PromotingActiveStateResolver([state_a, state_b])
+    candidate = _RouteCandidateVerifier()
+    policy = _RouteTrustPolicy()
+    factory = _RouteAdapterFactory(
+        {
+            "v1": cast(ExactRetrievalAdapterBinding, route_a.exact_binding),
+            "v2": cast(ExactRetrievalAdapterBinding, route_b.exact_binding),
+        }
+    )
+    resolver = LifecycleRetrievalRouteResolver(
+        corpus_id="public-docs",
+        active_state_resolver=active,
+        verify_attested_candidate=candidate,
+        trust_policy_supplier=lambda: policy,
+        expected_embedding_identity="embedding-v1",
+        expected_embedding_dimensions=2,
+        adapter_factory=factory,
+    )
+    provider = _CountingProvider()
+
+    async def collect() -> list[ChatEvent]:
+        return [
+            event
+            async for event in chat_event_stream(
+                provider,
+                ChatMessageRequest(session_id="s1", message="hi"),
+                resolver,
+                retrieval_distance_measure="cosine",
+            )
+        ]
+
+    first_task = asyncio.create_task(collect())
+    await client_a.entered.wait()
+    assert active.calls == 1
+    assert client_b.calls == []
+    second = await collect()
+    assert not first_task.done()
+    client_a.release.set()
+    first = await first_task
+
+    assert [event.type for event in first] == ["status", "status", "chunk", "done"]
+    assert [event.type for event in second] == ["status", "status", "chunk", "done"]
+    assert active.calls == 2
+    assert candidate.calls == [state_a.target, state_b.target]
+    assert factory.calls == [state_a.target, state_b.target]
+    assert len(client_a.calls) == len(client_b.calls) == 1
+    assert embedding_a.calls == embedding_b.calls == 1
+    assert ("corpus_version", "v1") in client_a.calls[0].filters
+    assert ("corpus_version", "v2") in client_b.calls[0].filters
+    assert provider.calls == 0
+
+
+async def test_chat_rechecks_exact_authority_immediately_before_retrieval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _RouteVectorClient()
+    route, embedding = _exact_route("v1", client)
+    resolver = _SequencedResolver([route])
+    provider = _CountingProvider()
+    validation_scopes: list[RetrievalScope | None] = []
+
+    def validate_and_mutate(
+        candidate: ResolvedRetrievalRoute,
+        *,
+        requested_scope: RetrievalScope | None = None,
+    ) -> ResolvedRetrievalRoute:
+        validation_scopes.append(requested_scope)
+        validated = _validate_route_authority(
+            candidate,
+            requested_scope=requested_scope,
+        )
+        if len(validation_scopes) == 1:
+            object.__setattr__(
+                validated.adapter,
+                "_embedding_identity",
+                "mutated-after-first-validation",
+            )
+        return validated
+
+    monkeypatch.setattr(
+        "app.api.chat.validate_route_authority",
+        validate_and_mutate,
+    )
+
+    events = [
+        event
+        async for event in chat_event_stream(
+            provider,
+            ChatMessageRequest(session_id="s1", message="hi"),
+            resolver,
+            retrieval_distance_measure="cosine",
+        )
+    ]
+
+    assert [event.type for event in events] == ["status", "status", "chunk", "done"]
+    assert validation_scopes == [None, route.scope]
+    assert resolver.calls == 1
+    assert client.calls == []
+    assert embedding.calls == 0
+    assert provider.calls == 0
+
+
+class _FailingResolver:
+    def __init__(self, failure: BaseException) -> None:
+        self.failure = failure
+        self.calls = 0
+
+    async def resolve_route(self) -> ResolvedRetrievalRoute:
+        self.calls += 1
+        raise self.failure
+
+    async def check_readiness(self) -> RetrievalProbe:
+        raise AssertionError("chat must not call readiness")
+
+
+async def test_route_failure_refuses_before_adapter_citation_or_provider() -> None:
+    provider = _CountingProvider()
+    resolver = _FailingResolver(RetrievalError("store_unavailable"))
+
+    events = [
+        event
+        async for event in chat_event_stream(
+            provider,
+            ChatMessageRequest(session_id="s1", message="hi"),
+            resolver,
+        )
+    ]
+
+    assert [event.type for event in events] == ["status", "status", "chunk", "done"]
+    assert resolver.calls == 1
+    assert provider.calls == 0
+
+
+async def test_route_resolution_cancellation_propagates_without_later_work() -> None:
+    entered = asyncio.Event()
+
+    class Resolver:
+        async def resolve_route(self) -> ResolvedRetrievalRoute:
+            entered.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        async def check_readiness(self) -> RetrievalProbe:
+            raise AssertionError("unreachable")
+
+    provider = _CountingProvider()
+
+    async def collect() -> list[ChatEvent]:
+        return [
+            event
+            async for event in chat_event_stream(
+                provider,
+                ChatMessageRequest(session_id="s1", message="hi"),
+                Resolver(),
+            )
+        ]
+
+    task = asyncio.create_task(collect())
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert provider.calls == 0
+
+
+async def test_adapter_retrieval_cancellation_propagates_before_citation_or_provider() -> None:
+    client = _RouteVectorClient(blocked=True)
+    route, embedding = _exact_route("v1", client)
+    resolver = _SequencedResolver([route])
+    provider = _CountingProvider()
+    events: list[ChatEvent] = []
+
+    async def collect() -> None:
+        async for event in chat_event_stream(
+            provider,
+            ChatMessageRequest(session_id="s1", message="hi"),
+            resolver,
+            retrieval_distance_measure="cosine",
+        ):
+            events.append(event)
+
+    task = asyncio.create_task(collect())
+    await client.entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert [event.type for event in events] == ["status"]
+    assert resolver.calls == 1
+    assert len(client.calls) == 1
+    assert embedding.calls == 1
+    assert provider.calls == 0
 
 
 class _CountingProvider(Provider):
@@ -487,8 +910,10 @@ async def test_retrieval_refusal_skips_provider_and_internal_usage_accounting() 
         async for event in chat_event_stream(
             provider,
             ChatMessageRequest(session_id="s1", message="hi"),
-            _StaticAdapter(
-                _result_with_context_length(RETRIEVED_CONTEXT_MAX_CHARS + 1)
+            _static_route(
+                _StaticAdapter(
+                    _result_with_context_length(RETRIEVED_CONTEXT_MAX_CHARS + 1)
+                )
             ),
         )
     ]
@@ -535,7 +960,7 @@ async def test_grounded_stream_hides_usage_without_shifting_absolute_ping_deadli
         async for event in chat_event_stream(
             provider,
             ChatMessageRequest(session_id="s1", message="hi"),
-            _grounded_adapter(),
+            _static_route(_grounded_adapter()),
             ping_interval=1.0,
         )
     ]
@@ -562,7 +987,7 @@ async def test_context_at_exact_limit_reaches_provider_after_citations() -> None
         async for event in chat_event_stream(
             provider,
             ChatMessageRequest(session_id="s1", message="hi"),
-            adapter,
+            _static_route(adapter),
         )
     ]
 
@@ -590,7 +1015,7 @@ async def test_oversized_context_refuses_before_citations_or_provider(
         async for event in chat_event_stream(
             provider,
             ChatMessageRequest(session_id="session-secret", message="query-secret"),
-            adapter,
+            _static_route(adapter),
         )
     ]
 
@@ -618,7 +1043,7 @@ async def test_unexpected_adapter_failure_is_content_free_and_skips_provider(
         async for event in chat_event_stream(
             provider,
             ChatMessageRequest(session_id="s1", message="hi"),
-            adapter,
+            _static_route(adapter),
         )
     ]
     assert events[-1].finish_reason == "refused"  # type: ignore[union-attr]
@@ -672,7 +1097,7 @@ async def test_adapter_cannot_echo_different_application_policy(
         async for event in chat_event_stream(
             provider,
             ChatMessageRequest(session_id="session-secret", message="query-secret"),
-            _StaticAdapter(_policy_result(case)),
+            _static_route(_StaticAdapter(_policy_result(case))),
             top_k=1,
             max_distance=1.2,
         )
@@ -717,7 +1142,9 @@ async def test_structurally_malformed_adapter_result_uses_malformed_result_code(
         async for event in chat_event_stream(
             provider,
             ChatMessageRequest(session_id="s1", message="hi"),
-            _MalformedResultAdapter(_result_with_context_length(1_000)),
+            _static_route(
+                _MalformedResultAdapter(_result_with_context_length(1_000))
+            ),
         )
     ]
     assert events[-1].finish_reason == "refused"  # type: ignore[union-attr]
@@ -734,7 +1161,7 @@ async def test_normalized_gemini_failure_preserves_safe_sse_and_log_fields(
         async for event in chat_event_stream(
             _NormalizedGeminiFailureProvider(),
             ChatMessageRequest(session_id="session-sentinel", message="prompt-sentinel"),
-            _grounded_adapter(),
+            _static_route(_grounded_adapter()),
         )
     ]
 

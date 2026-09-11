@@ -94,8 +94,10 @@ Gemini availability requires the optional dependency or image profile, an explic
 provider selection, and a server-side key. `operations.hosted_readiness` remains
 `planned`; `/readyz` does not probe Gemini or Firestore. `hosted_durable` is
 `development_only`: the optional Firestore adapter can perform bounded exact-scope
-reads in development and tests, while production selection and lifecycle promotion
-remain unavailable. The chat and SSE compatibility versions are unchanged.
+reads in development and tests. Chat now consumes one internal scope-plus-adapter route
+per request. Explicit development/test injection may bind validated active lifecycle
+state to a separately exact-bound M6 adapter; no production trust/factory or lifecycle
+mutation surface is supplied. The chat and SSE compatibility versions are unchanged.
 
 Widget compatibility 0.2.0 adds the fail-closed configuration, capability probe,
 privacy, event, CSP, and accessibility contract documented in [WIDGET.md](WIDGET.md).
@@ -118,7 +120,10 @@ The provider-independent retrieval request and result models are versioned `1.0`
 The local adapter accepts only `local_active` with local corpus compatibility 2 and
 squared-L2 distance. Exact corpus ID and version references remain unsupported by
 the local store. The optional Firestore adapter accepts only one configured exact
-reference in development/test and does not alter the public request or event shape. This protocol layer
+reference in development/test. The route resolver keeps the exact reference and its M6
+adapter together for one request and rechecks M6 binding authority before I/O; a pointer
+change is visible to the next request only. This does not alter the public request or
+event shape. This protocol layer
 requires no data migration for local retrieval store schema 1 or local corpus
 compatibility 2. It does not rename or reinterpret the existing SQLite index, ingestion
 metadata, public chat request, SSE events, or capability manifest.
@@ -145,7 +150,10 @@ and verify-only verifier and returns immutable content-free evidence. Therefore
 verified evidence into ready state, apply exact active-pointer promotion or rollback,
 and logically remove an inactive version with immutable audits. It accepts an injected
 immutable trust policy but ships no real signer or production trust selection and is
-not wired to startup or an endpoint. Hosted readiness remains planned.
+not selected by default startup or exposed through an endpoint. Its read-only active
+seam can be composed explicitly with the internal route resolver for development/tests.
+That resolver's exact-version probe is not wired into public `/readyz`; hosted readiness
+remains planned.
 
 The public chat API remains `1.0`, SSE remains `1.1`, local corpus remains `2`, and
 local retrieval store remains `1`. Existing deployments require no migration or
