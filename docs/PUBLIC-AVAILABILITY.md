@@ -45,7 +45,10 @@ retrieval-route evidence internally while preserving its published response shap
 Hosted readiness remains explicitly development-only; this is not a production
 deployment or hosted trust-policy claim.
 Private request accounting is composed behind the unchanged chat/SSE surface. It has
-no persistence, logging, budget-enforcement, capability, or public API seam.
+no persistence, budget-enforcement, or public API seam. Safe telemetry projects only
+bounded content-free counters and histograms after private accounting ownership; its
+production sink is a no-I/O null sink, and typed application logs mechanically omit
+request, content, identity, path, endpoint, credential, and exception data.
 
 ## Evidence and maintenance note
 

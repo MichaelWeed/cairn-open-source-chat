@@ -387,7 +387,12 @@ No core changes required; the registry injects enabled tool schemas into the pro
 ## 9. Operations
 
 * `GET /healthz` provides liveness without probes. `GET /readyz` aggregates database, selected retrieval route, corpus, selected provider/model, embedding, optional exact-corpus, and future budget readiness while preserving the existing three public booleans. Hosted readiness remains development-only and neither response contains sensitive data.
-* Structured JSON logs: latency, guardrail stage outcomes, error codes, query counts. No message bodies.
+* Safe telemetry derives only bounded counters and histograms from finalized private
+  accounting/readiness models. The production sink is a stateless no-I/O null sink;
+  injected sinks are advisory and fused after one ordinary failure.
+* Structured JSON logs use fixed typed application variants and mechanically omit
+  message bodies, identities, paths, endpoints, credentials, exceptions, and
+  arbitrary extras. Malformed or external records serialize as `external_log`.
 * Backup = copy the SQLite metadata database and
   `CHROMA_PATH/cairn-vectors-v1.sqlite3` (volume-mounted).
 

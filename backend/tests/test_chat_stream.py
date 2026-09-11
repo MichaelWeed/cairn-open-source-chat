@@ -34,6 +34,11 @@ from app.ingest.candidate_persistence import (
     AttestationVerifier,
     VerifiedCandidateEvidence,
 )
+from app.logging_config import (
+    GeminiProviderStreamFailedLog,
+    ProviderStreamFailedLog,
+    RetrievalFailedLog,
+)
 from app.providers.base import Provider
 from app.providers.contracts import (
     ProviderStreamEvent,
@@ -76,6 +81,7 @@ from app.retrieval_route import (
 from app.retrieval_route import (
     validate_route_authority as _validate_route_authority,
 )
+from app.telemetry import ChatTelemetryUnit
 
 
 class _GroundedCollection:
@@ -642,6 +648,39 @@ async def test_owner_cancellation_is_preserved_after_summary_freezes() -> None:
     assert id(tracker) not in retained
 
 
+async def test_telemetry_runs_after_lexical_owner_and_base_exception_is_preserved() -> None:
+    order: list[str] = []
+    session = _empty_accounting_session()
+    failure = KeyboardInterrupt("TELEMETRY-BASE-CANARY")
+
+    async def send(message: Message) -> None:
+        del message
+
+    async def owner(summary: RequestAccountingSummary) -> None:
+        del summary
+        order.append("owner")
+
+    class Unit:
+        def complete(self, summary: RequestAccountingSummary) -> None:
+            del summary
+            order.append("telemetry")
+            raise failure
+
+        def summary_missing(self) -> None:
+            raise AssertionError("summary must exist")
+
+    response = _sse_response(
+        _single_event_stream(DoneEvent(finish_reason="stop")),
+        accounting_session=session,
+        summary_owner=owner,
+        telemetry_unit=cast(ChatTelemetryUnit, Unit()),
+    )
+    with pytest.raises(KeyboardInterrupt) as caught:
+        await response.stream_response(cast(Send, send))
+    assert caught.value is failure
+    assert order == ["owner", "telemetry"]
+
+
 async def test_legacy_provider_is_called_without_observer_keyword() -> None:
     provider = _CountingProvider()
     session = _empty_accounting_session()
@@ -672,7 +711,10 @@ async def test_provider_failure_log_excludes_provider_content(
     ]
 
     assert events[-1].type == "error"
-    assert "provider stream failed" in caplog.text
+    assert any(
+        type(getattr(record, "_cairn_event", None)) is ProviderStreamFailedLog
+        for record in caplog.records
+    )
     assert "provider-response-sentinel" not in caplog.text
 
 
@@ -1754,8 +1796,8 @@ async def test_oversized_context_refuses_before_citations_or_provider(
     assert [event.type for event in events] == ["status", "status", "chunk", "done"]
     assert events[-1].finish_reason == "refused"  # type: ignore[union-attr]
     assert provider.calls == 0
-    assert len([record for record in caplog.records if record.message == "retrieval failed"]) == 1
-    assert caplog.records[-1].retrieval_error_code == "context_too_large"  # type: ignore[attr-defined]
+    typed = [getattr(record, "_cairn_event", None) for record in caplog.records]
+    assert typed == [RetrievalFailedLog(code="context_too_large")]
     assert "query-secret" not in caplog.text
     assert "session-secret" not in caplog.text
 
@@ -1780,7 +1822,9 @@ async def test_unexpected_adapter_failure_is_content_free_and_skips_provider(
     ]
     assert events[-1].finish_reason == "refused"  # type: ignore[union-attr]
     assert provider.calls == 0
-    assert caplog.records[-1].retrieval_error_code == "malformed_result"  # type: ignore[attr-defined]
+    assert getattr(caplog.records[-1], "_cairn_event", None) == RetrievalFailedLog(
+        code="malformed_result"
+    )
     assert "adapter-secret" not in caplog.text
 
 
@@ -1838,8 +1882,8 @@ async def test_adapter_cannot_echo_different_application_policy(
     assert [event.type for event in events] == ["status", "status", "chunk", "done"]
     assert events[-1].finish_reason == "refused"  # type: ignore[union-attr]
     assert provider.calls == 0
-    assert len([record for record in caplog.records if record.message == "retrieval failed"]) == 1
-    assert caplog.records[-1].retrieval_error_code == "malformed_result"  # type: ignore[attr-defined]
+    typed = [getattr(record, "_cairn_event", None) for record in caplog.records]
+    assert typed == [RetrievalFailedLog(code="malformed_result")]
     public_payload = "".join(event.model_dump_json() for event in events)
     for secret in (
         "session-secret",
@@ -1879,7 +1923,9 @@ async def test_structurally_malformed_adapter_result_uses_malformed_result_code(
     ]
     assert events[-1].finish_reason == "refused"  # type: ignore[union-attr]
     assert provider.calls == 0
-    assert caplog.records[-1].retrieval_error_code == "malformed_result"  # type: ignore[attr-defined]
+    assert getattr(caplog.records[-1], "_cairn_event", None) == RetrievalFailedLog(
+        code="malformed_result"
+    )
     assert "malformed-secret" not in caplog.text
 
 
@@ -1902,13 +1948,11 @@ async def test_normalized_gemini_failure_preserves_safe_sse_and_log_fields(
         "message": "The model provider is busy. Please try again.",
         "retryable": True,
     }
-    record = next(record for record in caplog.records if hasattr(record, "attempt_count"))
-    record_fields = vars(record)
-    assert record_fields["event"] == "provider_stream_failed"
-    assert record_fields["provider"] == "gemini"
-    assert record_fields["code"] == "rate_limited"
-    assert record_fields["retryable"] is True
-    assert record_fields["attempt_count"] == 2
-    assert not hasattr(record, "session_id")
+    typed = next(
+        event
+        for record in caplog.records
+        if type(event := getattr(record, "_cairn_event", None)) is GeminiProviderStreamFailedLog
+    )
+    assert typed == GeminiProviderStreamFailedLog(code="rate_limited", retryable=True, attempt=2)
     assert "session-sentinel" not in caplog.text
     assert "prompt-sentinel" not in caplog.text

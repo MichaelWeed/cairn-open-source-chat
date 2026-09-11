@@ -59,6 +59,7 @@ Three properties of this diagram carry most of the design weight:
 | Ingestion pipeline | `backend/app/ingest/` | Built; mounted startup requires a versioned provenance manifest, while direct callable ingestion retains internal citations |
 | Immutable candidate planner, persistence, and lifecycle registry | `backend/app/ingest/planner.py`, `backend/app/ingest/candidate_persistence.py`, `backend/app/ingest/candidate_firestore.py`, `backend/app/corpus_lifecycle.py`, `backend/app/corpus_lifecycle_firestore.py` | Built internally for development. Pure plan, create-or-confirm storage, full attestation readback, ready state, exact active-pointer CAS, rollback, logical removal, and immutable audits; no production trust policy or application wiring |
 | Rate limiting | `backend/app/ratelimit.py` | Built. In-process, single-instance |
+| Safe telemetry and logging | `backend/app/telemetry.py`, `backend/app/logging_config.py` | Built. Bounded in-process counters/histograms derive only from private finalized accounting/readiness models; the production sink is a no-I/O null sink and application logs use fixed typed variants |
 | Metadata store | `backend/app/db/` | Built. SQLite, WAL |
 | Config | `backend/app/config.py` | Built |
 | Demo page | `backend/app/static/demo/` | Built. Separate static demo UI, not the embeddable widget |

@@ -59,7 +59,7 @@ def test_accepted_m10_and_widget_frozen_surfaces_are_byte_identical() -> None:
     root = Path(__file__).resolve().parents[2]
     accepted = {
         "backend/app/api/chat.py": (
-            "11c673ac05e38056b179b7502896e39cde08ae9d279e2e442fdbe97923d6d36a"
+            "ed1b3f160172e6bebbe72bfdf8d7f61645106b4432080affb2fb0a22e25f771d"
         ),
         "backend/app/retrieval.py": (
             "195aa0b08148793394e66c09df68783359ccf39c80a6748138f989225bd86914"
@@ -89,7 +89,7 @@ def test_accepted_m10_and_widget_frozen_surfaces_are_byte_identical() -> None:
 
 def test_chat_byte_sentinel_rejects_one_byte_mutation() -> None:
     chat_bytes = (Path(__file__).resolve().parents[2] / "backend/app/api/chat.py").read_bytes()
-    accepted = "11c673ac05e38056b179b7502896e39cde08ae9d279e2e442fdbe97923d6d36a"
+    accepted = "ed1b3f160172e6bebbe72bfdf8d7f61645106b4432080affb2fb0a22e25f771d"
     assert hashlib.sha256(chat_bytes + b"\x00").hexdigest() != accepted
 
 

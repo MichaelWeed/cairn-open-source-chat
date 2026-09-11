@@ -1,9 +1,9 @@
 import asyncio
 import importlib
-import logging
 import sqlite3
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -21,7 +21,12 @@ from app.config import Settings, validated_settings_snapshot
 from app.db import bootstrap
 from app.embeddings import default_embedding_function
 from app.ingest.startup import ingest_corpus
-from app.logging_config import configure_logging
+from app.logging_config import (
+    AppStartedLog,
+    configure_logging,
+    emit_app_log,
+    emit_startup_corpus_ingested,
+)
 from app.providers.base import Provider
 from app.providers.echo import EchoProvider
 from app.providers.ollama import OllamaProvider
@@ -58,9 +63,14 @@ from app.retrieval_route import (
     StaticRetrievalRouteResolver,
     binding_from_firestore_adapter,
 )
+from app.telemetry import (
+    NullTelemetrySink,
+    ReadinessTelemetryUnit,
+    TelemetrySink,
+    build_telemetry_projector,
+    monotonic_ns,
+)
 from app.vectorstore import get_document_collection, get_vector_client
-
-logger = logging.getLogger("app")
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -238,9 +248,12 @@ def create_app(
     ollama_catalog_probe: OllamaCatalogReadinessProbe | None = None,
     budget_readiness_probe: BudgetReadinessProbe | None = None,
     request_accounting_factory: RequestAccountingSessionFactory | None = None,
+    telemetry_sink: TelemetrySink | None = None,
+    telemetry_monotonic_ns: Callable[[], int] | None = None,
+    telemetry_utc_clock: Callable[[], datetime] | None = None,
 ) -> FastAPI:
     settings = validated_settings_snapshot(settings)
-    configure_logging()
+    configure_logging(utc_clock=telemetry_utc_clock)
     if retrieval_route_resolver is not None and (
         retrieval_adapter is not None or retrieval_scope is not None
     ):
@@ -282,6 +295,15 @@ def create_app(
             # Test-only substituted defaults remain usable in controls-disabled
             # composition, but never receive accounting authority.
             provider_accounting_binding = None
+    telemetry_projector = build_telemetry_projector(
+        settings,
+        selected_provider,
+        provider_accounting_binding,
+    )
+    selected_telemetry_sink = NullTelemetrySink() if telemetry_sink is None else telemetry_sink
+    selected_telemetry_clock = (
+        monotonic_ns if telemetry_monotonic_ns is None else telemetry_monotonic_ns
+    )
     selected_scope: RetrievalScope
     selected_measure: DistanceMeasure
     selected_max_distance: float
@@ -417,13 +439,9 @@ def create_app(
                     collection=app.state.document_collection,
                     corpus_path=settings.corpus_path,
                 )
-                logger.info(
-                    "startup corpus ingested",
-                    extra={
-                        "corpus_path": str(settings.corpus_path),
-                        "document_count": summary.document_count,
-                        "chunk_count": summary.chunk_count,
-                    },
+                emit_startup_corpus_ingested(
+                    summary.document_count,
+                    summary.chunk_count,
                 )
             app.state.corpus_ready = True
         except Exception:
@@ -437,13 +455,7 @@ def create_app(
                 provider=selected_provider,
             )
             raise
-        logger.info(
-            "app started",
-            extra={
-                "database_path": str(settings.database_path),
-                "chroma_path": str(settings.chroma_path),
-            },
-        )
+        emit_app_log(AppStartedLog())
         try:
             yield
         finally:
@@ -462,6 +474,9 @@ def create_app(
     app.state.provider = selected_provider
     app.state.provider_accounting_binding = provider_accounting_binding
     app.state.request_accounting_factory = selected_accounting_factory
+    app.state.telemetry_projector = telemetry_projector
+    app.state.telemetry_sink = selected_telemetry_sink
+    app.state.telemetry_monotonic_ns = selected_telemetry_clock
     app.state.retrieval_scope = selected_scope
     app.state.retrieval_distance_measure = selected_measure
     app.state.retrieval_max_distance = selected_max_distance
@@ -491,7 +506,14 @@ def create_app(
 
     @app.get("/readyz")
     async def readyz() -> JSONResponse:
+        telemetry = ReadinessTelemetryUnit(
+            app.state.telemetry_projector,
+            app.state.telemetry_sink,
+            app.state.telemetry_monotonic_ns,
+        )
+        telemetry.start()
         report = await app.state.readiness_evaluator.evaluate()
+        telemetry.complete(report)
         ready, checks = public_readiness(report)
         body = {"status": "ok" if ready else "not_ready", "checks": checks}
         return JSONResponse(body, status_code=200 if ready else 503)
