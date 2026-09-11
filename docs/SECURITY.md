@@ -52,11 +52,12 @@ this stage.
   exact parsing, sibling-field resistance, hook safety, content-free failures, and
   no external calls. This structural guarantee does not prove universal semantic
   prompt-injection resistance or model compliance.
-* **No message bodies in logs.** Structured JSON logging (`app/logging_config.py`) is a thin
-  formatter with no built-in field allowlist/denylist — the "never log message content" rule is
-  enforced by code convention and review today, not by a runtime filter. A future contributor who
-  passes chat or document content into a log call's `extra={}` won't be stopped by anything
-  mechanical yet.
+* **Mechanical safe telemetry and logs.** Telemetry is reconstructed from exact
+  finalized accounting/readiness models into a finite set of bounded labels and
+  values. The default sink performs no I/O, and an injected sink is advisory and
+  fused after its first ordinary failure. Structured JSON logs accept only exact
+  typed application events; arbitrary messages, extras, paths, exceptions, and
+  malformed records become a fixed content-free external record.
 * **Optional Gemini boundary.** The SDK is absent from the default install and is
   imported only after explicit provider selection. `GEMINI_API_KEY` is a trimmed,
   server-side runtime secret and never a build argument. Production configuration

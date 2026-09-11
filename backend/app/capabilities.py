@@ -24,6 +24,7 @@ class Compatibility(CapabilityModel):
     local_retrieval_store: Literal["1"]
     local_corpus: Literal["2"]
     provider_accounting: Literal["1.0"]
+    safe_telemetry: Literal["1.0"]
 
 
 class Providers(CapabilityModel):
@@ -66,6 +67,7 @@ class Operations(CapabilityModel):
     capability_discovery: CapabilityState
     hosted_readiness: CapabilityState
     provider_usage_cost: CapabilityState
+    safe_telemetry: Literal["available"]
 
 
 class Capabilities(CapabilityModel):
@@ -79,7 +81,7 @@ class Capabilities(CapabilityModel):
 
 
 class CapabilityManifest(CapabilityModel):
-    schema_version: Literal["1.1"]
+    schema_version: Literal["1.2"]
     release: Release
     compatibility: Compatibility
     capabilities: Capabilities

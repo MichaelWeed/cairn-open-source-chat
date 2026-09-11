@@ -3,6 +3,7 @@ import hashlib
 import sqlite3
 from collections.abc import Callable, Iterator
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
 
@@ -42,6 +43,11 @@ from app.retrieval_route import (
     ExactRetrievalAdapterBinding,
     LifecycleRetrievalRouteResolver,
     ResolvedRetrievalRoute,
+)
+from app.telemetry import (
+    ExactTelemetryEvent,
+    ReadinessChecksTotal,
+    ReadinessDurationSeconds,
 )
 from app.vectorstore import DocumentCollection, VectorStoreClient, get_vector_client
 
@@ -162,6 +168,66 @@ def test_invalid_settings_precede_budget_probe_inspection(
             budget_readiness_probe=cast(Any, _HostileBudgetProbe()),
         )
     assert calls == []
+def test_readyz_emits_canonical_private_telemetry_without_changing_bytes(
+    tmp_path: Path,
+) -> None:
+    class Sink:
+        def __init__(self) -> None:
+            self.events: list[ExactTelemetryEvent] = []
+
+        def emit(self, event: ExactTelemetryEvent) -> None:
+            self.events.append(event)
+
+    ticks = iter((10, 20))
+    sink = Sink()
+    app = create_app(
+        Settings(
+            provider="echo",
+            embedding_provider="fake",
+            database_path=tmp_path / "telemetry.db",
+            chroma_path=tmp_path / "telemetry-chroma",
+        ),
+        telemetry_sink=sink,
+        telemetry_monotonic_ns=ticks.__next__,
+    )
+    with TestClient(app) as telemetry_client:
+        response = telemetry_client.get("/readyz")
+    assert response.content == (
+        b'{"status":"ok","checks":{"database":true,"vector_store":true,"corpus":true}}'
+    )
+    assert len(sink.events) == 9
+    assert all(type(event) is ReadinessChecksTotal for event in sink.events[:8])
+    assert type(sink.events[-1]) is ReadinessDurationSeconds
+    assert sink.events[-1].value == Decimal("0.00000001")
+
+
+def test_invalid_projector_is_advisory_for_readyz(tmp_path: Path) -> None:
+    class Sink:
+        def __init__(self) -> None:
+            self.events: list[ExactTelemetryEvent] = []
+
+        def emit(self, event: ExactTelemetryEvent) -> None:
+            self.events.append(event)
+
+    sink = Sink()
+    app = create_app(
+        Settings(
+            provider="echo",
+            embedding_provider="fake",
+            database_path=tmp_path / "mutated-projector.db",
+            chroma_path=tmp_path / "mutated-projector-chroma",
+        ),
+        telemetry_sink=sink,
+    )
+    object.__setattr__(app.state.telemetry_projector, "_provider", "gemini")
+    object.__setattr__(app.state.telemetry_projector, "_model", "gemini-3.8-flash")
+    with TestClient(app) as telemetry_client:
+        response = telemetry_client.get("/readyz")
+    assert response.status_code == 200
+    assert response.content == (
+        b'{"status":"ok","checks":{"database":true,"vector_store":true,"corpus":true}}'
+    )
+    assert sink.events == []
 
 
 def test_accounting_factory_mismatch_precedes_provider_construction(

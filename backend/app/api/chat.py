@@ -1,7 +1,6 @@
 """POST /api/v1/chat/message — see DEVELOPER_README.md §4 for the contract."""
 
 import asyncio
-import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 
@@ -20,6 +19,12 @@ from app.api.contracts import (
     PingEvent,
     ProviderGenerationRequest,
     StatusEvent,
+)
+from app.logging_config import (
+    ProviderStreamFailedLog,
+    emit_app_log,
+    emit_gemini_provider_stream_failed,
+    emit_retrieval_failed,
 )
 from app.providers.base import Provider
 from app.providers.contracts import ProviderStreamEvent
@@ -46,8 +51,7 @@ from app.retrieval_contracts import (
 )
 from app.retrieval_integrity import compile_grounding_bundle
 from app.retrieval_route import RetrievalRouteResolver, validate_route_authority
-
-logger = logging.getLogger("app")
+from app.telemetry import ChatTelemetryUnit
 
 router = APIRouter()
 
@@ -155,15 +159,15 @@ async def chat_event_stream(
             distance_measure=retrieval_distance_measure,
         )
     except ValidationError:
-        logger.warning("retrieval failed", extra={"retrieval_error_code": "invalid_request"})
+        emit_retrieval_failed("invalid_request")
         grounding_bundle = None
     except asyncio.CancelledError:
         raise
     except RetrievalError as error:
-        logger.warning("retrieval failed", extra={"retrieval_error_code": error.code})
+        emit_retrieval_failed(error.code)
         grounding_bundle = None
     except Exception:
-        logger.warning("retrieval failed", extra={"retrieval_error_code": "malformed_result"})
+        emit_retrieval_failed("malformed_result")
         grounding_bundle = None
     else:
         try:
@@ -174,10 +178,10 @@ async def chat_event_stream(
                 adapter_result=adapter_result,
             )
         except RetrievalError as error:
-            logger.warning("retrieval failed", extra={"retrieval_error_code": error.code})
+            emit_retrieval_failed(error.code)
             grounding_bundle = None
         except Exception:
-            logger.warning("retrieval failed", extra={"retrieval_error_code": "malformed_result"})
+            emit_retrieval_failed("malformed_result")
             grounding_bundle = None
 
     if grounding_bundle is None:
@@ -222,28 +226,17 @@ async def chat_event_stream(
     except GeminiProviderError as exc:
         if terminal_produced:
             raise RequestAccountingError from None
-        logger.error(
-            "provider stream failed",
-            extra={
-                "event": "provider_stream_failed",
-                "provider": "gemini",
-                "code": exc.code,
-                "retryable": exc.retryable,
-                "attempt_count": exc.attempt_count,
-            },
+        emit_gemini_provider_stream_failed(
+            exc.code,
+            exc.retryable,
+            exc.attempt_count,
         )
         yield ErrorEvent(code=exc.code, message=exc.message, retryable=exc.retryable)
         return
     except Exception:
         if terminal_produced:
             raise RequestAccountingError from None
-        logger.error(
-            "provider stream failed",
-            extra={
-                "event": "provider_stream_failed",
-                "code": "provider_unavailable",
-            },
-        )
+        emit_app_log(ProviderStreamFailedLog())
         yield ErrorEvent(
             code="provider_unavailable",
             message="The model provider is unavailable. Please try again.",
@@ -301,10 +294,12 @@ class _ClosingStreamingResponse(StreamingResponse):
         *,
         accounting_session: RequestAccountingSession | None = None,
         summary_owner: Callable[[RequestAccountingSummary], Awaitable[None]] | None = None,
+        telemetry_unit: ChatTelemetryUnit | None = None,
     ) -> None:
         self._delivery_tracker: _DeliveryTracker | None = _DeliveryTracker()
         self._accounting_session = accounting_session
         self._summary_owner = summary_owner
+        self._telemetry_unit = telemetry_unit
         self._disconnect_seen = False
         super().__init__(
             _formatted_sse_stream(events, self._delivery_tracker),
@@ -343,10 +338,12 @@ class _ClosingStreamingResponse(StreamingResponse):
 
         session = self._accounting_session
         owner = self._summary_owner
+        telemetry = self._telemetry_unit
         tracker = self._delivery_tracker
         self._delivery_tracker = None
         self._accounting_session = None
         self._summary_owner = None
+        self._telemetry_unit = None
         summary: RequestAccountingSummary | None = None
         accounting_failed = False
         if session is not None:
@@ -377,12 +374,24 @@ class _ClosingStreamingResponse(StreamingResponse):
                     primary = error
             except BaseException:
                 callback_failed = True
+        telemetry_failure: BaseException | None = None
+        if telemetry is not None:
+            try:
+                if summary is None:
+                    telemetry.summary_missing()
+                else:
+                    telemetry.complete(summary)
+            except BaseException as error:
+                telemetry_failure = error
+        if primary is None and telemetry_failure is not None:
+            primary = telemetry_failure
         if primary is not None:
             failure = primary
-            del self, send, session, owner, tracker, summary, primary
+            del self, send, session, owner, telemetry, tracker, summary, primary
+            del telemetry_failure
             raise failure.with_traceback(None)
         if accounting_failed or callback_failed or cleanup_failed:
-            del self, send, session, owner, tracker, summary
+            del self, send, session, owner, telemetry, tracker, summary, telemetry_failure
             raise RequestAccountingError from None
 
 
@@ -391,11 +400,13 @@ def _sse_response(
     *,
     accounting_session: RequestAccountingSession | None = None,
     summary_owner: Callable[[RequestAccountingSummary], Awaitable[None]] | None = None,
+    telemetry_unit: ChatTelemetryUnit | None = None,
 ) -> StreamingResponse:
     return _ClosingStreamingResponse(
         events,
         accounting_session=accounting_session,
         summary_owner=summary_owner,
+        telemetry_unit=telemetry_unit,
     )
 
 
@@ -433,6 +444,12 @@ async def chat_message(request: Request, body: ChatMessageRequest) -> StreamingR
     )
     from app.request_accounting import discard_accounting_summary
 
+    telemetry_unit = ChatTelemetryUnit(
+        request.app.state.telemetry_projector,
+        request.app.state.telemetry_sink,
+        request.app.state.telemetry_monotonic_ns,
+    )
+
     return _sse_response(
         chat_event_stream(
             provider,
@@ -449,4 +466,5 @@ async def chat_message(request: Request, body: ChatMessageRequest) -> StreamingR
         ),
         accounting_session=accounting_session,
         summary_owner=discard_accounting_summary,
+        telemetry_unit=telemetry_unit,
     )

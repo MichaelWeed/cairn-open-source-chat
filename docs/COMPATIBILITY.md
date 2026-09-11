@@ -12,7 +12,7 @@ validation.
 <!-- capabilities-manifest:start -->
 ```json
 {
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "release": {
     "stage": "developer-preview",
     "version": "0.0.0"
@@ -23,7 +23,8 @@ validation.
     "widget": "0.2.0",
     "local_retrieval_store": "1",
     "local_corpus": "2",
-    "provider_accounting": "1.0"
+    "provider_accounting": "1.0",
+    "safe_telemetry": "1.0"
   },
   "capabilities": {
     "providers": {
@@ -59,7 +60,8 @@ validation.
       "local_readiness": "available",
       "capability_discovery": "available",
       "hosted_readiness": "development_only",
-      "provider_usage_cost": "available"
+      "provider_usage_cost": "available",
+      "safe_telemetry": "available"
     }
   }
 }
