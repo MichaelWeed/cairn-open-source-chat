@@ -98,7 +98,7 @@ The command uses the existing in-process `ingest_upload()` helper with `app.stat
 
 ### Grounded container live beta
 
-For the production-like localhost path, provide an explicit corpus and the site
+For the development live-corpus localhost path, provide an explicit corpus and the site
 origin that will embed Cairn, then run one command from the repository root:
 
 ```sh
@@ -110,7 +110,9 @@ make live
 The corpus directory must contain a non-empty Markdown or PDF file and a version 1
 `provenance.json` covering every supported document. The manifest verifies the exact
 mounted bytes and carries the reviewed public title and canonical HTTP(S) URL into
-the existing citation response. See
+the existing citation response. Recursive `CORPUS_PATH` startup ingestion is limited
+to development and test configurations. Production rejects every non-null
+`CORPUS_PATH` before application construction work begins. See
 [Startup corpus provenance](docs/CORPUS-PROVENANCE.md) for the strict schema,
 hash workflow, symlink rejection, failure behavior, migration from local corpus
 compatibility 1, and direct-ingestion fallback. `make live`

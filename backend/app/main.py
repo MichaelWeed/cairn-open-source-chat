@@ -16,7 +16,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from app.api.capabilities import router as capabilities_router
 from app.api.chat import router as chat_router
 from app.api.contracts import REQUEST_BODY_MAX_BYTES
-from app.config import Settings, get_settings
+from app.config import Settings, validated_settings_snapshot
 from app.db import bootstrap
 from app.embeddings import default_embedding_function
 from app.ingest.startup import ingest_corpus
@@ -174,8 +174,8 @@ def create_app(
     retrieval_max_distance: float | None = None,
     retrieval_route_resolver: RetrievalRouteResolver | None = None,
 ) -> FastAPI:
+    settings = validated_settings_snapshot(settings)
     configure_logging()
-    settings = settings or get_settings()
     if retrieval_route_resolver is not None and (
         retrieval_adapter is not None or retrieval_scope is not None
     ):

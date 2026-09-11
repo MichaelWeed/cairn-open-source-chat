@@ -28,7 +28,7 @@
       "hosted_durable": "development_only"
     },
     "corpus": {
-      "local_directory": "available",
+      "local_directory": "development_only",
       "reviewed_manifest": "available",
       "immutable_versions": "development_only"
     },
