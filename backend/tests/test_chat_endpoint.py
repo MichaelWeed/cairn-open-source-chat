@@ -22,6 +22,12 @@ from app.retrieval_contracts import (
     RetrievalResult,
     RetrievalScope,
 )
+from app.telemetry import (
+    ChatDurationSeconds,
+    ChatOutcomeTotal,
+    ChatRequestsTotal,
+    ExactTelemetryEvent,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -176,6 +182,88 @@ def test_happy_path_round_trip(grounded_client: TestClient) -> None:
     assert types[0] == "status"
     assert "chunk" in types
     assert types[-1] == "done"
+
+
+def test_chat_telemetry_starts_after_admission_and_preserves_public_bytes(
+    tmp_path: Path,
+) -> None:
+    class Sink:
+        def __init__(self) -> None:
+            self.events: list[ExactTelemetryEvent] = []
+
+        def emit(self, event: ExactTelemetryEvent) -> None:
+            self.events.append(event)
+
+    sink = Sink()
+    ticks = iter((100, 250))
+    settings = Settings(
+        database_path=tmp_path / "telemetry.db",
+        chroma_path=tmp_path / "telemetry-chroma",
+        origin_allowlist="http://widget.example",
+    )
+    app = create_app(
+        settings,
+        provider=EchoProvider(),
+        retrieval_adapter=InjectedRetrievalAdapter(),
+        telemetry_sink=sink,
+        telemetry_monotonic_ns=ticks.__next__,
+    )
+    with TestClient(app) as telemetry_client:
+        denied = telemetry_client.post(
+            "/api/v1/chat/message",
+            json={"session_id": "denied", "message": "hi"},
+            headers={"origin": "http://wrong.example"},
+        )
+        assert denied.status_code == 403
+        assert sink.events == []
+
+        response = telemetry_client.post(
+            "/api/v1/chat/message",
+            json={"session_id": "s1", "message": "hi"},
+            headers={"origin": "http://widget.example"},
+        )
+    assert [type(event) for event in sink.events] == [
+        ChatRequestsTotal,
+        ChatOutcomeTotal,
+        ChatDurationSeconds,
+    ]
+    assert sink.events[1].chat_outcome == "refused"  # type: ignore[union-attr]
+    assert response.status_code == 200
+    assert parse_sse(response.text)[-1][0] == "done"
+
+
+def test_mutated_projector_disables_chat_telemetry_without_changing_public_sse(
+    tmp_path: Path,
+) -> None:
+    class Sink:
+        def __init__(self) -> None:
+            self.events: list[ExactTelemetryEvent] = []
+
+        def emit(self, event: ExactTelemetryEvent) -> None:
+            self.events.append(event)
+
+    sink = Sink()
+    app = create_app(
+        Settings(
+            database_path=tmp_path / "mutated-projector.db",
+            chroma_path=tmp_path / "mutated-projector-chroma",
+            origin_allowlist="http://widget.example",
+        ),
+        provider=EchoProvider(),
+        retrieval_adapter=InjectedRetrievalAdapter(),
+        telemetry_sink=sink,
+    )
+    object.__setattr__(app.state.telemetry_projector, "_provider", "gemini")
+    object.__setattr__(app.state.telemetry_projector, "_model", "gemini-3.8-flash")
+    with TestClient(app) as telemetry_client:
+        response = telemetry_client.post(
+            "/api/v1/chat/message",
+            json={"session_id": "s1", "message": "hi"},
+            headers={"origin": "http://widget.example"},
+        )
+    assert response.status_code == 200
+    assert parse_sse(response.text)[-1][0] == "done"
+    assert sink.events == []
 
 
 def test_chunks_reconstruct_message(grounded_client: TestClient) -> None:

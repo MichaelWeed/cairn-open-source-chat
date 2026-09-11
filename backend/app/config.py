@@ -16,7 +16,9 @@ DEFAULT_DB_PATH = Path("data/cairn.db")
 DEFAULT_CHROMA_PATH = Path("data/chroma")
 _CONCRETE_PATH_TYPE = type(Path())
 _FIRESTORE_PROJECT_PATTERN = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
-_SETTINGS_VALIDATION_DEPTH: ContextVar[int] = ContextVar("settings_validation_depth", default=0)
+_SETTINGS_VALIDATION_DEPTH: ContextVar[int] = ContextVar(
+    "settings_validation_depth", default=0
+)
 _SAFE_SETTING_NAMES = (
     "CAIRN_PORT",
     "CORPUS_PATH",
@@ -84,7 +86,10 @@ class SettingsValidationError(ValidationError):
                     name
                     for name in _SAFE_SETTING_NAMES
                     if name in message
-                    or any(isinstance(part, str) and part.upper() == name for part in location)
+                    or any(
+                        isinstance(part, str) and part.upper() == name
+                        for part in location
+                    )
                 ),
                 None,
             )
@@ -125,7 +130,9 @@ class SettingsValidationError(ValidationError):
     def __str__(self) -> str:
         parts = []
         for item in self._safe_errors:
-            location = ".".join(str(value) for value in cast(tuple[object, ...], item["loc"]))
+            location = ".".join(
+                str(value) for value in cast(tuple[object, ...], item["loc"])
+            )
             prefix = f"{location}: " if location else ""
             parts.append(prefix + str(item["msg"]))
         return "Settings configuration is invalid. " + "; ".join(parts)
@@ -226,7 +233,9 @@ class ContentFreeBaseSettings(BaseSettings):
 
 
 class Settings(ContentFreeBaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
+    model_config = SettingsConfigDict(
+        env_file=".env", extra="ignore", hide_input_in_errors=True
+    )
 
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b-instruct"
@@ -367,7 +376,7 @@ class Settings(ContentFreeBaseSettings):
     @classmethod
     def validate_optional_strict_integer(cls, value: object, info: object) -> object:
         field_name = getattr(info, "field_name", "firestore setting")
-        if value is None or (type(value) is str and value == ""):
+        if value == "":
             return None
         if isinstance(value, bool):
             raise ValueError(f"{field_name.upper()} must be a strict integer")
@@ -395,7 +404,12 @@ class Settings(ContentFreeBaseSettings):
             return None
         if type(value) is int:
             return value
-        if type(value) is str and value.isascii() and value.isdecimal():
+        if (
+            type(value) is str
+            and 1 <= len(value) <= 10
+            and value.isascii()
+            and value.isdecimal()
+        ):
             return int(value)
         raise ValueError(f"{field_name.upper()} must be a strict integer")
 
@@ -404,7 +418,7 @@ class Settings(ContentFreeBaseSettings):
     def validate_public_controls_switch(cls, value: object) -> object:
         if type(value) is bool:
             return value
-        if type(value) is str and value.lower() in {"true", "false"}:
+        if type(value) is str and len(value) in {4, 5} and value.lower() in {"true", "false"}:
             return value.lower() == "true"
         raise ValueError("PUBLIC_ENDPOINT_CONTROLS_ENABLED must be a strict boolean")
 
@@ -464,7 +478,6 @@ class Settings(ContentFreeBaseSettings):
             if _FIRESTORE_PROJECT_PATTERN.fullmatch(self.firestore_project_id) is None:
                 raise ValueError("FIRESTORE_PROJECT_ID is invalid")
             from app.retrieval_contracts import ExactCorpusReference
-
             try:
                 ExactCorpusReference(
                     corpus_id=self.firestore_corpus_id,

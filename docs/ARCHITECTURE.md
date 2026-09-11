@@ -58,7 +58,9 @@ Three properties of this diagram carry most of the design weight:
 | Retrieval protocol + adapters + routing + evidence compiler | `backend/app/retrieval_contracts.py`, `backend/app/retrieval.py`, `backend/app/retrieval_firestore.py`, `backend/app/retrieval_route.py`, `backend/app/retrieval_integrity.py` | Built. Contract 1.0; one route per request, default `local_active` SQLite, configured static Firestore, or explicitly injected development-only attested active routing; eligible support, context, and citations come from one immutable tuple |
 | Ingestion pipeline | `backend/app/ingest/` | Built; mounted startup requires a versioned provenance manifest, while direct callable ingestion retains internal citations |
 | Immutable candidate planner, persistence, and lifecycle registry | `backend/app/ingest/planner.py`, `backend/app/ingest/candidate_persistence.py`, `backend/app/ingest/candidate_firestore.py`, `backend/app/corpus_lifecycle.py`, `backend/app/corpus_lifecycle_firestore.py` | Built internally for development. Pure plan, create-or-confirm storage, full attestation readback, ready state, exact active-pointer CAS, rollback, logical removal, and immutable audits; no production trust policy or application wiring |
-| Rate limiting | `backend/app/ratelimit.py` | Built. In-process, single-instance |
+| Rate limiting | `backend/app/ratelimit.py` | Built. In-process legacy path when deployment-wide controls are disabled |
+| Public endpoint admission | `backend/app/endpoint_controls.py` | Built as a development/test controller and atomic in-memory conformance store; no production shared-store adapter ships |
+| Safe telemetry and logging | `backend/app/telemetry.py`, `backend/app/logging_config.py` | Built. Bounded in-process counters/histograms derive only from private finalized accounting/readiness models; the production sink is a no-I/O null sink and application logs use fixed typed variants |
 | Metadata store | `backend/app/db/` | Built. SQLite, WAL |
 | Config | `backend/app/config.py` | Built |
 | Demo page | `backend/app/static/demo/` | Built. Separate static demo UI, not the embeddable widget |
@@ -198,12 +200,16 @@ not a bug fix.
 
 Each of these is a decision with a known price, accepted knowingly.
 
-**Single instance.** Rate limiting is an in-memory dictionary, the SQLite index is
+**Single instance.** The default rate limiter is an in-memory dictionary, the SQLite index is
 a bounded local corpus, and retrieval runs as a synchronous O(N) flat-vector query.
 Behind N replicas, a client's effective rate limit becomes N times the configured
 value, and SQLite over a shared network filesystem is unsafe. The practical
 concurrency ceiling is set by synchronous retrieval and Ollama inference parallelism,
 not by the web layer. Horizontal scaling is not a supported path.
+The optional public-control boundary defines atomic shared-store semantics for
+rates, queueing, concurrency, leases, and budgets, but only an in-memory
+development/test conformance implementation ships. Production therefore remains
+fail-closed until an authoritative shared adapter is supplied.
 
 **Local models by default.** Slower and lower-quality than frontier hosted models,
 in exchange for the privacy claim being structural rather than contractual. See

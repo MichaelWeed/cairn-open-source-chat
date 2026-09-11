@@ -60,6 +60,10 @@ The focused request-accounting matrix also verifies exact 0/1/1-to-2 attempt pol
 cumulative usage, immutable price snapshots, retry and cleanup uncertainty,
 final-send/callback ordering, cancellation identity, no public usage events, and no
 live provider or store access.
+Safe-telemetry tests additionally prove exact 17/9 event bounds, deterministic
+ordering, source-free accounting/readiness projection, injected monotonic timing,
+advisory sink failure containment, typed-log field allowlisting, unchanged public
+SSE/readiness bytes, and no production exporter or live network access.
 
 `backend/tests/` covers this in-process; these rows exist because the real
 ASGI server + real HTTP transport can behave differently than `TestClient`

@@ -71,6 +71,11 @@ ACCEPTED_BASE_MANIFEST: dict[str, Any] = {
 
 EXPECTED_MANIFEST: dict[str, Any] = {
     **ACCEPTED_BASE_MANIFEST,
+    "schema_version": "1.2",
+    "compatibility": {
+        **ACCEPTED_BASE_MANIFEST["compatibility"],
+        "safe_telemetry": "1.0",
+    },
     "capabilities": {
         **ACCEPTED_BASE_MANIFEST["capabilities"],
         "corpus": {
@@ -80,6 +85,11 @@ EXPECTED_MANIFEST: dict[str, Any] = {
         "operations": {
             **ACCEPTED_BASE_MANIFEST["capabilities"]["operations"],
             "hosted_readiness": "development_only",
+            "safe_telemetry": "available",
+        },
+        "safety": {
+            **ACCEPTED_BASE_MANIFEST["capabilities"]["safety"],
+            "deployment_wide_controls": "development_only",
         },
     },
 }
@@ -112,10 +122,10 @@ def test_endpoint_matches_packaged_manifest_exactly(client: TestClient) -> None:
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/json"
     assert response.json() == asset == EXPECTED_MANIFEST
-    assert len(response.content) == 985
+    assert len(response.content) == 1046
     assert (
         hashlib.sha256(response.content).hexdigest()
-        == "f1f4efc723038a69bf030b5a776786c5a5cb0a44bf46cb28712f36b8d717f980"
+        == "9b07d653e5bd0afc05562761b6f3995813cac2b3d5d73e935915bab330f9d588"
     )
 
 
@@ -125,12 +135,12 @@ def test_packaged_manifest_changes_only_accepted_capability_leaves() -> None:
 
     assert (
         hashlib.sha256(asset_bytes).hexdigest()
-        == "570c0cb3334f7720bf3c43eea8dbd760c96c52a2972dc7c0fb7e52b72f03f61e"
+        == "f290f17d31cab2bcfc5bd94768056ef848b6aa4ad8fd765756327a6bbb4ec115"
     )
-    assert _changed_json_leaves(ACCEPTED_BASE_MANIFEST, asset) == {
-        "/capabilities/corpus/local_directory",
-        "/capabilities/operations/hosted_readiness",
-    }
+    assert asset["schema_version"] == "1.2"
+    assert asset["compatibility"]["safe_telemetry"] == "1.0"
+    assert asset["capabilities"]["operations"]["safe_telemetry"] == "available"
+    assert asset["capabilities"]["safety"]["deployment_wide_controls"] == "development_only"
 
 
 @pytest.mark.parametrize(

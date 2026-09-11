@@ -24,12 +24,19 @@ this stage.
   credentials and referrers, bounds hostile capability/SSE responses, keeps host
   events content-free, reparses safe links, and supports strict per-response CSP
   nonces without `unsafe-inline`. See [WIDGET.md](WIDGET.md). This does not supply
-  authentication, signed widget tokens, deployment-wide budgets, TLS, or provider
+  authentication, signed widget tokens, production deployment-wide budgets, TLS, or provider
   readiness.
 * **Rate limiting.** Per-IP and per-session token buckets (`app/ratelimit.py`), checked before any
   provider call. In-memory and single-process — see DEVELOPER_README.md §9 "Concurrency, one
   instance" for the exact scope of that (multiple replicas each enforce their own limit
   independently; this doesn't sum to a global cap).
+* **Development-only deployment-wide controls.** An explicit opt-in path can
+  atomically combine HMAC-keyed IP/session rates, bounded FIFO admission, fenced
+  renewable leases, and Decimal UTC-hour/day application budgets in one borrowed
+  store. Every store await is bounded to five seconds and unresolved mutations fail
+  closed. Production rejects the included in-memory conformance store and its
+  subclasses; no production shared-store adapter ships. Provider charges can
+  continue after cancellation, so separately configure provider quotas and alerts.
 * **Frozen wire contracts.** Every request/response/SSE-event shape is a Pydantic model with
   `extra="forbid"` (`backend/app/api/contracts.py`) — unexpected fields are rejected outright, not
   silently ignored. `message` is capped at 500 characters and `history` at 5 turns at the contract
@@ -52,11 +59,12 @@ this stage.
   exact parsing, sibling-field resistance, hook safety, content-free failures, and
   no external calls. This structural guarantee does not prove universal semantic
   prompt-injection resistance or model compliance.
-* **No message bodies in logs.** Structured JSON logging (`app/logging_config.py`) is a thin
-  formatter with no built-in field allowlist/denylist — the "never log message content" rule is
-  enforced by code convention and review today, not by a runtime filter. A future contributor who
-  passes chat or document content into a log call's `extra={}` won't be stopped by anything
-  mechanical yet.
+* **Mechanical safe telemetry and logs.** Telemetry is reconstructed from exact
+  finalized accounting/readiness models into a finite set of bounded labels and
+  values. The default sink performs no I/O, and an injected sink is advisory and
+  fused after its first ordinary failure. Structured JSON logs accept only exact
+  typed application events; arbitrary messages, extras, paths, exceptions, and
+  malformed records become a fixed content-free external record.
 * **Optional Gemini boundary.** The SDK is absent from the default install and is
   imported only after explicit provider selection. `GEMINI_API_KEY` is a trimmed,
   server-side runtime secret and never a build argument. Production configuration
@@ -118,8 +126,9 @@ this stage.
   4.2) don't exist yet.
 * **No output PII scrubbing.** Responses are not currently filtered for PII before being streamed
   to the client (task 4.3).
-* **No daily abuse budget cap or signed widget token** (task 4.5) — only the per-IP/session token
-  buckets above.
+* **No signed widget token or production shared control store.** The legacy
+  per-IP/session buckets remain the default; deployment-wide controls require an
+  explicitly injected store and are development-only in this repository.
 * **No production candidate trust policy or activation route.** The internal lifecycle
   seam defines strict ready/active transitions, rollback, and logical removal around an
   injected immutable trust policy. Cairn does not ship a production policy, configure
