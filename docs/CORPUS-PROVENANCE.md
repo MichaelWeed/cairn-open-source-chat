@@ -4,6 +4,11 @@ Cairn requires a `provenance.json` file at the root of every corpus mounted thro
 `CORPUS_PATH`. The manifest binds each Markdown or PDF file to a reviewed public
 source before startup ingestion can make the corpus ready.
 
+Recursive `CORPUS_PATH` startup ingestion is available only in development and test
+configurations. Production rejects every non-null `CORPUS_PATH` before application
+construction work begins. This production guard does not remove the reviewed manifest
+parser or deterministic candidate planner from their documented offline boundaries.
+
 This contract is implementation-neutral. Cairn does not fetch the source, choose a
 publisher, or approve content. The operator selects and reviews the material, records
 its provenance, and mounts both the documents and manifest read-only.

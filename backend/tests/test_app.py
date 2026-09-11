@@ -1,13 +1,14 @@
 import hashlib
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
-from app.config import Settings
+from app.config import Settings, SettingsValidationError
 from app.corpus_lifecycle import AttestationTrustPolicy, ResolvedActiveState
 from app.embedding_types import EmbeddingFunction
 from app.ingest.candidate_persistence import (
@@ -66,26 +67,16 @@ def test_readyz(client: TestClient) -> None:
     assert body["checks"]["vector_store"] is True
 
 
-def test_routing_preserves_config_capability_and_recursive_startup_bytes() -> None:
+def test_production_guard_preserves_recursive_startup_source_bytes() -> None:
     root = Path(__file__).resolve().parents[2]
     # Raw-byte SHA-256 values from accepted 45b base
     # dbc7d77d17bea366cce41e1726a469229a491d39.
     accepted_sha256 = {
-        "backend/app/config.py": (
-            "c0edc437213d8a0252dad94270dc9e58bc56cca51a4935ec269bd8c71c3716f1"
-        ),
-        "backend/app/capabilities.json": (
-            "a2e44a748ff13b4705334c6278c1c7cbebd0aaa9e498e2f0cce4f2a8855a1e74"
-        ),
         "backend/app/ingest/startup.py": (
             "380a02c156d5dc887dd6ca84304b4573d42aea46039909dc8e4f3fbccc6d93da"
         ),
     }
-    assert set(accepted_sha256) == {
-        "backend/app/config.py",
-        "backend/app/capabilities.json",
-        "backend/app/ingest/startup.py",
-    }
+    assert set(accepted_sha256) == {"backend/app/ingest/startup.py"}
     for relative, expected in accepted_sha256.items():
         actual = hashlib.sha256((root / relative).read_bytes()).hexdigest()
         assert actual == expected, relative
@@ -139,6 +130,161 @@ def test_database_file_created(tmp_path: Path) -> None:
     app = create_app(settings)
     with TestClient(app):
         assert db_path.exists()
+
+
+def _forged_production_corpus_settings() -> Settings:
+    values = Settings().model_dump()
+    values.update(
+        deployment_mode="production",
+        provider="ollama",
+        embedding_provider="ollama",
+        corpus_path=Path("application-private-corpus"),
+    )
+    return Settings.model_construct(**values)
+
+
+def test_invalid_snapshot_is_rejected_before_every_application_side_effect(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    calls: list[str] = []
+
+    def tripwire(name: str) -> Callable[..., object]:
+        def fail(*args: object, **kwargs: object) -> object:
+            del args, kwargs
+            calls.append(name)
+            raise AssertionError(name)
+
+        return fail
+
+    intercepted = {
+        "logging": ("app.main.configure_logging", tripwire("logging")),
+        "provider": ("app.main._default_provider", tripwire("provider")),
+        "environment": ("app.config.os.getenv", tripwire("environment")),
+        "database": ("app.main.bootstrap", tripwire("database")),
+        "vector_client": ("app.main.get_vector_client", tripwire("vector_client")),
+        "collection": (
+            "app.main.get_document_collection",
+            tripwire("collection"),
+        ),
+        "corpus": ("app.main.ingest_corpus", tripwire("corpus")),
+        "provenance": (
+            "app.ingest.provenance.load_provenance_manifest",
+            tripwire("provenance"),
+        ),
+        "retrieval": (
+            "app.main._default_firestore_adapter",
+            tripwire("retrieval"),
+        ),
+        "binding": (
+            "app.main.binding_from_firestore_adapter",
+            tripwire("binding"),
+        ),
+        "lifecycle": (
+            "app.main.StaticRetrievalRouteResolver",
+            tripwire("lifecycle"),
+        ),
+        "candidate_store": (
+            "app.ingest.candidate_firestore.create_candidate_store",
+            tripwire("candidate_store"),
+        ),
+        "credential_factory": (
+            "app.retrieval_firestore.create_firestore_vector_client",
+            tripwire("credential_factory"),
+        ),
+        "lifecycle_store": (
+            "app.corpus_lifecycle_firestore.create_corpus_lifecycle_store",
+            tripwire("lifecycle_store"),
+        ),
+        "dns": ("socket.getaddrinfo", tripwire("dns")),
+        "socket": ("socket.socket.connect", tripwire("socket")),
+        "optional_import": (
+            "app.main.importlib.import_module",
+            tripwire("optional_import"),
+        ),
+    }
+    for target, replacement in intercepted.values():
+        monkeypatch.setattr(target, replacement)
+
+    caplog.set_level("DEBUG")
+    with pytest.raises(SettingsValidationError) as caught:
+        create_app(_forged_production_corpus_settings())
+
+    rendered = (
+        str(caught.value)
+        + repr(caught.value)
+        + repr(caught.value.args)
+        + repr(vars(caught.value))
+        + repr(caught.value.errors(include_input=True))
+        + caught.value.json(include_input=True)
+        + repr(caught.value.__cause__)
+        + repr(caught.value.__context__)
+        + caplog.text
+    )
+    assert "CORPUS_PATH" in rendered
+    assert "application-private-corpus" not in rendered
+    assert calls == []
+
+    for name, (_, replacement) in intercepted.items():
+        with pytest.raises(AssertionError, match=name):
+            replacement()
+    assert calls == list(intercepted)
+
+
+def test_create_app_isolates_snapshot_from_pre_lifespan_caller_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    original_db = tmp_path / "original.db"
+    original_chroma = tmp_path / "original-chroma"
+    source = Settings(
+        database_path=original_db,
+        chroma_path=original_chroma,
+        admin_bootstrap_password="original-secret",
+        gemini_api_key=SecretStr("original-api-secret"),
+    )
+    corpus_calls = 0
+
+    def forbidden_ingestion(**kwargs: object) -> object:
+        nonlocal corpus_calls
+        del kwargs
+        corpus_calls += 1
+        raise AssertionError("caller mutation enabled ingestion")
+
+    monkeypatch.setattr("app.main.ingest_corpus", forbidden_ingestion)
+    application = create_app(source)
+    snapshot = application.state.settings
+
+    source.deployment_mode = "production"
+    source.provider = "ollama"
+    source.embedding_provider = "ollama"
+    source.retrieval_backend = "firestore"
+    source.corpus_path = tmp_path / "mutated-corpus"
+    source.database_path = tmp_path / "mutated.db"
+    source.chroma_path = tmp_path / "mutated-chroma"
+    source.admin_bootstrap_password = "mutated-secret"
+    assert source.gemini_api_key is not None
+    object.__setattr__(source.gemini_api_key, "_secret_value", "mutated-api-secret")
+
+    with TestClient(application) as client:
+        assert client.get("/readyz").status_code == 200
+
+    assert type(snapshot) is Settings
+    assert snapshot is not source
+    assert snapshot.deployment_mode == "development"
+    assert snapshot.corpus_path is None
+    assert snapshot.retrieval_backend == "local"
+    assert snapshot.database_path == original_db
+    assert snapshot.chroma_path == original_chroma
+    assert snapshot.admin_bootstrap_password == "original-secret"
+    assert snapshot.gemini_api_key is not None
+    assert snapshot.gemini_api_key.get_secret_value() == "original-api-secret"
+    assert isinstance(application.state.provider, EchoProvider)
+    assert type(application.state.retrieval_scope) is LocalActiveScope
+    assert corpus_calls == 0
+    assert original_db.exists()
+    assert not (tmp_path / "mutated.db").exists()
+    assert not (tmp_path / "mutated-chroma").exists()
 
 
 class _InjectedRouteResolver:

@@ -3,6 +3,7 @@ import io
 import json
 import sqlite3
 from pathlib import Path
+from typing import Literal, cast
 
 import pytest
 import yaml
@@ -304,6 +305,39 @@ def test_lifespan_ingests_through_its_own_app_state_handles(
         response = client.get("/readyz")
         assert response.status_code == 200
         assert response.json()["checks"]["corpus"] is True
+
+
+@pytest.mark.parametrize("deployment_mode", ["development", "test"])
+def test_development_and_test_startup_ingest_nested_markdown_and_pdf(
+    deployment_mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "fake")
+    corpus = tmp_path / "corpus"
+    nested = corpus / "guides"
+    nested.mkdir(parents=True)
+    (nested / "returns.md").write_text("# Returns\n\nReturns are accepted.")
+    (corpus / "warranty.pdf").write_bytes(_pdf_bytes("Warranty coverage."))
+    _write_provenance(corpus)
+    settings = Settings(
+        deployment_mode=cast(Literal["development", "test"], deployment_mode),
+        database_path=tmp_path / "cairn.db",
+        chroma_path=tmp_path / "chroma",
+        corpus_path=corpus,
+    )
+
+    application = create_app(settings)
+    with TestClient(application) as client:
+        response = client.get("/readyz")
+        assert response.status_code == 200
+        assert response.content == (
+            b'{"status":"ok","checks":{"database":true,"vector_store":true,"corpus":true}}'
+        )
+        assert application.state.document_collection.count() >= 2
+    with sqlite3.connect(settings.database_path) as db:
+        sources = {row[0] for row in db.execute("SELECT source FROM documents ORDER BY source")}
+    assert sources == {"guides/returns.md", "warranty.pdf"}
 
 
 def test_lifespan_refuses_readiness_when_configured_corpus_is_empty(tmp_path: Path) -> None:

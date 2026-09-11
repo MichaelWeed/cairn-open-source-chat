@@ -41,7 +41,7 @@ validation.
       "hosted_durable": "development_only"
     },
     "corpus": {
-      "local_directory": "available",
+      "local_directory": "development_only",
       "reviewed_manifest": "available",
       "immutable_versions": "development_only"
     },
@@ -75,6 +75,11 @@ operators must add the reviewed public title, canonical HTTP(S) URL, exact-byte
 SHA-256, owner, review date, and `public: true` attestation described in
 [CORPUS-PROVENANCE.md](CORPUS-PROVENANCE.md). Symlinked documents and manifests are
 rejected; mount regular files read-only.
+
+Recursive mounted-directory startup ingestion is available only in development and
+test configurations. Production rejects every non-null `CORPUS_PATH` before
+application construction work begins. The reviewed manifest parser and deterministic
+candidate planner remain usable at their documented offline boundaries.
 
 ## Upgrade rules before 1.0
 

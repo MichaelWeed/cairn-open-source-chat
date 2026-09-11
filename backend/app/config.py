@@ -14,6 +14,7 @@ from app.api.contracts import OUTPUT_CHARS_MAX, OUTPUT_TOKENS_MAX, SYSTEM_INSTRU
 
 DEFAULT_DB_PATH = Path("data/cairn.db")
 DEFAULT_CHROMA_PATH = Path("data/chroma")
+_CONCRETE_PATH_TYPE = type(Path())
 _FIRESTORE_PROJECT_PATTERN = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
 _SETTINGS_VALIDATION_DEPTH: ContextVar[int] = ContextVar(
     "settings_validation_depth", default=0
@@ -46,6 +47,8 @@ _SAFE_SETTING_NAMES = (
     "RETRIEVAL_TOP_K",
     "SYSTEM_INSTRUCTION",
 )
+_PRODUCTION_CORPUS_GUARD_NAMES = frozenset(("deployment_mode", "corpus_path"))
+_INVALID_SNAPSHOT_VALUE = object()
 
 
 class SettingsValidationError(ValidationError):
@@ -259,6 +262,26 @@ class Settings(ContentFreeBaseSettings):
     rate_limit_session_capacity: float = 10
     rate_limit_session_refill_per_minute: float = 10
 
+    @model_validator(mode="before")
+    @classmethod
+    def reject_production_corpus_input(cls, value: object) -> object:
+        if type(value) is not dict:
+            return value
+        selected: dict[str, object] = {}
+        for item in dict.items(cast(dict[object, object], value)):
+            key = tuple.__getitem__(item, 0)
+            if type(key) is str and key in _PRODUCTION_CORPUS_GUARD_NAMES:
+                selected[key] = tuple.__getitem__(item, 1)
+        mode = selected.get("deployment_mode")
+        if (
+            type(mode) is str
+            and str.lower(mode) == "production"
+            and "corpus_path" in selected
+            and selected["corpus_path"] is not None
+        ):
+            raise ValueError("CORPUS_PATH is invalid.")
+        return value
+
     @field_validator("retrieval_top_k", mode="before")
     @classmethod
     def validate_retrieval_top_k_type(cls, value: object) -> object:
@@ -353,6 +376,8 @@ class Settings(ContentFreeBaseSettings):
 
     @model_validator(mode="after")
     def validate_provider_pair(self) -> "Settings":
+        if self.deployment_mode == "production" and self.corpus_path is not None:
+            raise ValueError("CORPUS_PATH is invalid.")
         hosted_values: tuple[tuple[str, object], ...] = (
             ("FIRESTORE_PROJECT_ID", self.firestore_project_id),
             ("FIRESTORE_CORPUS_ID", self.firestore_corpus_id),
@@ -438,3 +463,120 @@ class Settings(ContentFreeBaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+_SETTINGS_FIELD_NAMES = tuple(Settings.model_fields)
+_SETTINGS_FIELD_NAME_SET = frozenset(_SETTINGS_FIELD_NAMES)
+_SAFE_SNAPSHOT_SCALAR_TYPES = frozenset((str, int, float, bool, type(None)))
+
+
+def _fixed_settings_validation_error() -> SettingsValidationError:
+    error = SettingsValidationError.from_exception_data(
+        "Settings",
+        [
+            {
+                "type": "value_error",
+                "loc": (),
+                "input": None,
+                "ctx": {"error": ValueError("Settings configuration is invalid.")},
+            }
+        ],
+        hide_input=True,
+    )
+    error._safe_errors = (
+        {
+            "type": "settings_invalid",
+            "loc": (),
+            "msg": "Settings configuration is invalid.",
+        },
+    )
+    return error
+
+
+def _clone_snapshot_value(value: object) -> object:
+    if type(value) in _SAFE_SNAPSHOT_SCALAR_TYPES:
+        return value
+    if type(value) is _CONCRETE_PATH_TYPE:
+        try:
+            raw_paths = object.__getattribute__(value, "_raw_paths")
+        except Exception:
+            return _INVALID_SNAPSHOT_VALUE
+        if type(raw_paths) is not list:
+            return _INVALID_SNAPSHOT_VALUE
+        components: list[str] = []
+        count = list.__len__(raw_paths)
+        for index in range(count):
+            component = list.__getitem__(raw_paths, index)
+            if type(component) is not str:
+                return _INVALID_SNAPSHOT_VALUE
+            components.append(component)
+        try:
+            clone = _CONCRETE_PATH_TYPE(*components)
+        except Exception:
+            return _INVALID_SNAPSHOT_VALUE
+        return clone if type(clone) is _CONCRETE_PATH_TYPE else _INVALID_SNAPSHOT_VALUE
+    if type(value) is SecretStr:
+        try:
+            secret = object.__getattribute__(value, "_secret_value")
+        except Exception:
+            return _INVALID_SNAPSHOT_VALUE
+        if type(secret) is not str:
+            return _INVALID_SNAPSHOT_VALUE
+        return SecretStr(secret)
+    return _INVALID_SNAPSHOT_VALUE
+
+
+def validated_settings_snapshot(settings: Settings | None = None) -> Settings:
+    """Return a fully revalidated, caller-independent settings snapshot."""
+    source = get_settings() if settings is None else settings
+    if type(source) is not Settings:
+        raise _fixed_settings_validation_error() from None
+    try:
+        raw_state = object.__getattribute__(source, "__dict__")
+    except Exception:
+        raw_state = None
+    if type(raw_state) is not dict:
+        raise _fixed_settings_validation_error() from None
+
+    controlled: dict[str, object] = {}
+    unsafe = False
+    for item in dict.items(cast(dict[object, object], raw_state)):
+        key = tuple.__getitem__(item, 0)
+        if type(key) is not str or key not in _SETTINGS_FIELD_NAME_SET:
+            continue
+        clone = _clone_snapshot_value(tuple.__getitem__(item, 1))
+        if clone is _INVALID_SNAPSHOT_VALUE:
+            unsafe = True
+            continue
+        controlled[key] = clone
+    if unsafe or len(controlled) != len(_SETTINGS_FIELD_NAMES):
+        raise _fixed_settings_validation_error() from None
+
+    target = object.__new__(Settings)
+    result: object = _INVALID_SNAPSHOT_VALUE
+    try:
+        result = Settings.__pydantic_validator__.validate_python(
+            controlled,
+            self_instance=target,
+        )
+    except SettingsValidationError:
+        raise
+    except Exception:
+        pass
+    if result is not target or type(result) is not Settings:
+        raise _fixed_settings_validation_error() from None
+    try:
+        snapshot_state = object.__getattribute__(target, "__dict__")
+    except Exception:
+        snapshot_state = None
+    if type(snapshot_state) is not dict:
+        raise _fixed_settings_validation_error() from None
+    seen = 0
+    for item in dict.items(cast(dict[object, object], snapshot_state)):
+        key = tuple.__getitem__(item, 0)
+        if type(key) is not str or key not in _SETTINGS_FIELD_NAME_SET:
+            raise _fixed_settings_validation_error() from None
+        seen += 1
+    if seen != len(_SETTINGS_FIELD_NAMES):
+        raise _fixed_settings_validation_error() from None
+    return target

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 import tomllib
@@ -18,7 +19,7 @@ REPOSITORY_ROOT = Path(__file__).parents[2]
 MANIFEST_PATH = REPOSITORY_ROOT / "backend" / "app" / "capabilities.json"
 COMPATIBILITY_DOC = REPOSITORY_ROOT / "docs" / "COMPATIBILITY.md"
 
-EXPECTED_MANIFEST: dict[str, Any] = {
+ACCEPTED_BASE_MANIFEST: dict[str, Any] = {
     "schema_version": "1.1",
     "release": {"stage": "developer-preview", "version": "0.0.0"},
     "compatibility": {
@@ -68,6 +69,29 @@ EXPECTED_MANIFEST: dict[str, Any] = {
     },
 }
 
+EXPECTED_MANIFEST: dict[str, Any] = {
+    **ACCEPTED_BASE_MANIFEST,
+    "capabilities": {
+        **ACCEPTED_BASE_MANIFEST["capabilities"],
+        "corpus": {
+            **ACCEPTED_BASE_MANIFEST["capabilities"]["corpus"],
+            "local_directory": "development_only",
+        },
+    },
+}
+
+
+def _changed_json_leaves(before: Any, after: Any, pointer: str = "") -> set[str]:
+    if isinstance(before, dict) and isinstance(after, dict):
+        if before.keys() != after.keys():
+            return {pointer}
+        return {
+            changed
+            for key in before
+            for changed in _changed_json_leaves(before[key], after[key], f"{pointer}/{key}")
+        }
+    return {pointer} if before != after else set()
+
 
 @pytest.fixture
 def client(tmp_path: Path) -> Iterator[TestClient]:
@@ -84,6 +108,24 @@ def test_endpoint_matches_packaged_manifest_exactly(client: TestClient) -> None:
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/json"
     assert response.json() == asset == EXPECTED_MANIFEST
+    assert len(response.content) == 976
+    assert (
+        hashlib.sha256(response.content).hexdigest()
+        == "fad756f2c3bbda2a89d74665ff8c18b5d46503d5e2e65df58216847d1d5b6d16"
+    )
+
+
+def test_packaged_manifest_changes_only_local_directory_from_accepted_base() -> None:
+    asset_bytes = MANIFEST_PATH.read_bytes()
+    asset = json.loads(asset_bytes)
+
+    assert (
+        hashlib.sha256(asset_bytes).hexdigest()
+        == "0c1f398299025543a55e13798479cfade8710aec255f27399d3308f0f796a422"
+    )
+    assert _changed_json_leaves(ACCEPTED_BASE_MANIFEST, asset) == {
+        "/capabilities/corpus/local_directory"
+    }
 
 
 @pytest.mark.parametrize(
