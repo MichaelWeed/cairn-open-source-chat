@@ -398,6 +398,75 @@ def test_forged_fields_set_is_rejected_directly_and_when_nested() -> None:
         oversized.model_copy()
 
 
+async def test_fields_set_str_subclass_never_invokes_hooks_across_boundaries() -> None:
+    calls: list[str] = []
+
+    class _HostileField(str):
+        def __hash__(self) -> int:
+            calls.append("hash")
+            return super().__hash__()
+
+        def __eq__(self, other: object) -> bool:
+            del other
+            calls.append("eq")
+            raise AssertionError("fields-set equality hook invoked")
+
+    def hostile_fields(name: str) -> set[str]:
+        fields = cast(set[str], {_HostileField(name)})
+        calls.clear()
+        return fields
+
+    check = _ready_check("database")
+    object.__setattr__(check, "__pydantic_fields_set__", hostile_fields("dimension"))
+    for operation in (
+        lambda: ReadinessCheck.model_validate(check),
+        check.model_copy,
+        lambda: ReadinessReport(
+            checks=(
+                check,
+                *tuple(_ready_check(dimension) for dimension in DIMENSIONS[1:]),
+            )
+        ),
+    ):
+        with pytest.raises(ReadinessError):
+            operation()
+        assert calls == []
+
+    catalog = OllamaCatalogReadiness(reachable=True, model_names=("model-a",))
+    object.__setattr__(catalog, "__pydantic_fields_set__", hostile_fields("reachable"))
+    evaluator, _ = _evaluator(
+        provider="ollama", provider_model="model-a", catalog_probe=_CatalogProbe(catalog)
+    )
+    assert (await evaluator.evaluate()).checks[3].reason == "unavailable"
+    assert calls == []
+
+    scope = LocalActiveScope()
+    object.__setattr__(scope, "__pydantic_fields_set__", hostile_fields("contract_version"))
+    with pytest.raises(ReadinessError):
+        _evaluator(expected_scope=scope)
+    assert calls == []
+
+    probe = RetrievalProbe(
+        scope=LocalActiveScope(),
+        reachable=True,
+        store_ready=True,
+        exact_version_ready=False,
+    )
+    object.__setattr__(probe, "__pydantic_fields_set__", hostile_fields("reachable"))
+    route_evaluator, _ = _evaluator(route_result=probe)
+    route_report = await route_evaluator.evaluate()
+    assert route_report.checks[1].reason == "misconfigured"
+    assert calls == []
+
+    report = ReadinessReport(
+        checks=tuple(_ready_check(dimension) for dimension in DIMENSIONS)
+    )
+    object.__setattr__(report, "__pydantic_fields_set__", hostile_fields("checks"))
+    with pytest.raises(ReadinessError):
+        public_readiness(report)
+    assert calls == []
+
+
 def test_model_construct_rejects_stateful_fields_set_without_consuming_it() -> None:
     canary = "PRIVATE-STATEFUL-FIELDS-CANARY"
 
@@ -564,13 +633,23 @@ async def test_gemini_false_is_authoritative_and_outer_failure_is_unknown() -> N
         assert probe.calls == 1
 
 
-@pytest.mark.parametrize("kind", ["absent", "non_async"])
+@pytest.mark.parametrize("kind", ["absent", "non_async", "wrong_signature"])
 async def test_route_probe_interface_mismatch_is_misconfigured(kind: str) -> None:
     class _NonAsyncRoute:
         def check_readiness(self) -> object:
             return object()
 
-    route: object = object() if kind == "absent" else _NonAsyncRoute()
+    class _WrongSignatureRoute:
+        async def check_readiness(self, required: object) -> object:
+            return required
+
+    route: object = (
+        object()
+        if kind == "absent"
+        else _NonAsyncRoute()
+        if kind == "non_async"
+        else _WrongSignatureRoute()
+    )
     evaluator = ReadinessEvaluator(
         database_probe=lambda: True,
         corpus_probe=lambda: True,
@@ -593,13 +672,23 @@ async def test_route_probe_interface_mismatch_is_misconfigured(kind: str) -> Non
     )
 
 
-@pytest.mark.parametrize("kind", ["absent", "non_async"])
+@pytest.mark.parametrize("kind", ["absent", "non_async", "wrong_signature"])
 async def test_gemini_probe_interface_mismatch_is_misconfigured(kind: str) -> None:
     class _NonAsyncGemini:
         def check_readiness(self) -> object:
             return object()
 
-    probe: object = object() if kind == "absent" else _NonAsyncGemini()
+    class _WrongSignatureGemini:
+        async def check_readiness(self, required: object) -> object:
+            return required
+
+    probe: object = (
+        object()
+        if kind == "absent"
+        else _NonAsyncGemini()
+        if kind == "non_async"
+        else _WrongSignatureGemini()
+    )
     evaluator, _ = _evaluator(
         provider="gemini",
         provider_model="gemini-3.8-flash",
@@ -616,13 +705,23 @@ async def test_gemini_probe_interface_mismatch_is_misconfigured(kind: str) -> No
     )
 
 
-@pytest.mark.parametrize("kind", ["absent", "non_async"])
+@pytest.mark.parametrize("kind", ["absent", "non_async", "wrong_signature"])
 async def test_catalog_probe_interface_mismatch_is_misconfigured(kind: str) -> None:
     class _NonAsyncCatalog:
         def check_readiness(self) -> object:
             return object()
 
-    probe: object = object() if kind == "absent" else _NonAsyncCatalog()
+    class _WrongSignatureCatalog:
+        async def check_readiness(self, required: object) -> object:
+            return required
+
+    probe: object = (
+        object()
+        if kind == "absent"
+        else _NonAsyncCatalog()
+        if kind == "non_async"
+        else _WrongSignatureCatalog()
+    )
     evaluator, _ = _evaluator(
         provider="ollama",
         provider_model="generation-model",
@@ -1619,6 +1718,66 @@ async def test_catalog_transient_response_and_error_release_without_gc(
     assert response_ref is None or response_ref() is None
     assert error_ref is None or error_ref() is None
     await client.aclose()
+
+
+async def test_malformed_decoded_catalog_releases_partial_objects_without_gc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _DecodedCanary:
+        pass
+
+    canary = _DecodedCanary()
+    canary_ref = weakref.ref(canary)
+    payloads: list[object] = [
+        {"models": [{"name": "valid"}, {"name": canary}]}
+    ]
+    del canary
+
+    def loads(raw: object) -> object:
+        del raw
+        return payloads.pop()
+
+    monkeypatch.setattr("app.readiness.json.loads", loads)
+    client = httpx.AsyncClient(
+        transport=_catalog_transport(b'{"models":[]}')
+    )
+    probe = OllamaCatalogProbe(
+        base_url="http://ollama:11434", client=client, owns_client=False
+    )
+    with pytest.raises(ReadinessError) as caught:
+        await probe.check_readiness()
+    assert caught.value.__traceback__ is None
+    assert payloads == []
+    assert canary_ref() is None
+    await client.aclose()
+
+
+async def test_preclosed_borrowed_catalog_client_performs_no_transport_io() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"models": []}, request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    probe = OllamaCatalogProbe(
+        base_url="http://ollama:11434", client=client, owns_client=False
+    )
+    await client.aclose()
+    with pytest.raises(ReadinessError):
+        await probe.check_readiness()
+    evaluator, _ = _evaluator(
+        provider="ollama", provider_model="model-a", catalog_probe=probe
+    )
+    report = await evaluator.evaluate()
+    assert (report.checks[3].state, report.checks[3].reason) == (
+        "unknown",
+        "unavailable",
+    )
+    assert calls == 0
+    await probe.aclose()
+    assert client.is_closed
 
 
 async def test_body_cancellation_skips_blocked_response_close_and_stops_evaluation() -> None:

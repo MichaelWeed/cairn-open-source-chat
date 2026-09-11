@@ -181,6 +181,17 @@ def _content_free[Result](operation: Callable[[], Result]) -> Result:
     return cast(Result, result)
 
 
+def _copy_fields_set(value: object, expected: Mapping[str, Any]) -> set[str]:
+    if type(value) is not set or len(value) > len(expected):
+        raise ValueError
+    copied: set[str] = set()
+    for field in set.__iter__(cast(set[object], value)):
+        if type(field) is not str or field not in expected:
+            raise ValueError
+        copied.add(field)
+    return copied
+
+
 def _content_free_validation(
     model: type[ReadinessModel],
     value: Any,
@@ -231,12 +242,10 @@ def _content_free_validation(
                 type(raw) is not dict
                 or extra is not None
                 or private is not None
-                or type(fields_set) is not set
-                or len(fields_set) > len(model.model_fields)
-                or not fields_set.issubset(model.model_fields)
                 or len(raw) != len(model.model_fields)
             ):
                 raise ValueError
+            _copy_fields_set(fields_set, model.model_fields)
             count = 0
             for key, _ in dict.items(cast(dict[object, object], raw)):
                 if type(key) is not str or key not in model.model_fields:
@@ -339,13 +348,9 @@ class ReadinessModel(BaseModel):
             raise ReadinessError() from None
         fields_set: set[str] | None = None
         if _fields_set is not None:
-            if type(_fields_set) is not set or len(_fields_set) > len(cls.model_fields):
-                raise ReadinessError() from None
-            fields_set = set()
-            for field in _fields_set:
-                if type(field) is not str or field not in cls.model_fields:
-                    raise ReadinessError() from None
-                fields_set.add(field)
+            fields_set = _content_free(
+                lambda: _copy_fields_set(_fields_set, cls.model_fields)
+            )
         result = cls._validated(values)
         if fields_set is not None:
             object.__setattr__(result, "__pydantic_fields_set__", fields_set)
@@ -367,8 +372,6 @@ class ReadinessModel(BaseModel):
                 type(raw) is not dict
                 or extra is not None
                 or private is not None
-                or type(raw_fields_set) is not set
-                or len(raw_fields_set) > len(type(self).model_fields)
                 or len(raw) != len(type(self).model_fields)
             ):
                 raise ValueError
@@ -379,9 +382,7 @@ class ReadinessModel(BaseModel):
                 values[key] = value
             if len(values) != len(type(self).model_fields):
                 raise ValueError
-            fields_set = set(raw_fields_set)
-            if not fields_set.issubset(type(self).model_fields):
-                raise ValueError
+            fields_set = _copy_fields_set(raw_fields_set, type(self).model_fields)
             if update is not None:
                 if type(update) is not dict or len(update) > len(type(self).model_fields):
                     raise ValueError
@@ -493,12 +494,10 @@ def _copy_check(value: object) -> ReadinessCheck:
             type(raw) is not dict
             or extra is not None
             or private is not None
-            or type(fields_set) is not set
-            or len(fields_set) > len(ReadinessCheck.model_fields)
-            or not fields_set.issubset(ReadinessCheck.model_fields)
             or len(raw) != len(ReadinessCheck.model_fields)
         ):
             raise ValueError
+        _copy_fields_set(fields_set, ReadinessCheck.model_fields)
         expected = ReadinessCheck.model_fields
         controlled: dict[str, object] = {}
         for key, item in dict.items(cast(dict[object, object], raw)):
@@ -597,6 +596,38 @@ class RetrievalReadinessProbe(Protocol):
     async def check_readiness(self) -> object: ...
 
 
+def _parse_catalog_body(body: bytearray) -> OllamaCatalogReadiness | None:
+    parsed: OllamaCatalogReadiness | None = None
+    try:
+        payload = json.loads(bytes(body))
+        if type(payload) is not dict:
+            raise ValueError
+        models = dict.get(cast(dict[object, object], payload), "models")
+        if type(models) is not list or len(models) > OLLAMA_CATALOG_MAX_MODELS:
+            raise ValueError
+        names: list[str] = []
+        for item in models:
+            if type(item) is not dict:
+                raise ValueError
+            name = dict.get(cast(dict[object, object], item), "name")
+            if (
+                type(name) is not str
+                or not 1 <= len(name) <= OLLAMA_MODEL_NAME_MAX_CHARS
+            ):
+                raise ValueError
+            names.append(name)
+        if len(set(names)) != len(names):
+            raise ValueError
+        parsed = OllamaCatalogReadiness(
+            reachable=True, model_names=tuple(names)
+        )
+    except Exception as error:
+        BaseException.with_traceback(error, None)
+    finally:
+        body.clear()
+    return parsed
+
+
 class OllamaCatalogProbe:
     """One bounded no-retry read of Ollama's model catalog."""
 
@@ -689,6 +720,8 @@ class OllamaCatalogProbe:
     async def check_readiness(self) -> OllamaCatalogReadiness:
         if self._closed:
             raise ReadinessError() from None
+        if self._client.is_closed:
+            raise ReadinessError() from None
         try:
             async with asyncio.timeout(OLLAMA_CATALOG_TIMEOUT_SECONDS):
                 outcome, body = await self._catalog_body()
@@ -705,33 +738,7 @@ class OllamaCatalogProbe:
         if outcome != "ready" or body is None:
             raise ReadinessError() from None
 
-        parsed: OllamaCatalogReadiness | None = None
-        try:
-            payload = json.loads(bytes(body))
-            if type(payload) is not dict:
-                raise ValueError
-            models = dict.get(cast(dict[object, object], payload), "models")
-            if type(models) is not list or len(models) > OLLAMA_CATALOG_MAX_MODELS:
-                raise ValueError
-            names: list[str] = []
-            for item in models:
-                if type(item) is not dict:
-                    raise ValueError
-                name = dict.get(cast(dict[object, object], item), "name")
-                if (
-                    type(name) is not str
-                    or not 1 <= len(name) <= OLLAMA_MODEL_NAME_MAX_CHARS
-                ):
-                    raise ValueError
-                names.append(name)
-            if len(set(names)) != len(names):
-                raise ValueError
-            parsed = OllamaCatalogReadiness(
-                reachable=True, model_names=tuple(names)
-            )
-        except Exception:
-            pass
-        body.clear()
+        parsed = _parse_catalog_body(body)
         if parsed is None:
             raise ReadinessError() from None
         return parsed
@@ -773,12 +780,10 @@ def _copy_simple_model(value: object, model: type[ReadinessModel]) -> ReadinessM
             type(raw) is not dict
             or extra is not None
             or private is not None
-            or type(fields_set) is not set
-            or len(fields_set) > len(model.model_fields)
-            or not fields_set.issubset(model.model_fields)
             or len(raw) != len(model.model_fields)
         ):
             raise ValueError
+        _copy_fields_set(fields_set, model.model_fields)
         controlled: dict[str, object] = {}
         for key, item in dict.items(cast(dict[object, object], raw)):
             if type(key) is not str or key not in model.model_fields:
@@ -847,12 +852,10 @@ def _copy_scope(value: object) -> RetrievalScope:
             type(raw) is not dict
             or extra is not None
             or private is not None
-            or type(fields_set) is not set
-            or len(fields_set) > len(model.model_fields)
-            or not fields_set.issubset(model.model_fields)
             or len(raw) != len(model.model_fields)
         ):
             raise ValueError
+        _copy_fields_set(fields_set, model.model_fields)
         controlled: dict[str, object] = {}
         for key, item in dict.items(cast(dict[object, object], raw)):
             if type(key) is not str or key not in model.model_fields or type(item) is not str:
@@ -878,12 +881,10 @@ def _copy_retrieval_probe(value: object) -> RetrievalProbe:
             type(raw) is not dict
             or extra is not None
             or private is not None
-            or type(fields_set) is not set
-            or len(fields_set) > len(expected)
-            or not fields_set.issubset(expected)
             or len(raw) != len(expected)
         ):
             raise ValueError
+        _copy_fields_set(fields_set, expected)
         controlled: dict[str, object] = {}
         for key, item in dict.items(cast(dict[object, object], raw)):
             if type(key) is not str or key not in expected:
@@ -946,6 +947,9 @@ async def _call_readiness_probe(
         pending = operation()
     except asyncio.CancelledError:
         raise
+    except TypeError as error:
+        BaseException.with_traceback(error, None)
+        return _MISSING, "misconfigured"
     except Exception as error:
         BaseException.with_traceback(error, None)
         return _MISSING, "unavailable"
@@ -1278,12 +1282,10 @@ def public_readiness(report: object) -> tuple[bool, dict[str, bool]]:
             type(raw) is not dict
             or extra is not None
             or private is not None
-            or type(raw_fields_set) is not set
-            or len(raw_fields_set) > len(ReadinessReport.model_fields)
-            or not raw_fields_set.issubset(ReadinessReport.model_fields)
             or len(raw) != len(ReadinessReport.model_fields)
         ):
             raise ValueError
+        _copy_fields_set(raw_fields_set, ReadinessReport.model_fields)
         controlled: dict[str, object] = {}
         for key, item in dict.items(cast(dict[object, object], raw)):
             if type(key) is not str or key not in ReadinessReport.model_fields:
