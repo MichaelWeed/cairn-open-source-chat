@@ -55,7 +55,7 @@ Three properties of this diagram carry most of the design weight:
 | Provider adapters | `backend/app/providers/` | Built: echo, Ollama, optional Gemini generation |
 | Embeddings | `backend/app/embeddings/` | Built: fake, Ollama |
 | Vector store | `backend/app/vectorstore.py` | Built. SQLite flat index, version 1, see [ADR-0007](adr/0007-sqlite-flat-vector-index.md) |
-| Retrieval protocol + adapters + routing + refusal | `backend/app/retrieval_contracts.py`, `backend/app/retrieval.py`, `backend/app/retrieval_firestore.py`, `backend/app/retrieval_route.py` | Built. Contract 1.0; one route per request, default `local_active` SQLite, configured static Firestore, or explicitly injected development-only attested active routing |
+| Retrieval protocol + adapters + routing + evidence compiler | `backend/app/retrieval_contracts.py`, `backend/app/retrieval.py`, `backend/app/retrieval_firestore.py`, `backend/app/retrieval_route.py`, `backend/app/retrieval_integrity.py` | Built. Contract 1.0; one route per request, default `local_active` SQLite, configured static Firestore, or explicitly injected development-only attested active routing; eligible support, context, and citations come from one immutable tuple |
 | Ingestion pipeline | `backend/app/ingest/` | Built; mounted startup requires a versioned provenance manifest, while direct callable ingestion retains internal citations |
 | Immutable candidate planner, persistence, and lifecycle registry | `backend/app/ingest/planner.py`, `backend/app/ingest/candidate_persistence.py`, `backend/app/ingest/candidate_firestore.py`, `backend/app/corpus_lifecycle.py`, `backend/app/corpus_lifecycle_firestore.py` | Built internally for development. Pure plan, create-or-confirm storage, full attestation readback, ready state, exact active-pointer CAS, rollback, logical removal, and immutable audits; no production trust policy or application wiring |
 | Rate limiting | `backend/app/ratelimit.py` | Built. In-process, single-instance |
@@ -65,7 +65,8 @@ Three properties of this diagram carry most of the design weight:
 | Evaluation harness | `eval/` | Built. One committed report |
 | Embeddable widget | `widget/src/` | Built. Generic `<cairn-chat>` custom element with atomic production configuration, first-open capability negotiation, bounded in-page history, privacy/handoff links, content-free events, CSP nonce support, themes, and responsive accessibility; see [WIDGET.md](WIDGET.md) |
 | Tool registry, escalation | — | **Not built** |
-| Guardrail middleware, adversarial suite | `backend/tests/adversarial/` | **Not built.** Directory holds `.gitkeep` |
+| Guardrail middleware | — | **Not built.** Input and output guardrail middleware remains planned |
+| Retrieval structural adversarial gate | `backend/tests/adversarial/test_retrieval_integrity_adversarial.py` | Built. Deterministic offline poisoned-content, hook-safety, privacy, and no-external checks; not a live or model-as-judge evaluation |
 | Admin surfaces and authentication | — | **Not built.** Nothing to authenticate against |
 | Release bundler | `Makefile: release` | **Not built.** Prints a placeholder |
 
@@ -92,14 +93,15 @@ Built and tested today, in order:
    injected lifecycle Firestore route carries a separately constructed exact M6 adapter;
    its descriptor and M6 private binding authority are rechecked immediately before I/O,
    so an in-flight request cannot mix active versions.
-5. **The refusal gate.** If the closest chunk exceeds the distance threshold, the
-   request is refused *mechanically* and **the provider is never called**. This
-   ordering is the substance of the no-hallucination claim: the cheapest and most
-   reliable way to not fabricate an answer is to not ask the model.
-6. **Prompt assembly.** Surviving chunks are wrapped in a bounded, delimited
-   `<retrieved-context>` block with instructions that its contents are untrusted
-   data, not instructions. Oversized context refuses before citations or provider
-   work; chunks are never silently truncated or dropped.
+5. **Evidence compilation and refusal.** The pure compiler strictly reconstructs
+   the request and untrusted adapter result, verifies echoed authority, and retains
+   each chunk whose distance is at or below the request threshold without reranking.
+   No eligible chunk means a mechanical refusal and no provider call.
+6. **Context and citations.** One immutable eligible tuple produces both the
+   bounded deterministic JSON support object and first-seen supporting citations.
+   A fixed server instruction labels JSON strings as untrusted data. Oversized
+   context refuses before citations or provider work; chunks are never silently
+   truncated or dropped.
 7. **Streaming.** The endpoint builds one validated, server-owned provider request.
    Public context metadata does not enter its instructions or retrieved context.
    Provider chunks and total output are bounded before the endpoint emits `status`,
@@ -179,8 +181,9 @@ not a bug fix.
   Pydantic model; changing it requires updating widget, tests, and documentation in
   the same change. See [ADR-0002](adr/0002-frozen-wire-contracts.md).
 * **Retrieved content is untrusted.** Operator documents are data, never
-  instructions. Note honestly: this is currently a prompt-level mitigation whose
-  adversarial test suite does not exist yet.
+  instructions. JSON structural separation and deterministic poisoned-document
+  tests prove the application boundary, but do not prove that every model will
+  comply semantically with the instruction.
 * **Chat content never reaches disk or logs.** Enforced by convention and review,
   not by a runtime filter — a real gap, recorded in `docs/SECURITY.md`.
 

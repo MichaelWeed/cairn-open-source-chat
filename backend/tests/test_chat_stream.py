@@ -1,4 +1,6 @@
 import asyncio
+import gc
+import weakref
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from typing import cast
 
@@ -30,7 +32,7 @@ from app.providers.contracts import (
     ProviderUsageChunk,
 )
 from app.providers.gemini import GeminiProviderError
-from app.retrieval import DEFAULT_MAX_DISTANCE, LocalRetrievalAdapter, build_context_block
+from app.retrieval import DEFAULT_MAX_DISTANCE, LocalRetrievalAdapter
 from app.retrieval_contracts import (
     ExactCorpusReference,
     LocalActiveScope,
@@ -43,10 +45,13 @@ from app.retrieval_contracts import (
     RetrievedChunk,
 )
 from app.retrieval_firestore import (
+    FIRESTORE_RECORD_SCHEMA_VERSION,
     FirestoreRetrievalAdapter,
     FirestoreVectorQuery,
     FirestoreVectorRow,
+    firestore_chunk_document_id,
 )
+from app.retrieval_integrity import compile_grounding_bundle
 from app.retrieval_route import (
     ExactRetrievalAdapterBinding,
     LifecycleRetrievalRouteResolver,
@@ -465,8 +470,14 @@ class _SequencedResolver:
 
 
 class _RouteVectorClient:
-    def __init__(self, *, blocked: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        rows: tuple[FirestoreVectorRow, ...] = (),
+        blocked: bool = False,
+    ) -> None:
         self.calls: list[FirestoreVectorQuery] = []
+        self.rows = rows
         self.entered = asyncio.Event()
         self.release = asyncio.Event()
         if not blocked:
@@ -478,7 +489,7 @@ class _RouteVectorClient:
         self.calls.append(request)
         self.entered.set()
         await self.release.wait()
-        return ()
+        return self.rows
 
     async def readiness_get(self, request: object) -> None:
         raise AssertionError("chat must not call readiness")
@@ -576,6 +587,7 @@ class _PromotingActiveStateResolver:
     def __init__(self, states: list[ResolvedActiveState]) -> None:
         self.states = states
         self.calls = 0
+        self.logically_removed: set[ExactCorpusReference] = set()
 
     async def resolve_active_state(
         self,
@@ -587,6 +599,32 @@ class _PromotingActiveStateResolver:
         self.calls += 1
         assert corpus_id == state.target.corpus_id
         return state
+
+    def remove_inactive(self, corpus: ExactCorpusReference) -> None:
+        assert self.calls >= 2
+        assert corpus != self.states[self.calls - 1].target
+        self.logically_removed.add(corpus)
+
+
+def _route_row(version: str, label: str) -> FirestoreVectorRow:
+    chunk_id = f"{label}-doc::chunk::0"
+    return FirestoreVectorRow(
+        document_id=firestore_chunk_document_id(chunk_id),
+        fields={
+            "schema_version": FIRESTORE_RECORD_SCHEMA_VERSION,
+            "corpus_id": "public-docs",
+            "corpus_version": version,
+            "embedding_identity": "embedding-v1",
+            "chunk_id": chunk_id,
+            "document_id": f"{label}-doc",
+            "source": f"{label}.md",
+            "chunk_index": 0,
+            "text": f"{label} exact eligible support",
+            "citation_title": f"{label} reviewed title",
+            "citation_url": f"https://docs.example/{label}",
+        },
+        distance=0.1,
+    )
 
 
 class _RouteCandidateVerifier:
@@ -631,8 +669,8 @@ class _RouteAdapterFactory:
 
 
 async def test_chat_actual_lifecycle_route_keeps_inflight_a_bound_while_next_uses_b() -> None:
-    client_a = _RouteVectorClient(blocked=True)
-    client_b = _RouteVectorClient()
+    client_a = _RouteVectorClient(rows=(_route_row("v1", "A"),), blocked=True)
+    client_b = _RouteVectorClient(rows=(_route_row("v2", "B"),))
     route_a, embedding_a = _exact_route("v1", client_a)
     route_b, embedding_b = _exact_route("v2", client_b)
     state_a = ResolvedActiveState(
@@ -684,11 +722,27 @@ async def test_chat_actual_lifecycle_route_keeps_inflight_a_bound_while_next_use
     assert client_b.calls == []
     second = await collect()
     assert not first_task.done()
+    active.remove_inactive(state_a.target)
     client_a.release.set()
     first = await first_task
 
-    assert [event.type for event in first] == ["status", "status", "chunk", "done"]
-    assert [event.type for event in second] == ["status", "status", "chunk", "done"]
+    assert [event.type for event in first] == [
+        "status",
+        "citations",
+        "status",
+        "chunk",
+        "done",
+    ]
+    assert [event.type for event in second] == [
+        "status",
+        "citations",
+        "status",
+        "chunk",
+        "done",
+    ]
+    assert [source.id for source in first[1].sources] == ["A-doc"]  # type: ignore[union-attr]
+    assert [source.id for source in second[1].sources] == ["B-doc"]  # type: ignore[union-attr]
+    assert state_a.target in active.logically_removed
     assert active.calls == 2
     assert candidate.calls == [state_a.target, state_b.target]
     assert factory.calls == [state_a.target, state_b.target]
@@ -696,7 +750,12 @@ async def test_chat_actual_lifecycle_route_keeps_inflight_a_bound_while_next_use
     assert embedding_a.calls == embedding_b.calls == 1
     assert ("corpus_version", "v1") in client_a.calls[0].filters
     assert ("corpus_version", "v2") in client_b.calls[0].filters
-    assert provider.calls == 0
+    assert provider.calls == 2
+    assert len(provider.requests) == 2
+    assert "B exact eligible support" in provider.requests[0].retrieved_context
+    assert "A exact eligible support" in provider.requests[1].retrieved_context
+    assert "A exact eligible support" not in provider.requests[0].retrieved_context
+    assert "B exact eligible support" not in provider.requests[1].retrieved_context
 
 
 async def test_chat_rechecks_exact_authority_immediately_before_retrieval(
@@ -845,13 +904,159 @@ class _CountingProvider(Provider):
     def __init__(self) -> None:
         self.calls = 0
         self.last_request: ProviderGenerationRequest | None = None
+        self.requests: list[ProviderGenerationRequest] = []
 
     async def stream(
         self, request: ProviderGenerationRequest
     ) -> AsyncIterator[ProviderStreamEvent]:
         self.calls += 1
         self.last_request = request
+        self.requests.append(request)
         yield ProviderTextChunk(delta="ok")
+
+
+class _OneShotResolver:
+    def __init__(self, route: ResolvedRetrievalRoute) -> None:
+        self.route: ResolvedRetrievalRoute | None = route
+
+    async def resolve_route(self) -> ResolvedRetrievalRoute:
+        assert self.route is not None
+        route = self.route
+        self.route = None
+        return route
+
+    async def check_readiness(self) -> RetrievalProbe:
+        raise AssertionError("chat must not call readiness")
+
+
+class _RetentionProbeAdapter:
+    def __init__(
+        self,
+        result: RetrievalResult,
+        *,
+        failure: bool = False,
+        blocked: bool = False,
+        close_calls: list[str],
+    ) -> None:
+        self.result = result
+        self.failure = failure
+        self.blocked = blocked
+        self.close_calls = close_calls
+        self.entered = asyncio.Event()
+
+    async def retrieve(self, request: RetrievalRequest) -> RetrievalResult:
+        del request
+        self.entered.set()
+        if self.blocked:
+            await asyncio.Event().wait()
+        if self.failure:
+            raise RuntimeError("private-adapter-error-canary")
+        return self.result
+
+    async def check_readiness(self, scope: RetrievalScope) -> RetrievalProbe:
+        raise AssertionError(f"chat must not call readiness for {scope.kind}")
+
+    def close(self) -> None:
+        self.close_calls.append("close")
+
+    async def aclose(self) -> None:
+        self.close_calls.append("aclose")
+
+
+@pytest.mark.parametrize("outcome", ["success", "refusal", "exception"])
+async def test_chat_does_not_close_or_retain_route_adapter(outcome: str) -> None:
+    request = RetrievalRequest(
+        scope=LocalActiveScope(),
+        query="hi",
+        max_results=1,
+        max_distance=DEFAULT_MAX_DISTANCE,
+        distance_measure="squared_l2",
+    )
+    chunks = (
+        ()
+        if outcome == "refusal"
+        else (
+            RetrievedChunk(
+                chunk_id="doc::chunk::0",
+                document_id="doc",
+                source="doc.md",
+                chunk_index=0,
+                text="eligible",
+                distance=0.1,
+            ),
+        )
+    )
+    result = RetrievalResult(
+        scope=request.scope,
+        distance_measure=request.distance_measure,
+        max_distance=request.max_distance,
+        chunks=chunks,
+    )
+    close_calls: list[str] = []
+    adapter = _RetentionProbeAdapter(
+        result,
+        failure=outcome == "exception",
+        close_calls=close_calls,
+    )
+    adapter_reference = weakref.ref(adapter)
+    resolver = _OneShotResolver(
+        ResolvedRetrievalRoute(scope=LocalActiveScope(), adapter=adapter)
+    )
+
+    events = [
+        event
+        async for event in chat_event_stream(
+            _CountingProvider(),
+            ChatMessageRequest(session_id="s1", message="hi"),
+            resolver,
+        )
+    ]
+    assert events[-1].type in {"done", "error"}
+    assert close_calls == []
+    del adapter, resolver
+    gc.collect()
+    assert adapter_reference() is None
+
+
+async def test_cancellation_does_not_close_or_retain_route_adapter() -> None:
+    request = RetrievalRequest(
+        scope=LocalActiveScope(),
+        query="hi",
+        max_results=1,
+        max_distance=DEFAULT_MAX_DISTANCE,
+        distance_measure="squared_l2",
+    )
+    result = RetrievalResult(
+        scope=request.scope,
+        distance_measure=request.distance_measure,
+        max_distance=request.max_distance,
+        chunks=(),
+    )
+    close_calls: list[str] = []
+    adapter = _RetentionProbeAdapter(result, blocked=True, close_calls=close_calls)
+    adapter_reference = weakref.ref(adapter)
+    resolver = _OneShotResolver(
+        ResolvedRetrievalRoute(scope=LocalActiveScope(), adapter=adapter)
+    )
+
+    async def collect(active_resolver: _OneShotResolver = resolver) -> None:
+        async for _ in chat_event_stream(
+            _CountingProvider(),
+            ChatMessageRequest(session_id="s1", message="hi"),
+            active_resolver,
+        ):
+            pass
+
+    task = asyncio.create_task(collect())
+    await adapter.entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert close_calls == []
+    del adapter, resolver, task, collect
+    await asyncio.sleep(0)
+    gc.collect()
+    assert adapter_reference() is None
 
 
 class _UsageAccountingProbeProvider(Provider):
@@ -886,7 +1091,24 @@ def _result_with_context_length(target: int) -> RetrievalResult:
         )
         for index in range(4)
     ]
-    remaining = target - len(build_context_block(chunks))
+    request = RetrievalRequest(
+        scope=LocalActiveScope(),
+        query="hi",
+        max_results=4,
+        max_distance=DEFAULT_MAX_DISTANCE,
+        distance_measure="squared_l2",
+    )
+    baseline = compile_grounding_bundle(
+        request=request,
+        adapter_result=RetrievalResult(
+            scope=request.scope,
+            distance_measure=request.distance_measure,
+            max_distance=request.max_distance,
+            chunks=tuple(chunks),
+        ),
+    )
+    assert baseline is not None
+    remaining = target - len(baseline.retrieved_context)
     assert remaining >= 0
     expanded: list[RetrievedChunk] = []
     for chunk in chunks:
@@ -900,6 +1122,117 @@ def _result_with_context_length(target: int) -> RetrievalResult:
         max_distance=DEFAULT_MAX_DISTANCE,
         chunks=tuple(expanded),
     )
+
+
+async def test_chat_filters_each_chunk_before_context_citations_and_provider() -> None:
+    provider = _CountingProvider()
+    result = RetrievalResult(
+        scope=LocalActiveScope(),
+        distance_measure="squared_l2",
+        max_distance=DEFAULT_MAX_DISTANCE,
+        chunks=(
+            RetrievedChunk(
+                chunk_id="eligible::chunk::0",
+                document_id="eligible",
+                source="eligible.md",
+                chunk_index=0,
+                text="eligible support",
+                distance=DEFAULT_MAX_DISTANCE,
+            ),
+            RetrievedChunk(
+                chunk_id="filtered::chunk::0",
+                document_id="filtered",
+                source="filtered.md",
+                chunk_index=0,
+                text="filtered private support",
+                distance=DEFAULT_MAX_DISTANCE + 0.1,
+            ),
+        ),
+    )
+    resolver = _SequencedResolver(
+        [
+            ResolvedRetrievalRoute(
+                scope=LocalActiveScope(),
+                adapter=_StaticAdapter(result),
+            )
+        ]
+    )
+
+    events = [
+        event
+        async for event in chat_event_stream(
+            provider,
+            ChatMessageRequest(session_id="s1", message="hi"),
+            resolver,
+        )
+    ]
+
+    assert resolver.calls == 1
+    assert [event.type for event in events] == [
+        "status",
+        "citations",
+        "status",
+        "chunk",
+        "done",
+    ]
+    citation_event = events[1]
+    assert [source.id for source in citation_event.sources] == ["eligible"]  # type: ignore[union-attr]
+    assert provider.last_request is not None
+    assert "eligible support" in provider.last_request.retrieved_context
+    assert "filtered private support" not in provider.last_request.retrieved_context
+
+
+async def test_success_exposes_only_authorized_citation_fields_in_public_events(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    provider = _CountingProvider()
+    result = RetrievalResult(
+        scope=LocalActiveScope(),
+        distance_measure="squared_l2",
+        max_distance=DEFAULT_MAX_DISTANCE,
+        chunks=(
+            RetrievedChunk(
+                chunk_id="private-chunk-id-canary",
+                document_id="authorized-citation-id-canary",
+                source="private-source-canary.md",
+                chunk_index=0,
+                text="private-retrieved-text-canary",
+                distance=0.1,
+                citation_title="Authorized citation title canary",
+                citation_url="https://docs.example/authorized-citation-url-canary",
+            ),
+        ),
+    )
+    events = [
+        event
+        async for event in chat_event_stream(
+            provider,
+            ChatMessageRequest(
+                session_id="private-session-canary",
+                message="private-query-canary",
+            ),
+            _static_route(_StaticAdapter(result)),
+        )
+    ]
+
+    public_payload = "".join(event.model_dump_json() for event in events)
+    for authorized in (
+        "authorized-citation-id-canary",
+        "Authorized citation title canary",
+        "https://docs.example/authorized-citation-url-canary",
+    ):
+        assert authorized in public_payload
+    for private in (
+        "private-chunk-id-canary",
+        "private-source-canary",
+        "private-retrieved-text-canary",
+        "private-session-canary",
+        "private-query-canary",
+    ):
+        assert private not in public_payload
+        assert private not in caplog.text
+    assert provider.last_request is not None
+    assert "private-retrieved-text-canary" in provider.last_request.retrieved_context
 
 
 async def test_retrieval_refusal_skips_provider_and_internal_usage_accounting() -> None:

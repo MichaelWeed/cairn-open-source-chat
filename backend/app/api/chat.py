@@ -11,8 +11,6 @@ from pydantic import ValidationError
 from starlette.types import Send
 
 from app.api.contracts import (
-    CITATION_TITLE_MAX_CHARS,
-    CITATIONS_MAX_COUNT,
     ChatEvent,
     ChatMessageRequest,
     ChunkEvent,
@@ -30,15 +28,13 @@ from app.retrieval import (
     DEFAULT_MAX_DISTANCE,
     DEFAULT_TOP_K,
     REFUSAL_MESSAGE,
-    build_citations,
-    build_context_block,
 )
 from app.retrieval_contracts import (
     DistanceMeasure,
     RetrievalError,
     RetrievalRequest,
-    RetrievalResult,
 )
+from app.retrieval_integrity import compile_grounding_bundle
 from app.retrieval_route import RetrievalRouteResolver, validate_route_authority
 
 logger = logging.getLogger("app")
@@ -128,7 +124,7 @@ async def chat_event_stream(
     max_output_chars: int = 6000,
 ) -> AsyncIterator[ChatEvent]:
     yield StatusEvent(state="retrieving", label="Searching the knowledge base")
-    route = None
+    grounding_bundle = None
     try:
         route = validate_route_authority(
             await retrieval_route_resolver.resolve_route()
@@ -142,67 +138,39 @@ async def chat_event_stream(
         )
     except ValidationError:
         logger.warning("retrieval failed", extra={"retrieval_error_code": "invalid_request"})
-        retrieval_result = None
+        grounding_bundle = None
     except asyncio.CancelledError:
         raise
     except RetrievalError as error:
         logger.warning("retrieval failed", extra={"retrieval_error_code": error.code})
-        retrieval_result = None
+        grounding_bundle = None
     except Exception:
         logger.warning("retrieval failed", extra={"retrieval_error_code": "malformed_result"})
-        retrieval_result = None
+        grounding_bundle = None
     else:
         try:
             route = validate_route_authority(route, requested_scope=retrieval_request.scope)
             adapter_result = await route.adapter.retrieve(retrieval_request)
-            result_payload = (
-                adapter_result.model_dump()
-                if isinstance(adapter_result, RetrievalResult)
-                else adapter_result
+            grounding_bundle = compile_grounding_bundle(
+                request=retrieval_request,
+                adapter_result=adapter_result,
             )
-            retrieval_result = RetrievalResult.model_validate(result_payload)
-            if (
-                retrieval_result.scope != retrieval_request.scope
-                or retrieval_result.distance_measure != retrieval_request.distance_measure
-                or retrieval_result.max_distance != retrieval_request.max_distance
-                or len(retrieval_result.chunks) > retrieval_request.max_results
-            ):
-                raise RetrievalError("malformed_result") from None
-        except ValidationError:
-            logger.warning(
-                "retrieval failed", extra={"retrieval_error_code": "malformed_result"}
-            )
-            retrieval_result = None
         except RetrievalError as error:
             logger.warning("retrieval failed", extra={"retrieval_error_code": error.code})
-            retrieval_result = None
+            grounding_bundle = None
         except Exception:
             logger.warning(
                 "retrieval failed", extra={"retrieval_error_code": "malformed_result"}
             )
-            retrieval_result = None
+            grounding_bundle = None
 
-    if retrieval_result is None or retrieval_result.refused:
+    if grounding_bundle is None:
         yield StatusEvent(state="refusing", label="No confident match found")
         yield ChunkEvent(delta=REFUSAL_MESSAGE)
         yield DoneEvent(finish_reason="refused")
         return
 
-    chunks = retrieval_result.chunks
-    try:
-        retrieved_context = build_context_block(chunks)
-    except RetrievalError as error:
-        logger.warning("retrieval failed", extra={"retrieval_error_code": error.code})
-        yield StatusEvent(state="refusing", label="No confident match found")
-        yield ChunkEvent(delta=REFUSAL_MESSAGE)
-        yield DoneEvent(finish_reason="refused")
-        return
-
-    citation_chunks = [
-        chunk.model_copy(update={"source": chunk.source[:CITATION_TITLE_MAX_CHARS]})
-        for chunk in chunks
-    ]
-    citations = build_citations(citation_chunks)[:CITATIONS_MAX_COUNT]
+    citations = list(grounding_bundle.citations)
     if citations:
         yield CitationsEvent(sources=citations)
 
@@ -212,7 +180,7 @@ async def chat_event_stream(
             system_instruction=system_instruction,
             message=body.message,
             history=body.history,
-            retrieved_context=retrieved_context,
+            retrieved_context=grounding_bundle.retrieved_context,
             max_output_tokens=max_output_tokens,
             max_output_chars=max_output_chars,
         )

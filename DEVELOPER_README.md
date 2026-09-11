@@ -299,6 +299,12 @@ Firestore adapter accepts one configured exact reference and either cosine or
 Euclidean distance without changing the public chat or SSE contracts. Internally, chat
 resolves one scope-plus-adapter route exactly once and retains that binding for the whole
 request, so a later active-pointer change affects only the next request.
+After retrieval, `retrieval_integrity.py` strictly reconstructs the request and result,
+keeps only chunks whose distance is at or below the application request threshold,
+and derives deterministic JSON context plus citations from that one eligible tuple.
+The final serialized provider context is measured as Python characters: exactly
+12,000 is accepted and 12,001 is refused before citations or provider invocation.
+Eligible chunks are never reranked, truncated, or dropped to fit.
 `RETRIEVAL_TOP_K` must be an integer from 1 through 6 and
 `RETRIEVAL_MAX_DISTANCE` must be finite and non-negative; invalid settings stop
 startup rather than changing retrieval behavior silently.
@@ -307,9 +313,9 @@ WISMO tool result includes `"mode": "deep_link" | "api"`. The system prompt forb
 
 ## 5. Security Model
 
-* **Prompt injection**: fixed prompt template with delimited sections; retrieved chunks wrapped in explicit untrusted-context markers; instruction hierarchy stated; adversarial suite (`backend/tests/adversarial/`) includes poisoned-document retrieval cases and must pass in CI.
+* **Prompt injection**: retrieved `source` and `text` values are encoded in one deterministic JSON object after a fixed instruction that labels them untrusted data. Literal `<`, `>`, and `&` are escaped, and poisoned-document tests prove exact JSON round trips and structural separation. This does not prove universal semantic model compliance.
 * **Endpoint abuse**: Origin allowlist + CORS, per-IP and per-session token buckets, daily budget cap that degrades to a static "high demand" message, optional signed widget token.
-* **Output**: PII scrubber on responses; citation-required policy; refusal template on low retrieval confidence.
+* **Output**: bounded streaming and a fixed refusal template on low retrieval confidence. Output PII scrubbing and citation-required answer enforcement are not built.
 * **Supply chain**: uv and npm lockfiles with hashes; separate default and optional-Gemini backend CycloneDX SBOMs; Grype gates for both image profiles; digest-pinned images; dependency cooldown window. Release tags ship SBOM + checksums.
 * **Data**: raw messages never persisted server-side; metrics are counters and topic labels only. Optional ticket persistence (Phase 3) is off by default and documented in [docs/PRIVACY.md](docs/PRIVACY.md).
 
