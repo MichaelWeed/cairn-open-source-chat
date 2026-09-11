@@ -112,6 +112,11 @@ Widget compatibility 0.2.0 adds the fail-closed configuration, capability probe,
 privacy, event, CSP, and accessibility contract documented in [WIDGET.md](WIDGET.md).
 It also excludes refusals from later browser history and tightens URLs, names,
 themes, and nonces as described in that guide's migration section.
+The widget accepts canonical capability-schema values in major 1 from minor 1
+onward, so additive `1.2` manifest fields remain compatible without dropping
+`1.1` support. It rejects `1.0`, other majors, noncanonical version strings, and
+non-string schema values before ignoring any unknown additive fields. This repair
+does not change widget compatibility `0.2.0`, chat API `1.0`, or SSE `1.1`.
 `widget.production_configuration = "available"` identifies only the packaged
 widget configuration boundary. It is not deployment certification, provider or
 hosted readiness, or deployment-wide abuse control.

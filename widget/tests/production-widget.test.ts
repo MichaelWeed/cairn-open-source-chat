@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   CAPABILITY_RESPONSE_MAX_BYTES,
@@ -104,15 +105,62 @@ function testCapabilitySubset(): void {
     future: true,
   };
   assert.equal(validateCapabilityManifest(valid), true);
-  for (const invalid of [
-    null,
-    {},
-    { ...valid, schema_version: "1.0" },
-    { ...valid, compatibility: { ...valid.compatibility, chat_api: "2.0" } },
-    { ...valid, compatibility: { ...valid.compatibility, sse_events: "1.0" } },
-    { ...valid, compatibility: { ...valid.compatibility, widget: "0.1.0" } },
-    { ...valid, capabilities: { widget: { production_configuration: "planned" } } },
-  ]) assert.equal(validateCapabilityManifest(invalid), false);
+  for (const schemaVersion of ["1.9", "1.10", "1.999"]) {
+    assert.equal(
+      validateCapabilityManifest({ ...valid, schema_version: schemaVersion }),
+      true,
+      `canonical future schema ${schemaVersion}`,
+    );
+  }
+  const packagedManifest: unknown = JSON.parse(
+    readFileSync(
+      new URL("../../backend/app/capabilities.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  assert.equal(
+    validateCapabilityManifest(packagedManifest),
+    true,
+    "the packaged backend capability manifest must negotiate successfully",
+  );
+
+  const { schema_version: _schemaVersion, ...withoutSchemaVersion } = valid;
+  const invalid = [
+    ["null manifest", null],
+    ["empty manifest", {}],
+    ["schema 1.0", { ...valid, schema_version: "1.0" }],
+    ["other major", { ...valid, schema_version: "2.0" }],
+    ["zero major", { ...valid, schema_version: "0.1" }],
+    ["leading-zero minor", { ...valid, schema_version: "1.01" }],
+    ["extra segment", { ...valid, schema_version: "1.1.0" }],
+    ["leading plus", { ...valid, schema_version: "+1.1" }],
+    ["leading minus", { ...valid, schema_version: "-1.1" }],
+    ["suffix", { ...valid, schema_version: "1.1-preview" }],
+    ["empty schema", { ...valid, schema_version: "" }],
+    ["leading space", { ...valid, schema_version: " 1.1" }],
+    ["trailing space", { ...valid, schema_version: "1.1 " }],
+    ["leading tab", { ...valid, schema_version: "\t1.1" }],
+    ["trailing carriage return", { ...valid, schema_version: "1.1\r" }],
+    ["trailing line feed", { ...valid, schema_version: "1.1\n" }],
+    ["Unicode line separator", { ...valid, schema_version: "1.1\u2028" }],
+    ["Unicode paragraph separator", { ...valid, schema_version: "\u20291.1" }],
+    ["missing minor", { ...valid, schema_version: "1" }],
+    ["empty minor", { ...valid, schema_version: "1." }],
+    ["missing major", { ...valid, schema_version: ".1" }],
+    ["boolean schema", { ...valid, schema_version: true }],
+    ["object schema", { ...valid, schema_version: {} }],
+    ["array schema", { ...valid, schema_version: ["1.1"] }],
+    ["number schema", { ...valid, schema_version: 1.1 }],
+    ["null schema", { ...valid, schema_version: null }],
+    ["missing schema", withoutSchemaVersion],
+    ["chat API mismatch", { ...valid, compatibility: { ...valid.compatibility, chat_api: "2.0" } }],
+    ["SSE mismatch", { ...valid, compatibility: { ...valid.compatibility, sse_events: "1.0" } }],
+    ["widget mismatch", { ...valid, compatibility: { ...valid.compatibility, widget: "0.1.0" } }],
+    ["widget unavailable", { ...valid, capabilities: { widget: { production_configuration: "planned" } } }],
+  ] as const;
+  for (const [name, manifest] of invalid) {
+    assert.equal(validateCapabilityManifest(manifest), false, name);
+  }
 }
 
 function testFrozenSafetyConstants(): void {

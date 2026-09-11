@@ -52,13 +52,15 @@ widget-owned field. Dynamic changes are read from and applied through the standa
 
 On first open, the element sends one `GET <api-url>/api/v1/capabilities` with
 credentials omitted, no referrer, no cache, and `Accept: application/json`. It
-requires schema `1.1`, chat API `1.0`, SSE `1.1`, widget `0.2.0`, and
-`capabilities.widget.production_configuration = "available"`. The 5-second
-deadline includes headers and the body, which is fatally decoded as UTF-8 and
-limited to 16 KiB. Malformed, oversized, timed-out, CORS-blocked, or mismatched
-responses leave chat disabled and send no message request. Success is cached only
-for that element and canonical API base; failure can be retried by closing and
-opening again.
+accepts canonical capability schema `1.x` values from `1.1` onward, including the
+packaged `1.2` manifest, then requires chat API `1.0`, SSE `1.1`, widget `0.2.0`,
+and `capabilities.widget.production_configuration = "available"`. Unknown
+additive fields are ignored only after that same-major schema check succeeds.
+The 5-second deadline includes headers and the body, which is fatally decoded as
+UTF-8 and limited to 16 KiB. Malformed, oversized, timed-out, CORS-blocked, or
+mismatched responses leave chat disabled and send no message request. Success is
+cached only for that element and canonical API base; failure can be retried by
+closing and opening again.
 
 The browser supplies the standard `Origin` header. Cairn's exact
 `ORIGIN_ALLOWLIST` and CORS response are authoritative. Cookies and authorization
