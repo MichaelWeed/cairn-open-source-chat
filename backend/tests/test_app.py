@@ -1,7 +1,9 @@
+import asyncio
 import hashlib
 import sqlite3
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from fastapi import FastAPI
@@ -17,8 +19,9 @@ from app.ingest.candidate_persistence import (
     VerifiedCandidateEvidence,
 )
 from app.ingest.startup import CorpusStartupError
-from app.main import create_app
+from app.main import _close_application_resources, create_app
 from app.providers.echo import EchoProvider
+from app.readiness import OllamaCatalogReadiness, ReadinessError
 from app.retrieval_contracts import (
     ExactCorpusReference,
     LocalActiveScope,
@@ -28,6 +31,7 @@ from app.retrieval_contracts import (
     RetrievalResult,
     RetrievalScope,
 )
+from app.retrieval_firestore import FirestoreReadinessQuery, FirestoreRetrievalAdapter
 from app.retrieval_route import (
     ExactRetrievalAdapterBinding,
     LifecycleRetrievalRouteResolver,
@@ -38,7 +42,12 @@ from app.vectorstore import DocumentCollection, VectorStoreClient, get_vector_cl
 
 @pytest.fixture
 def app(tmp_path: Path) -> FastAPI:
-    settings = Settings(database_path=tmp_path / "test.db", chroma_path=tmp_path / "chroma")
+    settings = Settings(
+        provider="echo",
+        embedding_provider="fake",
+        database_path=tmp_path / "test.db",
+        chroma_path=tmp_path / "chroma",
+    )
     return create_app(settings)
 
 
@@ -124,6 +133,42 @@ def test_readyz_reports_unready_when_vector_store_unavailable(
     assert body["checks"]["database"] is True
 
 
+@pytest.mark.parametrize("truth", [True, False])
+def test_readyz_rejects_truthy_and_falsey_malformed_corpus_state_content_free(
+    app: FastAPI,
+    client: TestClient,
+    caplog: pytest.LogCaptureFixture,
+    truth: bool,
+) -> None:
+    canary = f"PRIVATE-MALFORMED-CORPUS-{truth}"
+
+    class MalformedCorpusState:
+        def __init__(self) -> None:
+            self.bool_calls = 0
+
+        def __bool__(self) -> bool:
+            self.bool_calls += 1
+            return truth
+
+        def __repr__(self) -> str:
+            return canary
+
+    malformed = MalformedCorpusState()
+    app.state.corpus_ready = malformed
+    caplog.set_level("DEBUG")
+
+    response = client.get("/readyz")
+
+    assert response.status_code == 503
+    assert response.content == (
+        b'{"status":"not_ready","checks":{"database":true,'
+        b'"vector_store":true,"corpus":false}}'
+    )
+    assert malformed.bool_calls == 0
+    assert canary not in response.text
+    assert canary not in caplog.text
+
+
 def test_database_file_created(tmp_path: Path) -> None:
     db_path = tmp_path / "nested" / "test.db"
     settings = Settings(database_path=db_path, chroma_path=tmp_path / "chroma")
@@ -184,6 +229,14 @@ def test_invalid_snapshot_is_rejected_before_every_application_side_effect(
             "app.main.StaticRetrievalRouteResolver",
             tripwire("lifecycle"),
         ),
+        "readiness": (
+            "app.main.ReadinessEvaluator",
+            tripwire("readiness"),
+        ),
+        "catalog": (
+            "app.main.OllamaCatalogProbe.application_owned",
+            tripwire("catalog"),
+        ),
         "candidate_store": (
             "app.ingest.candidate_firestore.create_candidate_store",
             tripwire("candidate_store"),
@@ -238,6 +291,8 @@ def test_create_app_isolates_snapshot_from_pre_lifespan_caller_mutation(
     original_db = tmp_path / "original.db"
     original_chroma = tmp_path / "original-chroma"
     source = Settings(
+        provider="echo",
+        embedding_provider="fake",
         database_path=original_db,
         chroma_path=original_chroma,
         admin_bootstrap_password="original-secret",
@@ -319,9 +374,110 @@ class _InjectedAdapter:
         )
 
 
+def _firestore_settings(tmp_path: Path) -> Settings:
+    return Settings(
+        retrieval_backend="firestore",
+        firestore_project_id="cairn1",
+        firestore_corpus_id="docs",
+        firestore_corpus_version="v1",
+        firestore_embedding_identity="embed-v1",
+        firestore_embedding_dimensions=2,
+        firestore_distance_measure="cosine",
+        firestore_max_distance=0.8,
+        firestore_query_timeout_seconds=5,
+        firestore_max_retries=1,
+        provider="echo",
+        embedding_provider="fake",
+        database_path=tmp_path / "test.db",
+        chroma_path=tmp_path / "chroma",
+    )
+
+
+def test_firestore_static_readiness_uses_configured_scope_with_injected_adapter(
+    tmp_path: Path,
+) -> None:
+    class _Client:
+        async def readiness_get(self, request: FirestoreReadinessQuery) -> None:
+            del request
+
+    caller_scope = ExactCorpusReference(corpus_id="other", corpus_version="v2")
+    adapter = FirestoreRetrievalAdapter(
+        client=cast(Any, _Client()),
+        embedding_function=cast(Any, lambda values: [[0.0, 0.0] for _ in values]),
+        scope=caller_scope,
+        embedding_identity="embed-v1",
+        embedding_dimensions=2,
+        distance_measure="cosine",
+        timeout_seconds=5,
+        max_retries=1,
+        owns_client=False,
+    )
+    application = create_app(
+        _firestore_settings(tmp_path),
+        provider=EchoProvider(),
+        retrieval_adapter=adapter,
+        retrieval_scope=caller_scope,
+        retrieval_distance_measure="cosine",
+        retrieval_max_distance=0.8,
+    )
+    with TestClient(application) as client:
+        response = client.get("/readyz")
+        assert response.status_code == 503
+        assert response.content == (
+            b'{"status":"not_ready","checks":{"database":true,'
+            b'"vector_store":false,"corpus":true}}'
+        )
+    assert application.state.retrieval_scope == caller_scope
+
+
+def test_legacy_selection_never_invokes_caller_truthiness(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    class _HostileScope:
+        def __bool__(self) -> bool:
+            calls.append("scope")
+            raise AssertionError("scope truthiness invoked")
+
+    class _HostileMeasure(str):
+        def __bool__(self) -> bool:
+            calls.append("measure")
+            raise AssertionError("measure truthiness invoked")
+
+    application = create_app(
+        Settings(
+            database_path=tmp_path / "test.db",
+            chroma_path=tmp_path / "chroma",
+        ),
+        provider=EchoProvider(),
+        retrieval_adapter=_InjectedAdapter(),
+        retrieval_scope=cast(Any, _HostileScope()),
+        retrieval_distance_measure="cosine",
+    )
+    assert calls == []
+    with pytest.raises(RetrievalError):
+        with TestClient(application):
+            pass
+    assert calls == []
+
+    with pytest.raises(RetrievalError) as caught:
+        create_app(
+            Settings(
+                database_path=tmp_path / "measure.db",
+                chroma_path=tmp_path / "measure-chroma",
+            ),
+            provider=EchoProvider(),
+            retrieval_adapter=_InjectedAdapter(),
+            retrieval_scope=LocalActiveScope(),
+            retrieval_distance_measure=cast(Any, _HostileMeasure("cosine")),
+        )
+    assert caught.value.code == "invalid_request"
+    assert calls == []
+
+
 class _CloseTrackedActiveStateResolver:
     def __init__(self) -> None:
         self.close_calls = 0
+        self.resolve_calls = 0
 
     async def resolve_active_state(
         self,
@@ -329,6 +485,7 @@ class _CloseTrackedActiveStateResolver:
         trust_policy: AttestationTrustPolicy,
     ) -> ResolvedActiveState:
         del corpus_id, trust_policy
+        self.resolve_calls += 1
         raise AssertionError("active state must not be read during application lifespan")
 
     async def aclose(self) -> None:
@@ -449,6 +606,75 @@ def test_injected_lifecycle_dependencies_are_not_closed_after_startup_failure(
     assert candidate.close_calls == 0
 
 
+def test_production_lifecycle_composition_is_misconfigured_without_hooks(
+    tmp_path: Path,
+) -> None:
+    class _Catalog:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def check_readiness(self) -> object:
+            self.calls += 1
+            return OllamaCatalogReadiness(
+                reachable=True,
+                model_names=("generation-model", "embedding-model"),
+            )
+
+    resolver, active, _ = _caller_owned_lifecycle_resolver()
+    catalog = _Catalog()
+    app = create_app(
+        Settings(
+            deployment_mode="production",
+            provider="ollama",
+            ollama_model="generation-model",
+            embedding_provider="ollama",
+            embedding_model="embedding-model",
+            database_path=tmp_path / "test.db",
+            chroma_path=tmp_path / "chroma",
+        ),
+        provider=EchoProvider(),
+        retrieval_route_resolver=resolver,
+        ollama_catalog_probe=catalog,
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/readyz")
+        assert response.status_code == 503
+        assert response.content == (
+            b'{"status":"not_ready","checks":{"database":true,'
+            b'"vector_store":false,"corpus":false}}'
+        )
+    assert active.resolve_calls == 0
+    assert catalog.calls == 1
+
+
+def test_lifecycle_subclass_cannot_select_exact_profile(tmp_path: Path) -> None:
+    class _LifecycleSubclass(LifecycleRetrievalRouteResolver):
+        pass
+
+    resolver, active, candidate = _caller_owned_lifecycle_resolver()
+    subclass = _LifecycleSubclass(
+        corpus_id="public-docs",
+        active_state_resolver=active,
+        verify_attested_candidate=candidate.verify_attested_candidate,
+        trust_policy_supplier=lambda: _UnusedTrustPolicy(),
+        expected_embedding_identity="embedding-v1",
+        expected_embedding_dimensions=2,
+        adapter_factory=_UnusedExactAdapterFactory(),
+    )
+    app = create_app(
+        Settings(database_path=tmp_path / "test.db", chroma_path=tmp_path / "chroma"),
+        provider=EchoProvider(),
+        retrieval_route_resolver=subclass,
+    )
+    with TestClient(app) as client:
+        response = client.get("/readyz")
+        assert response.status_code == 503
+        report = asyncio.run(app.state.readiness_evaluator.evaluate())
+        assert report.checks[6].state == "not_required"
+    assert active.resolve_calls == 2
+
+
 @pytest.mark.parametrize(
     "legacy",
     ["adapter", "scope"],
@@ -549,3 +775,89 @@ def test_lifespan_closes_vector_client_after_failed_startup(
 
     assert observed[0].closed is True
     assert observed[0].close_calls == 1
+
+
+async def test_resource_close_cancellation_stops_every_later_close() -> None:
+    events: list[str] = []
+
+    class _CancelledRetrieval:
+        async def aclose(self) -> None:
+            events.append("retrieval")
+            raise asyncio.CancelledError
+
+    class _SyncResource:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def close(self) -> None:
+            events.append(self.name)
+
+    class _AsyncResource:
+        def __init__(self, name: str, cancel: bool = False) -> None:
+            self.name = name
+            self.cancel = cancel
+
+        async def aclose(self) -> None:
+            events.append(self.name)
+            if self.cancel:
+                raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await _close_application_resources(
+            owns_retrieval=True,
+            retrieval=cast(Any, _CancelledRetrieval()),
+            vector_client=_SyncResource("vector"),
+            db=cast(Any, _SyncResource("database")),
+            catalog_probe=cast(Any, _AsyncResource("catalog")),
+            owns_provider=True,
+            provider=cast(Any, _AsyncResource("provider")),
+        )
+    assert events == ["retrieval"]
+
+    events.clear()
+    with pytest.raises(asyncio.CancelledError):
+        await _close_application_resources(
+            owns_retrieval=False,
+            retrieval=None,
+            vector_client=_SyncResource("vector"),
+            db=cast(Any, _SyncResource("database")),
+            catalog_probe=cast(Any, _AsyncResource("catalog", cancel=True)),
+            owns_provider=True,
+            provider=cast(Any, _AsyncResource("provider")),
+        )
+    assert events == ["vector", "database", "catalog"]
+
+
+async def test_ordinary_resource_close_failure_is_content_free_and_finishes_cleanup() -> None:
+    canary = "PRIVATE-RESOURCE-CLOSE-CANARY"
+    events: list[str] = []
+
+    class _Broken:
+        def close(self) -> None:
+            events.append("broken")
+            raise RuntimeError(canary)
+
+    class _Closed:
+        def close(self) -> None:
+            events.append("closed")
+
+    with pytest.raises(ReadinessError) as caught:
+        await _close_application_resources(
+            owns_retrieval=False,
+            retrieval=None,
+            vector_client=_Broken(),
+            db=cast(Any, _Closed()),
+            catalog_probe=None,
+            owns_provider=False,
+            provider=EchoProvider(),
+        )
+    rendered = (
+        str(caught.value)
+        + repr(caught.value)
+        + repr(caught.value.args)
+        + repr(vars(caught.value))
+        + repr(caught.value.__cause__)
+        + repr(caught.value.__context__)
+    )
+    assert canary not in rendered
+    assert events == ["broken", "closed"]

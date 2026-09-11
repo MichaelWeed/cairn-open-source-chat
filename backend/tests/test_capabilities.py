@@ -77,6 +77,10 @@ EXPECTED_MANIFEST: dict[str, Any] = {
             **ACCEPTED_BASE_MANIFEST["capabilities"]["corpus"],
             "local_directory": "development_only",
         },
+        "operations": {
+            **ACCEPTED_BASE_MANIFEST["capabilities"]["operations"],
+            "hosted_readiness": "development_only",
+        },
     },
 }
 
@@ -108,23 +112,24 @@ def test_endpoint_matches_packaged_manifest_exactly(client: TestClient) -> None:
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/json"
     assert response.json() == asset == EXPECTED_MANIFEST
-    assert len(response.content) == 976
+    assert len(response.content) == 985
     assert (
         hashlib.sha256(response.content).hexdigest()
-        == "fad756f2c3bbda2a89d74665ff8c18b5d46503d5e2e65df58216847d1d5b6d16"
+        == "f1f4efc723038a69bf030b5a776786c5a5cb0a44bf46cb28712f36b8d717f980"
     )
 
 
-def test_packaged_manifest_changes_only_local_directory_from_accepted_base() -> None:
+def test_packaged_manifest_changes_only_accepted_capability_leaves() -> None:
     asset_bytes = MANIFEST_PATH.read_bytes()
     asset = json.loads(asset_bytes)
 
     assert (
         hashlib.sha256(asset_bytes).hexdigest()
-        == "0c1f398299025543a55e13798479cfade8710aec255f27399d3308f0f796a422"
+        == "570c0cb3334f7720bf3c43eea8dbd760c96c52a2972dc7c0fb7e52b72f03f61e"
     )
     assert _changed_json_leaves(ACCEPTED_BASE_MANIFEST, asset) == {
-        "/capabilities/corpus/local_directory"
+        "/capabilities/corpus/local_directory",
+        "/capabilities/operations/hosted_readiness",
     }
 
 

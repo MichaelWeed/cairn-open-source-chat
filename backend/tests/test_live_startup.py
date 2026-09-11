@@ -284,6 +284,8 @@ def test_lifespan_ingests_through_its_own_app_state_handles(
     corpus.mkdir()
     (corpus / "support.md").write_text("Support policy")
     settings = Settings(
+        provider="echo",
+        embedding_provider="fake",
         database_path=tmp_path / "cairn.db",
         chroma_path=tmp_path / "chroma",
         corpus_path=corpus,

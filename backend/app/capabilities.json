@@ -45,7 +45,7 @@
       "liveness": "available",
       "local_readiness": "available",
       "capability_discovery": "available",
-      "hosted_readiness": "planned",
+      "hosted_readiness": "development_only",
       "provider_usage_cost": "available"
     }
   }

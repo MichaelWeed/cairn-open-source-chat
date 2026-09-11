@@ -63,7 +63,21 @@ from app.ingest.planner import (
     EmbeddingSpecification,
     plan_candidate,
 )
-from app.retrieval_contracts import MAX_SAFE_INTEGER, ExactCorpusReference
+from app.readiness import ReadinessEvaluator
+from app.retrieval_contracts import (
+    MAX_SAFE_INTEGER,
+    ExactCorpusReference,
+)
+from app.retrieval_firestore import (
+    FirestoreReadinessQuery,
+    FirestoreRetrievalAdapter,
+    FirestoreVectorQuery,
+    FirestoreVectorRow,
+)
+from app.retrieval_route import (
+    ExactRetrievalAdapterBinding,
+    LifecycleRetrievalRouteResolver,
+)
 
 
 def _forbidden(*_: object, **__: object) -> Any:
@@ -704,7 +718,9 @@ def test_public_and_local_compatibility_surfaces_match_accepted_base_bytes(
     # test makes it work in history-free archives and shallow CI checkouts.
     accepted_sha256 = {
         "backend/app/capabilities.json": (
-            "0c1f398299025543a55e13798479cfade8710aec255f27399d3308f0f796a422"
+            # KAN-44a changes only operations.hosted_readiness, whose exact
+            # one-leaf transition is independently frozen in test_capabilities.py.
+            "570c0cb3334f7720bf3c43eea8dbd760c96c52a2972dc7c0fb7e52b72f03f61e"
         ),
         "backend/app/capabilities.py": (
             "c53c439bbb18a7be4dc6031cde1892072a3c7248e4a8f6cd3b37effe0f4e0c7e"
@@ -2133,6 +2149,139 @@ async def test_resolve_active_is_registry_only_and_revocation_fails_closed() -> 
         await service.resolve_active_state("public-docs", Policy(trusted=False))
     assert revoked.value.code == "attestation_untrusted"
     assert len([call for call in store.calls if call[0] in {"switch", "remove"}]) == mutations
+
+
+@pytest.mark.asyncio
+async def test_readiness_stays_on_one_lifecycle_snapshot_during_a_to_b_switch() -> None:
+    class PausingVerifier(CandidateVerifier):
+        def __init__(self) -> None:
+            super().__init__()
+            self.armed = False
+            self.paused = False
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def __call__(
+            self,
+            corpus: ExactCorpusReference,
+            identity: AttestationIdentity,
+            verifier: AttestationVerifier,
+        ) -> VerifiedCandidateEvidence:
+            result = await super().__call__(corpus, identity, verifier)
+            if self.armed and not self.paused and corpus == _corpus("v1"):
+                self.paused = True
+                self.entered.set()
+                await self.release.wait()
+            return result
+
+    class VectorClient:
+        def __init__(self, *, fails: bool) -> None:
+            self.fails = fails
+            self.readiness_calls = 0
+
+        async def vector_get(
+            self, request: FirestoreVectorQuery
+        ) -> tuple[FirestoreVectorRow, ...]:
+            del request
+            raise AssertionError("readiness must not retrieve vectors")
+
+        async def readiness_get(self, request: FirestoreReadinessQuery) -> None:
+            del request
+            self.readiness_calls += 1
+            if self.fails:
+                raise RuntimeError("B store unavailable")
+
+        async def aclose(self) -> None:
+            raise AssertionError("borrowed vector client must not close")
+
+    class Factory:
+        def __init__(self) -> None:
+            self.clients: dict[str, VectorClient] = {}
+            self.calls: list[str] = []
+
+        def adapter_for(
+            self,
+            scope: ExactCorpusReference,
+            *,
+            embedding_identity: str,
+            embedding_dimensions: int,
+        ) -> ExactRetrievalAdapterBinding:
+            assert embedding_identity == "fixture-embedding-v1"
+            assert embedding_dimensions == 3
+            self.calls.append(scope.corpus_version)
+            client = self.clients.setdefault(
+                scope.corpus_version,
+                VectorClient(fails=scope.corpus_version == "v2"),
+            )
+            adapter = FirestoreRetrievalAdapter(
+                client=client,
+                embedding_function=lambda values: [[1.0, 2.0, 3.0] for _ in values],
+                scope=scope,
+                embedding_identity=embedding_identity,
+                embedding_dimensions=embedding_dimensions,
+                distance_measure="cosine",
+                timeout_seconds=3,
+                max_retries=0,
+                owns_client=False,
+            )
+            return ExactRetrievalAdapterBinding(
+                scope=scope,
+                embedding_identity=embedding_identity,
+                embedding_dimensions=embedding_dimensions,
+                adapter=adapter,
+            )
+
+    candidate = PausingVerifier()
+    service, _, _ = _service(verifier=candidate)
+    policy = Policy()
+    await service.mark_ready(_ready_request("v1"), policy)
+    await service.mark_ready(_ready_request("v2"), policy)
+    await service.switch_active(_switch("v1"), policy)
+
+    factory = Factory()
+    resolver = LifecycleRetrievalRouteResolver(
+        corpus_id="public-docs",
+        active_state_resolver=service,
+        verify_attested_candidate=candidate,
+        trust_policy_supplier=lambda: policy,
+        expected_embedding_identity="fixture-embedding-v1",
+        expected_embedding_dimensions=3,
+        adapter_factory=factory,
+    )
+    evaluator = ReadinessEvaluator(
+        database_probe=lambda: True,
+        corpus_probe=lambda: True,
+        local_vector_probe=lambda: (_ for _ in ()).throw(
+            AssertionError("lifecycle readiness must not use local heartbeat")
+        ),
+        retrieval_route_resolver=resolver,
+        retrieval_profile="lifecycle_exact",
+        expected_retrieval_scope=None,
+        provider_name="echo",
+        provider_model="",
+        embedding_name="fake",
+        embedding_model="",
+        gemini_probe=None,
+        ollama_catalog_probe=None,
+        budget_probe=None,
+    )
+
+    candidate.armed = True
+    in_flight = asyncio.create_task(evaluator.evaluate())
+    await asyncio.wait_for(candidate.entered.wait(), timeout=1)
+    await service.switch_active(_switch("v2", expected=("v1", 0)), policy)
+    candidate.release.set()
+    first = await in_flight
+    second = await evaluator.evaluate()
+
+    assert (first.checks[1].state, first.checks[6].state) == ("ready", "ready")
+    assert (second.checks[1].state, second.checks[6].state) == (
+        "unknown",
+        "unknown",
+    )
+    assert factory.calls == ["v1", "v2"]
+    assert factory.clients["v1"].readiness_calls == 1
+    assert factory.clients["v2"].readiness_calls == 1
 
 
 @pytest.mark.asyncio

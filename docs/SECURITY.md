@@ -139,5 +139,7 @@ this stage.
   — nothing else will alert you to CVEs disclosed after you installed.
 * Keep the local Ollama default unless you intentionally accept the Gemini data
   boundary. Selecting Gemini sends bounded chat inputs and retrieved support
-  context to Google; see [docs/PRIVACY.md](PRIVACY.md). The provider-local probe is
-  not part of `/readyz`, so optional adapter availability is not production readiness.
+  context to Google; see [docs/PRIVACY.md](PRIVACY.md). `/readyz` performs only the
+  selected provider's bounded content-free model probe. It never generates content
+  or exposes model/endpoint details, and development-only hosted readiness is not
+  production certification.

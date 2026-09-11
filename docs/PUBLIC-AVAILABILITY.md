@@ -40,6 +40,11 @@ but no author-operated deployment exists.
    corpus answer citing `returns.md`, `warranty.md`, and `shipping.md` before its
    `done` event. The demo then shut down cleanly and its port was closed.
 
+Runtime `/readyz` also evaluates the selected provider/model, embedding, and
+retrieval-route evidence internally while preserving its published response shape.
+Hosted readiness remains explicitly development-only; this is not a production
+deployment or hosted trust-policy claim.
+
 ## Evidence and maintenance note
 
 The README Actions badge now resolves as SVG HTTP 200 and GitHub detects the

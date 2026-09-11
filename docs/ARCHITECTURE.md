@@ -176,7 +176,10 @@ not a bug fix.
   exact durable readback and returns identity-bound evidence without signing or
   writing. The development-only route resolver binds one validated active state to one
   exact M6 adapter and repeats the authority check before retrieval or readiness.
-  Aggregate hosted readiness remains planned.
+  Aggregate readiness consumes that selected route probe plus provider/model and
+  embedding probes while preserving the existing public body. Hosted readiness
+  remains development-only because production lifecycle composition and a
+  production trust policy are absent.
 * **Contracts change only with their consumers.** The wire format is a frozen
   Pydantic model; changing it requires updating widget, tests, and documentation in
   the same change. See [ADR-0002](adr/0002-frozen-wire-contracts.md).

@@ -50,6 +50,13 @@ prompt-injection claim.
 
 ## API / functional (curl against the live server, not TestClient)
 
+Automated readiness tests cover unchanged `/healthz` and `/readyz` bodies plus
+offline Echo/fake, mocked Ollama and Gemini model discovery, static local/Firestore,
+and injected lifecycle-exact profiles. They verify exact byte/model/name limits,
+one shared Ollama catalog call, one selected route probe, cancellation, ownership,
+and absence of raw model, endpoint, scope, error, or credential data. Validation
+never contacts a live provider or store.
+
 `backend/tests/` covers this in-process; these rows exist because the real
 ASGI server + real HTTP transport can behave differently than `TestClient`
 (timeouts especially — see finding below). Re-run after any change to
