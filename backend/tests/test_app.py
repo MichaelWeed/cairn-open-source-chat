@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import sqlite3
 from collections.abc import Callable, Iterator
+from datetime import date
 from pathlib import Path
 from typing import Any, cast
 
@@ -22,6 +23,11 @@ from app.ingest.startup import CorpusStartupError
 from app.main import _close_application_resources, create_app
 from app.providers.echo import EchoProvider
 from app.readiness import OllamaCatalogReadiness, ReadinessError
+from app.request_accounting import (
+    ProviderAttemptPolicy,
+    RequestAccountingError,
+    RequestAccountingSessionFactory,
+)
 from app.retrieval_contracts import (
     ExactCorpusReference,
     LocalActiveScope,
@@ -67,13 +73,60 @@ def test_readyz(client: TestClient) -> None:
     resp = client.get("/readyz")
     assert resp.status_code == 200
     assert resp.content == (
-        b'{"status":"ok","checks":{"database":true,"vector_store":true,'
-        b'"corpus":true}}'
+        b'{"status":"ok","checks":{"database":true,"vector_store":true,"corpus":true}}'
     )
     body = resp.json()
     assert body["status"] == "ok"
     assert body["checks"]["database"] is True
     assert body["checks"]["vector_store"] is True
+
+
+def test_accounting_factory_mismatch_precedes_provider_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def provider_tripwire(settings: Settings) -> EchoProvider:
+        del settings
+        calls.append("provider")
+        raise AssertionError("provider construction must not run")
+
+    date_calls = 0
+
+    def today() -> date:
+        nonlocal date_calls
+        date_calls += 1
+        return date(2026, 9, 10)
+
+    factory = RequestAccountingSessionFactory(
+        policy=ProviderAttemptPolicy(provider="ollama", model="m", max_attempts=1),
+        date_source=today,
+    )
+    monkeypatch.setattr("app.main._default_provider", provider_tripwire)
+    with pytest.raises(RequestAccountingError):
+        create_app(Settings(provider="echo"), request_accounting_factory=factory)
+    assert calls == []
+    assert date_calls == 0
+
+
+def test_mutated_accounting_factory_is_rejected_before_provider_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def provider_tripwire(settings: Settings) -> EchoProvider:
+        del settings
+        calls.append("provider")
+        raise AssertionError("provider construction must not run")
+
+    factory = RequestAccountingSessionFactory(
+        policy=ProviderAttemptPolicy(provider="echo", model="", max_attempts=0)
+    )
+    object.__setattr__(factory, "_policy", object())
+    monkeypatch.setattr("app.main._default_provider", provider_tripwire)
+    with pytest.raises(RequestAccountingError):
+        create_app(Settings(provider="echo"), request_accounting_factory=factory)
+    assert calls == []
 
 
 def test_production_guard_preserves_recursive_startup_source_bytes() -> None:
@@ -107,8 +160,7 @@ def test_readyz_reports_unready_when_db_unavailable(app: FastAPI, client: TestCl
     resp = client.get("/readyz")
     assert resp.status_code == 503
     assert resp.content == (
-        b'{"status":"not_ready","checks":{"database":false,'
-        b'"vector_store":true,"corpus":true}}'
+        b'{"status":"not_ready","checks":{"database":false,"vector_store":true,"corpus":true}}'
     )
     assert resp.json()["checks"]["database"] is False
 
@@ -125,8 +177,7 @@ def test_readyz_reports_unready_when_vector_store_unavailable(
     resp = client.get("/readyz")
     assert resp.status_code == 503
     assert resp.content == (
-        b'{"status":"not_ready","checks":{"database":true,'
-        b'"vector_store":false,"corpus":true}}'
+        b'{"status":"not_ready","checks":{"database":true,"vector_store":false,"corpus":true}}'
     )
     body = resp.json()
     assert body["checks"]["vector_store"] is False
@@ -161,8 +212,7 @@ def test_readyz_rejects_truthy_and_falsey_malformed_corpus_state_content_free(
 
     assert response.status_code == 503
     assert response.content == (
-        b'{"status":"not_ready","checks":{"database":true,'
-        b'"vector_store":true,"corpus":false}}'
+        b'{"status":"not_ready","checks":{"database":true,"vector_store":true,"corpus":false}}'
     )
     assert malformed.bool_calls == 0
     assert canary not in response.text
@@ -424,8 +474,7 @@ def test_firestore_static_readiness_uses_configured_scope_with_injected_adapter(
         response = client.get("/readyz")
         assert response.status_code == 503
         assert response.content == (
-            b'{"status":"not_ready","checks":{"database":true,'
-            b'"vector_store":false,"corpus":true}}'
+            b'{"status":"not_ready","checks":{"database":true,"vector_store":false,"corpus":true}}'
         )
     assert application.state.retrieval_scope == caller_scope
 
@@ -641,8 +690,7 @@ def test_production_lifecycle_composition_is_misconfigured_without_hooks(
         response = client.get("/readyz")
         assert response.status_code == 503
         assert response.content == (
-            b'{"status":"not_ready","checks":{"database":true,'
-            b'"vector_store":false,"corpus":false}}'
+            b'{"status":"not_ready","checks":{"database":true,"vector_store":false,"corpus":false}}'
         )
     assert active.resolve_calls == 0
     assert catalog.calls == 1

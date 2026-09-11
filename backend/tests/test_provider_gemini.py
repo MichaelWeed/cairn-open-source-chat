@@ -2,6 +2,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
+from datetime import date
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -18,6 +19,11 @@ from app.providers.gemini import (
     GeminiProvider,
     GeminiProviderError,
     create_gemini_provider,
+)
+from app.request_accounting import (
+    ProviderAttemptPolicy,
+    RequestAccountingError,
+    RequestAccountingSession,
 )
 
 
@@ -412,6 +418,45 @@ async def test_transient_failure_retries_only_before_any_sdk_item() -> None:
     assert observed_stream.closed is True
 
 
+async def test_retry_attempts_have_distinct_accounting_histories_before_sleep() -> None:
+    delay_observed_attempts: list[int] = []
+    session = RequestAccountingSession(
+        attempt_date=date(2026, 9, 10),
+        price_snapshots=(),
+        policy=ProviderAttemptPolicy(provider="gemini", model="gemini-3.8-flash", max_attempts=2),
+    )
+
+    async def delay(_: float) -> None:
+        delay_observed_attempts.append(len(session._attempts))
+        assert session._attempts[0].completion == "error"
+
+    models = _Models([_StatusError(503), _Stream([_Item(text="ok")])])
+    provider = _provider(models, sleep=delay)
+    events = [event async for event in provider.stream(_request(), observer=session)]
+    assert [event.kind for event in events] == ["text"]
+    summary = session.finalize("completed")
+    assert delay_observed_attempts == [1]
+    assert [attempt.identity.provider_attempt for attempt in summary.attempts] == [1, 2]
+    settled = [cast(Any, attempt).cost_record for attempt in summary.attempts]
+    assert [record.completion_state for record in settled] == [
+        "error",
+        "completed",
+    ]
+
+
+async def test_gemini_observer_start_failure_prevents_sdk_and_retry() -> None:
+    class FailedObserver:
+        def attempt_started(self, identity: object) -> None:
+            del identity
+            raise RuntimeError("OBSERVER-CANARY")
+
+    models = _Models([_Stream([_Item(text="must-not-run")])])
+    with pytest.raises(RequestAccountingError) as caught:
+        await anext(_provider(models).stream(_request(), observer=FailedObserver()))  # type: ignore[arg-type]
+    assert models.calls == []
+    assert "OBSERVER-CANARY" not in str(caught.value)
+
+
 @pytest.mark.parametrize(
     "status,code,retryable",
     [
@@ -619,9 +664,7 @@ async def test_throwing_close_preserves_generation_failure_and_timeout() -> None
             return _Item(text="late")
 
     timed_stream = _BlockingCloseStream([])
-    provider = _provider(
-        _Models([timed_stream]), timeout_seconds=0.001, max_retries=0
-    )
+    provider = _provider(_Models([timed_stream]), timeout_seconds=0.001, max_retries=0)
     with pytest.raises(GeminiProviderError) as caught:
         await _collect(provider)
     assert caught.value.code == "provider_timeout"
@@ -649,9 +692,7 @@ async def test_throwing_close_does_not_replace_early_close_or_cancellation() -> 
             return _Item(text="late")
 
     cancelled_stream = _BlockingCloseStream([])
-    task = asyncio.create_task(
-        _collect(_provider(_Models([cancelled_stream]), timeout_seconds=1))
-    )
+    task = asyncio.create_task(_collect(_provider(_Models([cancelled_stream]), timeout_seconds=1)))
     await started.wait()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -673,9 +714,7 @@ async def test_cancellation_during_cleanup_replaces_recorded_provider_failure() 
             await asyncio.Event().wait()
 
     stream = _BlockingCloseStream()
-    task = asyncio.create_task(
-        _collect(_provider(_Models([stream]), max_retries=0))
-    )
+    task = asyncio.create_task(_collect(_provider(_Models([stream]), max_retries=0)))
     await close_started.wait()
     task.cancel()
 
@@ -776,9 +815,7 @@ async def test_timeout_covers_stream_creation_and_iteration() -> None:
 
     stream = _IterationStream([])
     with pytest.raises(GeminiProviderError) as caught:
-        await _collect(
-            _provider(_Models([stream]), timeout_seconds=0.001, max_retries=0)
-        )
+        await _collect(_provider(_Models([stream]), timeout_seconds=0.001, max_retries=0))
     assert caught.value.code == "provider_timeout"
     assert stream.closed is True
 
@@ -826,9 +863,7 @@ async def test_readiness_timeout_and_cancellation_are_content_free() -> None:
             await release.wait()
             return SimpleNamespace(name=model, supported_generation_methods=["generateContent"])
 
-    timed = await _provider(
-        _ReadinessModels([]), timeout_seconds=0.001
-    ).check_readiness()
+    timed = await _provider(_ReadinessModels([]), timeout_seconds=0.001).check_readiness()
     assert timed.reachable is False
     assert timed.model_ready is False
 
@@ -847,9 +882,7 @@ async def test_factory_uses_explicit_v1beta_client_options_and_closes_async_clie
     captured: dict[str, object] = {}
 
     class _RootClient:
-        def __init__(
-            self, *, enterprise: bool, api_key: str, http_options: object
-        ) -> None:
+        def __init__(self, *, enterprise: bool, api_key: str, http_options: object) -> None:
             captured["enterprise"] = enterprise
             captured["api_key"] = api_key
             captured["http_options"] = http_options

@@ -44,6 +44,8 @@ Runtime `/readyz` also evaluates the selected provider/model, embedding, and
 retrieval-route evidence internally while preserving its published response shape.
 Hosted readiness remains explicitly development-only; this is not a production
 deployment or hosted trust-policy claim.
+Private request accounting is composed behind the unchanged chat/SSE surface. It has
+no persistence, logging, budget-enforcement, capability, or public API seam.
 
 ## Evidence and maintenance note
 

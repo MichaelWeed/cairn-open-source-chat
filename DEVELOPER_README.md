@@ -57,6 +57,11 @@ Design invariants and current limits:
   variants are frozen, discriminated models. Usage records carry provider, model,
   attempt, optional tier, and bounded token counts; the public SSE contract remains
   unchanged and never emits usage records.
+* **Request accounting is private and lexical.** One admitted chat request owns one
+  in-memory accounting session. Echo starts zero attempts, Ollama at most one, and
+  Gemini one plus its single configured retry. The terminal summary is handed to a
+  private owner only after provider and response iterators close; it is not logged,
+  persisted, exposed over SSE, or used for budget enforcement.
 * **The vector index is local and versioned.** Every ingestion path (upload, scrape,
   future admin reindex) writes through `app.state.document_collection`, which owns a
   SQLite flat index at `CHROMA_PATH/cairn-vectors-v1.sqlite3`. Legacy Chroma files
@@ -290,6 +295,9 @@ identified by canonical JSON and SHA-256. Rates and totals use `Decimal`; unknow
 usage is never treated as zero, mixed currencies and empty aggregates fail closed,
 and projections are available only with complete priced coverage. No default
 price catalog, persistence sink, budget enforcement, or public usage event exists.
+Request summaries merge cumulative usage without summing repeated reports and price
+only settled attempts. Missing finish evidence or uncertain cleanup stays explicitly
+uncertain instead of becoming a zero-cost record.
 
 Retrieval crosses a separate frozen internal contract (`retrieval_contracts.py`,
 version `1.0`). Local chat requests `local_active` corpus compatibility 2 with

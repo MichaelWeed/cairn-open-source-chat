@@ -1,8 +1,14 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 from app.api.contracts import ProviderGenerationRequest
 from app.providers.contracts import ProviderStreamEvent
+
+if TYPE_CHECKING:
+    from app.request_accounting import ProviderAttemptObserver
 
 
 class Provider(ABC):
@@ -19,4 +25,9 @@ class Provider(ABC):
     """
 
     @abstractmethod
-    def stream(self, request: ProviderGenerationRequest) -> AsyncIterator[ProviderStreamEvent]: ...
+    def stream(
+        self,
+        request: ProviderGenerationRequest,
+        *,
+        observer: ProviderAttemptObserver | None = None,
+    ) -> AsyncIterator[ProviderStreamEvent]: ...
