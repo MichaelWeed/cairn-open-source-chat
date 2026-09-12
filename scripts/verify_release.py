@@ -47,6 +47,24 @@ def _regular_file(path: Path) -> bytes:
     return path.read_bytes()
 
 
+def _release_file(release_dir: Path, relative: str) -> bytes:
+    candidate = release_dir
+    parts = _safe_path(relative).parts
+    for index, part in enumerate(parts):
+        candidate = candidate / part
+        try:
+            details = candidate.lstat()
+        except FileNotFoundError as error:
+            raise ReleaseError(f"missing release file: {relative}") from error
+        if stat.S_ISLNK(details.st_mode):
+            component = candidate.relative_to(release_dir)
+            raise ReleaseError(f"symlinked release path component: {component}")
+        if index < len(parts) - 1 and not stat.S_ISDIR(details.st_mode):
+            component = candidate.relative_to(release_dir)
+            raise ReleaseError(f"release path component is not a directory: {component}")
+    return _regular_file(candidate)
+
+
 def _record(value: Any, expected_path: str | None = None) -> tuple[str, str, int]:
     if not isinstance(value, dict) or set(value) != {"path", "sha256", "size"}:
         raise ReleaseError("invalid manifest file record")
@@ -131,7 +149,7 @@ def _parse_manifest(data: bytes) -> dict[str, Any]:
 
 
 def _validate_checksums(release_dir: Path, manifest: dict[str, Any], manifest_data: bytes) -> None:
-    checksum_data = _regular_file(release_dir / "SHA256SUMS")
+    checksum_data = _release_file(release_dir, "SHA256SUMS")
     try:
         lines = checksum_data.decode("ascii").splitlines()
     except UnicodeDecodeError as error:
@@ -153,7 +171,7 @@ def _validate_checksums(release_dir: Path, manifest: dict[str, Any], manifest_da
         raise ReleaseError("SHA256SUMS does not bind the complete release")
     for item in expected:
         path, digest, size = _record(item)
-        data = _regular_file(release_dir / path)
+        data = _release_file(release_dir, path)
         if len(data) != size or hashlib.sha256(data).hexdigest() != digest:
             raise ReleaseError(f"checksum drift: {path}")
 
@@ -161,7 +179,7 @@ def _validate_checksums(release_dir: Path, manifest: dict[str, Any], manifest_da
 def _validate_archive(
     release_dir: Path, manifest: dict[str, Any]
 ) -> list[tuple[tarfile.TarInfo, bytes]]:
-    archive_data = _regular_file(release_dir / ARCHIVE_NAME)
+    archive_data = _release_file(release_dir, ARCHIVE_NAME)
     archive_path, digest, size = _record(manifest["archive"], ARCHIVE_NAME)
     if len(archive_data) != size or hashlib.sha256(archive_data).hexdigest() != digest:
         raise ReleaseError(f"checksum drift: {archive_path}")
@@ -173,7 +191,8 @@ def _validate_archive(
     seen_paths: set[str] = set()
     total = 0
     try:
-        with tarfile.open(release_dir / ARCHIVE_NAME, mode="r:gz") as archive:
+        archive_path = release_dir / ARCHIVE_NAME
+        with tarfile.open(archive_path, mode="r:gz") as archive:
             for member in archive:
                 if not member.isreg() or member.issym() or member.islnk():
                     raise ReleaseError(f"archive member is not a regular file: {member.name}")
@@ -210,7 +229,7 @@ def _validate_archive(
 def verify_release(release_dir: Path) -> tuple[dict[str, Any], list[tuple[tarfile.TarInfo, bytes]]]:
     if release_dir.is_symlink() or not release_dir.is_dir():
         raise ReleaseError("release directory must be a real directory")
-    manifest_data = _regular_file(release_dir / "release-manifest.json")
+    manifest_data = _release_file(release_dir, "release-manifest.json")
     manifest = _parse_manifest(manifest_data)
     _validate_checksums(release_dir, manifest, manifest_data)
     return manifest, _validate_archive(release_dir, manifest)

@@ -185,6 +185,32 @@ def _file_record(path: str, data: bytes) -> dict[str, object]:
     return {"path": path, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
 
 
+def _require_real_directory(path: Path, label: str) -> None:
+    try:
+        details = path.lstat()
+    except FileNotFoundError as error:
+        raise ReleaseError(f"missing output directory: {label}") from error
+    if stat.S_ISLNK(details.st_mode) or not stat.S_ISDIR(details.st_mode):
+        raise ReleaseError(f"output directory must be a real directory: {label}")
+
+
+def _release_output_directory(root: Path) -> Path:
+    _require_real_directory(root, "repository root")
+    dist = root / "dist"
+    if dist.exists() or dist.is_symlink():
+        _require_real_directory(dist, "dist")
+    else:
+        dist.mkdir()
+        _require_real_directory(dist, "dist")
+    release_dir = dist / "release"
+    if release_dir.exists() or release_dir.is_symlink():
+        _require_real_directory(release_dir, "dist/release")
+    else:
+        release_dir.mkdir()
+        _require_real_directory(release_dir, "dist/release")
+    return release_dir
+
+
 def _replace_complete_release(staging: Path, release_dir: Path) -> None:
     targets = (ARCHIVE_NAME, "release-manifest.json", "SHA256SUMS", "sbom")
     backups: list[tuple[Path, Path]] = []
@@ -219,10 +245,7 @@ def _replace_complete_release(staging: Path, release_dir: Path) -> None:
 
 def build_release(root: Path) -> Path:
     commit, commit_time, files = collect_source_files(root)
-    release_dir = root / "dist" / "release"
-    if release_dir.is_symlink():
-        raise ReleaseError("dist/release must not be a link")
-    release_dir.mkdir(parents=True, exist_ok=True)
+    release_dir = _release_output_directory(root)
     with tempfile.TemporaryDirectory(prefix=".staging-", dir=release_dir) as temporary:
         staging = Path(temporary)
         archive_path = staging / ARCHIVE_NAME
@@ -270,7 +293,8 @@ def main() -> int:
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     args = parser.parse_args()
     try:
-        release_dir = build_release(args.root.resolve())
+        root = args.root if args.root.is_absolute() else Path.cwd() / args.root
+        release_dir = build_release(root)
     except ReleaseError as error:
         print(f"release build failed: {error}")
         return 1

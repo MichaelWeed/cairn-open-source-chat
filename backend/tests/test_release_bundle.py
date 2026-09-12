@@ -58,7 +58,7 @@ def release_repo(tmp_path: Path) -> Path:
     (root / "LICENSE").write_text("Apache-2.0\n", encoding="utf-8")
     (root / "CLAUDE.md").write_text("release policy\n", encoding="utf-8")
     (root / "AGENTS.md").symlink_to("CLAUDE.md")
-    (root / ".gitignore").write_text("__pycache__/\ndist/\n", encoding="utf-8")
+    (root / ".gitignore").write_text("__pycache__/\ndist\n", encoding="utf-8")
     shutil.copy2(BUILD_SCRIPT, root / "scripts" / "build_release.py")
     shutil.copy2(VERIFY_SCRIPT, root / "scripts" / "verify_release.py")
     _git(root, "init")
@@ -120,6 +120,16 @@ def test_release_rejects_tracked_links_other_than_root_instruction_link(release_
     assert "links are not releaseable source files" in result.stdout
 
 
+def test_release_rejects_symlinked_dist_parent(release_repo: Path, tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (release_repo / "dist").symlink_to(outside, target_is_directory=True)
+    result = _build(release_repo)
+    assert result.returncode == 1
+    assert "output directory must be a real directory: dist" in result.stdout
+    assert not (outside / "release").exists()
+
+
 def test_verifier_rejects_archive_traversal_member(tmp_path: Path) -> None:
     verifier = _load_verify_module()
     archive_path = tmp_path / "cairn-0.1.0.tar.gz"
@@ -153,6 +163,18 @@ def test_verifier_rejects_checksum_mutation(release_repo: Path) -> None:
     result = _run(release_repo, str(VERIFY_SCRIPT), str(archive.parent))
     assert result.returncode == 1
     assert "checksum drift" in result.stdout
+
+
+def test_verifier_rejects_symlinked_sbom_component(release_repo: Path, tmp_path: Path) -> None:
+    assert _build(release_repo).returncode == 0
+    release = release_repo / "dist" / "release"
+    external_sbom = tmp_path / "external-sbom"
+    shutil.copytree(release / "sbom", external_sbom)
+    shutil.rmtree(release / "sbom")
+    (release / "sbom").symlink_to(external_sbom, target_is_directory=True)
+    result = _run(release_repo, str(VERIFY_SCRIPT), str(release))
+    assert result.returncode == 1
+    assert "symlinked release path component: sbom" in result.stdout
 
 
 def test_build_rejects_forbidden_content_and_preserves_complete_release(release_repo: Path) -> None:
