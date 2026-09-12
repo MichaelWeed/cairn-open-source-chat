@@ -14,7 +14,7 @@ class CapabilityModel(BaseModel):
 
 class Release(CapabilityModel):
     stage: Literal["developer-preview"]
-    version: Literal["0.0.0"]
+    version: Literal["0.1.0"]
 
 
 class Compatibility(CapabilityModel):

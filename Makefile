@@ -154,4 +154,4 @@ demo:
 
 # Release bundler — Phase 7.2.
 release:
-	@echo "release: bundler lands in task 7.2"
+	python3 scripts/build_release.py
