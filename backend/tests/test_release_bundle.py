@@ -3,6 +3,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -17,15 +18,29 @@ BUILD_SCRIPT = REPOSITORY_ROOT / "scripts" / "build_release.py"
 VERIFY_SCRIPT = REPOSITORY_ROOT / "scripts" / "verify_release.py"
 
 
+def _isolated_git_env() -> dict[str, str]:
+    return {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+
+
 def _run(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, *arguments], cwd=root, check=False, text=True, capture_output=True
+        [sys.executable, *arguments],
+        cwd=root,
+        check=False,
+        text=True,
+        capture_output=True,
+        env=_isolated_git_env(),
     )
 
 
 def _git(root: Path, *arguments: str) -> None:
     result = subprocess.run(
-        ["git", *arguments], cwd=root, check=False, capture_output=True, text=True
+        ["git", *arguments],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=_isolated_git_env(),
     )
     assert result.returncode == 0, result.stderr
 
