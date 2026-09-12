@@ -5,11 +5,15 @@ developing, and operating Cairn. The executive overview is [README.md](README.md
 Cairn was formerly AetherChat; [project.yaml](project.yaml) is the durable identity
 record. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/adr/](docs/adr/) are
 the durable design authorities, while [docs/PUBLIC-AVAILABILITY.md](docs/PUBLIC-AVAILABILITY.md)
-records the delivered public-availability outcome and open tracking decision D4.
+records the public source-availability outcome and release boundary.
 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) records the exact packaged capability
 manifest, compatibility versions, and pre-1.0 upgrade rules.
 [docs/WIDGET.md](docs/WIDGET.md) is the canonical production widget configuration,
 event, privacy, CSP, CORS, accessibility, and migration guide.
+[docs/RELEASE.md](docs/RELEASE.md) is the 0.1.0 operator guide for release
+verification, extraction, starting, backup, rollback, and SBOM rescans.
+[docs/MIGRATION-0.1.0.md](docs/MIGRATION-0.1.0.md) is the 0.0.0-preview migration
+checklist.
 
 ---
 
@@ -84,6 +88,11 @@ Design invariants and current limits:
 
 ## 2. Developer Preview Quick Start
 
+For an operator release, start with [RELEASE.md](docs/RELEASE.md). Cairn 0.1.0 is
+source-only, operator-owned, and single-instance; it is not an author-hosted
+service or production certification. This section keeps the source-tree developer
+and local-preview details.
+
 Prerequisites: `uv`, Ollama running on the host, and the configured chat and
 embedding models already present. The default pair is `llama3.1:8b-instruct` and
 `nomic-embed-text`, matching `backend/app/config.py`. `make demo` checks the
@@ -107,7 +116,7 @@ For the development live-corpus localhost path, provide an explicit corpus and t
 origin that will embed Cairn, then run one command from the repository root:
 
 ```sh
-CAIRN_CORPUS_PATH=/absolute/path/to/docs \
+CAIRN_CORPUS_PATH=<absolute-corpus-directory> \
 ORIGIN_ALLOWLIST=http://localhost:4173 \
 make live
 ```
@@ -455,8 +464,11 @@ No core changes required; the registry injects enabled tool schemas into the pro
   terminal. After nonterminal events, already-sent bytes remain and one internal
   terminal follows while writable. After a terminal event or the last send, no new
   event is manufactured; known resources are reconciled conservatively.
-* Backup = copy the SQLite metadata database and
-  `CHROMA_PATH/cairn-vectors-v1.sqlite3` (volume-mounted).
+* Before changing an operator instance, stop it and back up the reviewed corpus
+  (including `provenance.json`) together with the SQLite metadata database and
+  `CHROMA_PATH/cairn-vectors-v1.sqlite3` (volume-mounted). See
+  [RELEASE.md](docs/RELEASE.md) for the release-tree procedure and rollback
+  acceptance checks.
 
 ### Concurrency, one instance
 

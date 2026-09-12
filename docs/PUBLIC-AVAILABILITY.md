@@ -1,15 +1,18 @@
-# Milestone — Public availability
+# Public availability and release boundary
 
-**Delivered 2026-08-22.** Cairn is public, and a person who has never seen it
-can clone the published repository and obtain a cited answer from the bundled
-corpus without changing a tracked file. This is a completion record, not a
-replacement for an issue tracker: the GitHub Issues and Projects features are
-enabled, but no issue, milestone, project board, or work object exists. See
-[project.yaml](../project.yaml) for the durable source of that state.
+**Source availability delivered 2026-08-22.** Cairn is public, and a person who
+has never seen it can clone the published repository and obtain a cited answer
+from the bundled corpus without changing a tracked file. The 0.1.0 operator
+release path is documented in [RELEASE.md](RELEASE.md), with the upgrade actions
+in [MIGRATION-0.1.0.md](MIGRATION-0.1.0.md).
 
-The delivered outcome is source availability, not an author-hosted service. Cairn
-is public at [MichaelWeed/cairn-open-source-chat](https://github.com/MichaelWeed/cairn-open-source-chat),
-but no author-operated deployment exists.
+The delivered outcome is source availability and source-only third-party
+self-hosting, not an author-hosted service or production certification. Cairn is
+public at [MichaelWeed/cairn-open-source-chat](https://github.com/MichaelWeed/cairn-open-source-chat),
+but no author-operated deployment exists. The supported design point is one
+operator-owned instance with local SQLite/vector storage and real Ollama
+embeddings; Gemini generation is optional and Firestore retrieval is
+development-only.
 
 ## Completed work
 
