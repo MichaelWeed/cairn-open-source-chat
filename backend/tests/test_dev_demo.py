@@ -89,6 +89,18 @@ def test_demo_forces_real_provider_and_embeddings(
     assert os.environ["EMBEDDING_PROVIDER"] == "ollama"
 
 
+def test_demo_settings_use_real_provider_and_embeddings(
+    dev_demo: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PROVIDER", "echo")
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "fake")
+
+    settings = dev_demo._load_demo_settings()
+
+    assert settings.provider == "ollama"
+    assert settings.embedding_provider == "ollama"
+
+
 @pytest.mark.asyncio
 async def test_ollama_must_be_reachable_before_startup(
     dev_demo: ModuleType, capsys: pytest.CaptureFixture[str]

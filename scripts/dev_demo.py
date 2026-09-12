@@ -79,6 +79,14 @@ def _configure_real_providers() -> None:
     os.environ["EMBEDDING_PROVIDER"] = "ollama"
 
 
+def _load_demo_settings() -> Settings:
+    """Load settings only after forcing the real demo provider pair."""
+    _configure_real_providers()
+    settings = Settings(_env_file=REPO_ROOT / ".env")  # type: ignore[call-arg]
+    settings.ollama_base_url = _resolve_ollama_base_url(settings.ollama_base_url)
+    return settings
+
+
 def _corpus_files(corpus_dir: Path) -> list[Path]:
     if not corpus_dir.is_dir():
         print(
@@ -183,15 +191,13 @@ async def main(corpus_dir: Path) -> None:
     # _env_file is a documented pydantic-settings BaseSettings kwarg that
     # mypy's stubs don't model (it's injected dynamically, not part of
     # the generated __init__ signature it sees).
-    settings = Settings(_env_file=REPO_ROOT / ".env")  # type: ignore[call-arg]
-    settings.ollama_base_url = _resolve_ollama_base_url(settings.ollama_base_url)
+    settings = _load_demo_settings()
     await _check_ollama_models(settings)
     _check_port_free(settings.cairn_port)
 
     # `make demo` is the real-model preview path regardless of the
     # echo/fake smoke-test defaults in .env. Without real embeddings,
     # retrieval distance and citations are not meaningful.
-    _configure_real_providers()
     app = create_app(settings)
 
     async with app.router.lifespan_context(app):

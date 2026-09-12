@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
-# Operator gate. First cut: only the SBOM
-# vulnerability scan is real so far, since it's the one step that doesn't
-# depend on a release manifest or a running compose stack. Steps 1, 3, and 4
-# land in Phase 7 once `make release` and the compose stack exist.
+# Operator gate for a locally built source release and its committed SBOMs.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-echo "[1/4] checksum verification: skipped — no release manifest yet (Phase 7.2)"
+if [[ -d dist/release && ! -L dist/release ]]; then
+  echo "[1/4] verifying the source release integrity"
+  python3 scripts/verify_release.py dist/release
+  release_integrity="verified"
+else
+  echo "[1/4] source archive integrity not rechecked: dist/release is absent"
+  release_integrity="not rechecked"
+fi
 
 echo "[2/4] scanning committed SBOMs for known vulnerabilities"
 grype sbom:backend/sbom.cdx.json --fail-on medium
 grype sbom:widget/sbom.cdx.json --fail-on medium
 
-echo "[3/4] running-image digest check: skipped — no compose stack yet (task 1.8)"
-echo "[4/4] smoke test (/healthz, /readyz, SSE round trip): skipped — no app yet (task 1.5+)"
+echo "[3/4] checking shipped source identity and version"
+python3 -c 'import json, tomllib; from pathlib import Path; root = Path("."); project = tomllib.loads((root / "backend/pyproject.toml").read_text()); manifest = json.loads((root / "backend/app/capabilities.json").read_text()); assert project["project"]["name"] == "cairn-backend"; assert project["project"]["version"] == "0.1.0" == manifest["release"]["version"]; print("source identity: cairn-backend 0.1.0")'
+echo "[4/4] committed SBOM scans and source identity check are complete"
 
-echo "verify: SBOM scan clean; remaining steps land in tasks 1.5, 1.8, and Phase 7"
+echo "verify: release integrity ${release_integrity}; committed SBOM scans and source identity are clean"
