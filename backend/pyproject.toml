@@ -1,6 +1,6 @@
 [project]
 name = "cairn-backend"
-version = "0.0.0"
+version = "0.1.0"
 description = "Cairn support-chat backend"
 license = "Apache-2.0"
 requires-python = ">=3.12"

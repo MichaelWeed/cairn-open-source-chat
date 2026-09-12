@@ -368,6 +368,7 @@ class Settings(ContentFreeBaseSettings):
         return value.strip() if isinstance(value, str) else value
 
     @field_validator(
+        "gemini_max_retries",
         "firestore_embedding_dimensions",
         "firestore_query_timeout_seconds",
         "firestore_max_retries",

@@ -15,7 +15,7 @@ validation.
   "schema_version": "1.2",
   "release": {
     "stage": "developer-preview",
-    "version": "0.0.0"
+    "version": "0.1.0"
   },
   "compatibility": {
     "chat_api": "1.0",

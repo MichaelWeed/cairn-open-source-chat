@@ -21,7 +21,7 @@ COMPATIBILITY_DOC = REPOSITORY_ROOT / "docs" / "COMPATIBILITY.md"
 
 ACCEPTED_BASE_MANIFEST: dict[str, Any] = {
     "schema_version": "1.1",
-    "release": {"stage": "developer-preview", "version": "0.0.0"},
+    "release": {"stage": "developer-preview", "version": "0.1.0"},
     "compatibility": {
         "chat_api": "1.0",
         "sse_events": "1.1",
@@ -125,7 +125,7 @@ def test_endpoint_matches_packaged_manifest_exactly(client: TestClient) -> None:
     assert len(response.content) == 1046
     assert (
         hashlib.sha256(response.content).hexdigest()
-        == "9b07d653e5bd0afc05562761b6f3995813cac2b3d5d73e935915bab330f9d588"
+        == "9d2031f6ff975e9f9a6f79a66688b902d20103ae247d948cd8dfda227717da68"
     )
 
 
@@ -135,7 +135,7 @@ def test_packaged_manifest_changes_only_accepted_capability_leaves() -> None:
 
     assert (
         hashlib.sha256(asset_bytes).hexdigest()
-        == "f290f17d31cab2bcfc5bd94768056ef848b6aa4ad8fd765756327a6bbb4ec115"
+        == "9d2644dfbc6e378920f865d24ed6ceb5abba1864604ce2603005bf454ee83bf8"
     )
     assert asset["schema_version"] == "1.2"
     assert asset["compatibility"]["safe_telemetry"] == "1.0"

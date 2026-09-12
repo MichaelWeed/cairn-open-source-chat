@@ -126,6 +126,15 @@ def test_generation_setting_defaults_match_env_example_and_compose(
     }
 
 
+@pytest.mark.parametrize(("raw", "expected"), [("0", 0), ("1", 1)])
+def test_gemini_max_retries_accepts_environment_values(
+    monkeypatch: pytest.MonkeyPatch, raw: str, expected: int
+) -> None:
+    monkeypatch.setenv("GEMINI_MAX_RETRIES", raw)
+
+    assert Settings().gemini_max_retries == expected
+
+
 def test_retrieval_setting_defaults_match_env_example_and_compose() -> None:
     settings = Settings()
     expected = {
