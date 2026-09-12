@@ -11,14 +11,16 @@ retrieves relevant passages, cites its sources, and refuses when retrieval is be
 its configured confidence threshold. The supported default path uses local Ollama
 models, so an operator can keep the service and its data in their own infrastructure.
 
-**Developer preview / pre-release.** Today you can run the cited local demo and
-use the generic `<cairn-chat>` custom element. It provides a production-configurable
-shadow-DOM chat UI, strict capability negotiation, and cited SSE answers. An
-optional operator-owned support link is available after refusal or terminal chat
-failure; built-in ticket creation, order-status deep links, an admin experience, the guardrail pipeline, and
-any author-hosted service are planned, not available behavior. An optional Gemini
-generation adapter is available for explicit opt-in use; it is excluded from the
-local default install and does not establish production or hosted readiness.
+**0.1.0 developer preview.** Cairn is a source-only, operator-owned,
+single-instance self-hosting option, not an author-hosted service or a
+production-certified offering. It provides a production-configurable shadow-DOM
+chat UI, strict capability negotiation, and cited SSE answers. An optional
+operator-owned support link is available after refusal or terminal chat failure;
+built-in ticket creation, order-status deep links, an admin experience, the
+guardrail pipeline, and any author-hosted service are planned, not available
+behavior. An optional Gemini generation adapter is available for explicit opt-in
+use; it is excluded from the local default install and does not establish
+production or hosted readiness.
 Provider adapters normalize bounded, content-free token usage in memory. Cairn
 also provides pure cost-accounting helpers for an operator-supplied immutable
 price snapshot; no prices, budget enforcement, or accounting sink are bundled.
@@ -41,7 +43,8 @@ Open `http://localhost:8080/demo` and ask about shipping, returns, or warranties
 For prerequisite commands, the default model pair (`llama3.1:8b-instruct` and
 `nomic-embed-text`), `.env` overrides, `make demo` versus `make up`, architecture,
 API, security, evaluation, development, and operations, start with the
-[full technical guide](DEVELOPER_README.md).
+[full technical guide](DEVELOPER_README.md). To obtain, verify, extract, and
+operate the 0.1.0 source release, follow the [operator release guide](docs/RELEASE.md).
 
 ## Why this problem matters
 
@@ -54,6 +57,8 @@ that Cairn provides order-status integrations today.
 ## Learn more
 
 * [DEVELOPER_README.md](DEVELOPER_README.md) — full technical guide: setup, configuration, architecture, API, security, evaluation, development, and operations.
+* [docs/RELEASE.md](docs/RELEASE.md) — 0.1.0 artifact verification, safe extraction, operator start, backup, rollback, and weekly SBOM rescan.
+* [docs/MIGRATION-0.1.0.md](docs/MIGRATION-0.1.0.md) — operator actions for moving a 0.0.0 preview to 0.1.0.
 * [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) — machine-readable capability discovery, current compatibility versions, and pre-1.0 upgrade rules.
 * [docs/WIDGET.md](docs/WIDGET.md) - production widget attributes, events, privacy, CSP, CORS, accessibility, and migration guidance.
 * [docs/CORPUS-PROVENANCE.md](docs/CORPUS-PROVENANCE.md) - versioned startup manifest and public citation contract.
