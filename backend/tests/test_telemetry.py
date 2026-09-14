@@ -360,6 +360,7 @@ def test_readiness_projection_is_canonical_and_bounded() -> None:
         "embedding",
         "exact_corpus",
         "budget",
+        "deployment_mode",
     )
     checks = tuple(
         ReadinessCheck(
@@ -371,7 +372,7 @@ def test_readiness_projection_is_canonical_and_bounded() -> None:
         for dimension in dimensions
     )
     events = _projector().project_readiness(ReadinessReport(checks=checks), 0)
-    assert len(events) == 9
+    assert len(events) == 10
     assert [cast(ReadinessChecksTotal, event).readiness_dimension for event in events[:-1]] == list(
         dimensions
     )

@@ -52,6 +52,7 @@ DIMENSIONS = (
     "embedding",
     "exact_corpus",
     "budget",
+    "deployment_mode",
 )
 
 
@@ -549,6 +550,7 @@ def _evaluator(
     expected_scope: object = None,
     vector_calls: list[bool] | None = None,
     budget_probe: object | None = None,
+    deployment_mode_probe: Any = lambda: True,
 ) -> tuple[ReadinessEvaluator, _StaticRouteProbe]:
     scope = (
         ExactCorpusReference(corpus_id="public-docs", corpus_version="v1")
@@ -589,8 +591,36 @@ def _evaluator(
         ollama_catalog_probe=cast(OllamaCatalogReadinessProbe | None, catalog_probe),
         budget_probe=cast(Any, budget_probe),
         retrieval_composition_valid=composition_valid,
+        deployment_mode_probe=deployment_mode_probe,
     )
     return evaluator, route
+
+
+@pytest.mark.parametrize("value,state,reason", [
+    (True, "ready", "ready"),
+    (False, "not_ready", "unavailable"),
+    ("private-config-canary", "unknown", "misconfigured"),
+])
+async def test_deployment_mode_readiness_is_required_and_content_free(
+    value: object, state: str, reason: str,
+) -> None:
+    evaluator, _ = _evaluator(deployment_mode_probe=lambda: value)
+    report = await evaluator.evaluate()
+    check = report.checks[-1]
+    assert check.dimension == "deployment_mode"
+    assert check.required is True
+    assert (check.state, check.reason) == (state, reason)
+    assert report.ready is (value is True)
+    assert "private-config-canary" not in report.model_dump_json()
+    assert set(public_readiness(report)[1]) == {"database", "vector_store", "corpus"}
+
+
+async def test_missing_deployment_mode_probe_fails_closed() -> None:
+    evaluator, _ = _evaluator(deployment_mode_probe=None)
+    report = await evaluator.evaluate()
+    assert report.ready is False
+    assert report.checks[-1].state == "unknown"
+    assert report.checks[-1].reason == "misconfigured"
 
 
 async def test_echo_fake_local_profile_is_ready_without_external_probe() -> None:
@@ -605,6 +635,7 @@ async def test_echo_fake_local_profile_is_ready_without_external_probe() -> None
         ("embedding", "ready", True),
         ("exact_corpus", "not_required", False),
         ("budget", "not_required", False),
+        ("deployment_mode", "ready", True),
     ]
     assert report.ready is True
     assert route.calls == 1

@@ -68,6 +68,7 @@ _READINESS_DIMENSIONS = {
     "embedding",
     "exact_corpus",
     "budget",
+    "deployment_mode",
 }
 _READINESS_STATES = {"ready", "not_ready", "not_required", "unknown"}
 _READINESS_REASONS = {
@@ -1005,7 +1006,7 @@ def _copy_readiness(value: object) -> ReadinessReport:
             type(raw["contract_version"]) is not str
             or type(raw["ready"]) is not bool
             or type(raw["checks"]) is not tuple
-            or len(cast(tuple[object, ...], raw["checks"])) != 8
+            or len(cast(tuple[object, ...], raw["checks"])) != 9
         ):
             raise TelemetryError
         copied: list[ReadinessCheck] = []
@@ -1298,7 +1299,7 @@ class TelemetryProjector:
         duration = _duration_seconds(elapsed_ns)
         if duration is not None:
             events.append(ReadinessDurationSeconds(value=duration))
-        if len(events) > 9:
+        if len(events) > 10:
             raise TelemetryError from None
         return tuple(events)
 

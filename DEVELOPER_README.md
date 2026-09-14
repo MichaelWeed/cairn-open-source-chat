@@ -395,7 +395,7 @@ No core changes required; the registry injects enabled tool schemas into the pro
 
 ## 9. Operations
 
-* `GET /healthz` provides liveness without probes. `GET /readyz` aggregates database, selected retrieval route, corpus, selected provider/model, embedding, optional exact-corpus, and future budget readiness while preserving the existing three public booleans. Hosted readiness remains development-only and neither response contains sensitive data.
+* `GET /healthz` provides liveness without probes. `GET /readyz` aggregates deployment mode, database, selected retrieval route, corpus, selected provider/model, embedding, optional exact-corpus, and budget readiness while preserving the existing three public booleans. Hosted readiness remains development-only and neither response contains sensitive data.
 * Safe telemetry derives only bounded counters and histograms from finalized private
   accounting/readiness models. The production sink is a stateless no-I/O null sink;
   injected sinks are advisory and fused after one ordinary failure.
