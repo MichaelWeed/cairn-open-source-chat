@@ -22,7 +22,7 @@ from app.ingest.candidate_persistence import (
     VerifiedCandidateEvidence,
 )
 from app.ingest.startup import CorpusStartupError
-from app.main import _close_application_resources, create_app
+from app.main import _close_application_resources, _deployment_mode_readiness, create_app
 from app.providers.echo import EchoProvider
 from app.readiness import BudgetReadiness, OllamaCatalogReadiness, ReadinessError
 from app.request_accounting import (
@@ -86,6 +86,29 @@ def test_readyz(client: TestClient) -> None:
     assert body["status"] == "ok"
     assert body["checks"]["database"] is True
     assert body["checks"]["vector_store"] is True
+
+
+@pytest.mark.parametrize("deployment_mode", ["development", "test"])
+def test_nonproduction_deployment_mode_readiness_is_explicit(
+    deployment_mode: str,
+) -> None:
+    settings = Settings(deployment_mode=cast(Any, deployment_mode))
+    assert _deployment_mode_readiness(settings, False) is True
+
+
+def test_production_deployment_mode_readiness_validates_composition() -> None:
+    settings = Settings(
+        deployment_mode="production",
+        provider="ollama",
+        embedding_provider="ollama",
+    )
+    assert _deployment_mode_readiness(settings, False) is True
+    assert _deployment_mode_readiness(settings, True) is False
+
+    settings.provider = cast(Any, "echo")
+    assert _deployment_mode_readiness(settings, False) is False
+    assert _deployment_mode_readiness(object(), False) is False
+    assert _deployment_mode_readiness(settings, "private-mode-canary") is False
 
 
 class _ApplicationBudgetProbe:
@@ -196,8 +219,8 @@ def test_readyz_emits_canonical_private_telemetry_without_changing_bytes(
     assert response.content == (
         b'{"status":"ok","checks":{"database":true,"vector_store":true,"corpus":true}}'
     )
-    assert len(sink.events) == 9
-    assert all(type(event) is ReadinessChecksTotal for event in sink.events[:8])
+    assert len(sink.events) == 10
+    assert all(type(event) is ReadinessChecksTotal for event in sink.events[:9])
     assert type(sink.events[-1]) is ReadinessDurationSeconds
     assert sink.events[-1].value == Decimal("0.00000001")
 

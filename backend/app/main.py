@@ -72,6 +72,8 @@ from app.retrieval_route import (
     binding_from_firestore_adapter,
 )
 from app.telemetry import (
+    ChatConcurrencyTracker,
+    HostLifecycleTelemetry,
     NullTelemetrySink,
     ReadinessTelemetryUnit,
     TelemetrySink,
@@ -123,6 +125,28 @@ class ChatRequestBodyLimitMiddleware:
                 status_code=413,
             )
             await response(scope, receive, send)
+
+
+def _deployment_mode_readiness(settings: object, exact_lifecycle: object) -> bool:
+    """Validate the content-free deployment composition used by readiness."""
+    if type(settings) is not Settings or type(exact_lifecycle) is not bool:
+        return False
+    mode = settings.deployment_mode
+    if type(mode) is not str:
+        return False
+    if mode in {"development", "test"}:
+        return True
+    return (
+        mode == "production"
+        and type(settings.provider) is str
+        and settings.provider in {"ollama", "gemini"}
+        and type(settings.embedding_provider) is str
+        and settings.embedding_provider == "ollama"
+        and type(settings.retrieval_backend) is str
+        and settings.retrieval_backend == "local"
+        and settings.corpus_path is None
+        and not exact_lifecycle
+    )
 
 
 def _default_provider(settings: Settings) -> Provider:
@@ -433,6 +457,9 @@ def create_app(
                 return True
 
             app.state.readiness_evaluator = ReadinessEvaluator(
+                deployment_mode_probe=lambda: _deployment_mode_readiness(
+                    settings, exact_lifecycle
+                ),
                 database_probe=database_readiness,
                 corpus_probe=lambda: app.state.corpus_ready,
                 local_vector_probe=vector_readiness,
@@ -513,6 +540,8 @@ def create_app(
     app.state.telemetry_projector = telemetry_projector
     app.state.telemetry_sink = selected_telemetry_sink
     app.state.telemetry_monotonic_ns = selected_telemetry_clock
+    app.state.telemetry_concurrency = ChatConcurrencyTracker()
+    app.state.host_lifecycle_telemetry = HostLifecycleTelemetry(selected_telemetry_sink)
     app.state.retrieval_scope = selected_scope
     app.state.retrieval_distance_measure = selected_measure
     app.state.retrieval_max_distance = selected_max_distance

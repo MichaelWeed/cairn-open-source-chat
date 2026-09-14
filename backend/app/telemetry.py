@@ -68,6 +68,7 @@ _READINESS_DIMENSIONS = {
     "embedding",
     "exact_corpus",
     "budget",
+    "deployment_mode",
 }
 _READINESS_STATES = {"ready", "not_ready", "not_required", "unknown"}
 _READINESS_REASONS = {
@@ -186,6 +187,9 @@ def _preflight_event_fields(
                 "readiness_dimension",
                 "readiness_state",
                 "readiness_reason",
+                "corpus_state",
+                "signal",
+                "cost_state",
             }
             and type(value) is not str
         ):
@@ -195,13 +199,15 @@ def _preflight_event_fields(
         if name == "required" and type(value) is not bool:
             raise TelemetryError from None
         if name == "value":
-            if model is ProviderReportedTotalTokens:
+            if model in {ProviderReportedTotalTokens, ChatConcurrency}:
                 if type(value) is not int:
                     raise TelemetryError from None
             elif type(value) is not Decimal and not (mode == "json" and type(value) is str):
                 raise TelemetryError from None
-            elif mode == "json" and type(value) is str and (
-                len(value) > 32 or _DURATION_JSON_PATTERN.fullmatch(value) is None
+            elif (
+                mode == "json"
+                and type(value) is str
+                and (len(value) > 32 or _DURATION_JSON_PATTERN.fullmatch(value) is None)
             ):
                 raise TelemetryError from None
     contract_version = dict.get(values, "contract_version", "1.0")
@@ -212,7 +218,15 @@ def _preflight_event_fields(
         raise TelemetryError from None
     expected_kind = (
         "histogram"
-        if model in {ChatDurationSeconds, ProviderReportedTotalTokens, ReadinessDurationSeconds}
+        if model
+        in {
+            ChatDurationSeconds,
+            ProviderReportedTotalTokens,
+            ReadinessDurationSeconds,
+            ChatFirstTokenSeconds,
+            ChatConcurrency,
+            ProviderCostObservation,
+        }
         else "counter"
     )
     if dict.get(values, "kind", expected_kind) != expected_kind:
@@ -249,12 +263,62 @@ def _preflight_event_fields(
         raise TelemetryError from None
     if "value" in values:
         value = values["value"]
-        if model is ProviderReportedTotalTokens:
+        if model in {ProviderReportedTotalTokens, ChatConcurrency}:
             if type(value) is not int or not 0 <= value <= MAX_SAFE_TOKEN_COUNT:
                 raise TelemetryError from None
         elif type(value) is Decimal:
             if not _valid_duration(value):
                 raise TelemetryError from None
+    if model is CorpusVersionState and values.get("corpus_state") not in {
+        "local_active",
+        "exact_version",
+        "unknown",
+    }:
+        raise TelemetryError from None
+    if model is HostLifecycleSignal and values.get("signal") not in {
+        "handoff_requested",
+        "handoff_completed",
+        "resolved",
+        "unresolved",
+    }:
+        raise TelemetryError from None
+    if model is ProviderCostObservation:
+        state = values.get("cost_state")
+        amount = values.get("amount")
+        currency = values.get("currency")
+        if state not in {
+            "priced",
+            "usage_incomplete",
+            "usage_missing",
+            "snapshot_missing",
+            "uncertain",
+        }:
+            raise TelemetryError from None
+        if amount is not None:
+            if mode == "json" and type(amount) is str:
+                if (
+                    len(amount) > 100
+                    or re.fullmatch(r"[0-9]+(?:\.[0-9]+)?(?:E[+-]?[0-9]{1,2})?", amount) is None
+                ):
+                    raise TelemetryError from None
+                amount = Decimal(amount)
+            if (
+                type(amount) is not Decimal
+                or not amount.is_finite()
+                or len(amount.as_tuple().digits) > 80
+                or not -32 <= cast(int, amount.as_tuple().exponent) <= 32
+                or amount < 0
+            ):
+                raise TelemetryError from None
+        if currency is not None and (
+            type(currency) is not str or re.fullmatch(r"[A-Z]{3}", currency) is None
+        ):
+            raise TelemetryError from None
+        if state == "priced":
+            if amount is None or currency is None:
+                raise TelemetryError from None
+        elif amount is not None or currency is not None:
+            raise TelemetryError from None
 
 
 def _valid_duration(value: object) -> bool:
@@ -663,6 +727,59 @@ class ReadinessDurationSeconds(TelemetryModel):
         return _canonical_duration(value)
 
 
+class ChatFirstTokenSeconds(ReadinessDurationSeconds):
+    """Time from request admission to first generated chunk, excluding refusals."""
+
+    metric: Literal["cairn_chat_first_token_seconds"] = "cairn_chat_first_token_seconds"  # type: ignore[assignment]
+
+
+class ChatConcurrency(TelemetryModel):
+    """Observed simultaneous response lifetimes in this application instance."""
+
+    contract_version: Literal["1.0"] = "1.0"
+    kind: Literal["histogram"] = "histogram"
+    metric: Literal["cairn_chat_concurrency"] = "cairn_chat_concurrency"
+    value: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_TOKEN_COUNT)]
+
+
+class CorpusVersionState(TelemetryModel):
+    """Route version state only, never a corpus identifier or version string."""
+
+    contract_version: Literal["1.0"] = "1.0"
+    kind: Literal["counter"] = "counter"
+    metric: Literal["cairn_corpus_version_state_total"] = "cairn_corpus_version_state_total"
+    corpus_state: Literal["local_active", "exact_version", "unknown"]
+    delta: Literal[1] = 1
+
+
+class HostLifecycleSignal(TelemetryModel):
+    """Explicit host evidence; chat completion never implies resolution."""
+
+    contract_version: Literal["1.0"] = "1.0"
+    kind: Literal["counter"] = "counter"
+    metric: Literal["cairn_host_lifecycle_signals_total"] = "cairn_host_lifecycle_signals_total"
+    signal: Literal["handoff_requested", "handoff_completed", "resolved", "unresolved"]
+    delta: Literal[1] = 1
+
+
+class ProviderCostObservation(TelemetryModel):
+    """One validated attempt's currency and cost, or an explicit unknown state."""
+
+    contract_version: Literal["1.0"] = "1.0"
+    kind: Literal["histogram"] = "histogram"
+    metric: Literal["cairn_provider_cost"] = "cairn_provider_cost"
+    cost_state: Literal[
+        "priced", "usage_incomplete", "usage_missing", "snapshot_missing", "uncertain"
+    ]
+    amount: Decimal | None = None
+    currency: str | None = None
+
+    @field_validator("amount", mode="before")
+    @classmethod
+    def _json_amount(cls, value: object, info: Any) -> object:
+        return Decimal(value) if info.mode == "json" and type(value) is str else value
+
+
 _EventUnion = (
     ChatRequestsTotal
     | ChatOutcomeTotal
@@ -672,6 +789,11 @@ _EventUnion = (
     | ProviderReportedTotalTokens
     | ReadinessChecksTotal
     | ReadinessDurationSeconds
+    | ChatFirstTokenSeconds
+    | ChatConcurrency
+    | CorpusVersionState
+    | HostLifecycleSignal
+    | ProviderCostObservation
 )
 _EVENT_TYPES = {
     ChatRequestsTotal,
@@ -682,6 +804,11 @@ _EVENT_TYPES = {
     ProviderReportedTotalTokens,
     ReadinessChecksTotal,
     ReadinessDurationSeconds,
+    ChatFirstTokenSeconds,
+    ChatConcurrency,
+    CorpusVersionState,
+    HostLifecycleSignal,
+    ProviderCostObservation,
 }
 _METRIC_BY_TYPE: dict[type[TelemetryModel], str] = {
     ChatRequestsTotal: "cairn_chat_requests_total",
@@ -692,6 +819,11 @@ _METRIC_BY_TYPE: dict[type[TelemetryModel], str] = {
     ProviderReportedTotalTokens: "cairn_provider_reported_total_tokens",
     ReadinessChecksTotal: "cairn_readiness_checks_total",
     ReadinessDurationSeconds: "cairn_readiness_duration_seconds",
+    ChatFirstTokenSeconds: "cairn_chat_first_token_seconds",
+    ChatConcurrency: "cairn_chat_concurrency",
+    CorpusVersionState: "cairn_corpus_version_state_total",
+    HostLifecycleSignal: "cairn_host_lifecycle_signals_total",
+    ProviderCostObservation: "cairn_provider_cost",
 }
 
 
@@ -874,7 +1006,7 @@ def _copy_readiness(value: object) -> ReadinessReport:
             type(raw["contract_version"]) is not str
             or type(raw["ready"]) is not bool
             or type(raw["checks"]) is not tuple
-            or len(cast(tuple[object, ...], raw["checks"])) != 8
+            or len(cast(tuple[object, ...], raw["checks"])) != 9
         ):
             raise TelemetryError
         copied: list[ReadinessCheck] = []
@@ -999,9 +1131,7 @@ class TelemetryProjector:
                 raise
             except BaseException:
                 raise TelemetryError from None
-            expected_provider = (
-                policy.provider if policy.provider in {"ollama", "gemini"} else None
-            )
+            expected_provider = policy.provider if policy.provider in {"ollama", "gemini"} else None
             expected_model = policy.model if expected_provider is not None else None
             if provider != expected_provider or model != expected_model:
                 raise TelemetryError from None
@@ -1025,6 +1155,25 @@ class TelemetryProjector:
             del self, result
             raise TelemetryError from None
         return cast(tuple[ExactTelemetryEvent, ...], result)
+
+    def project_cost(self, record: ProviderAttemptCostRecord) -> ProviderCostObservation:
+        result: ProviderCostObservation | None = None
+        try:
+            provider, model = self._identity()
+            copied = _copy_cost(record)
+            if copied.provider != provider or copied.model != model:
+                raise TelemetryError from None
+            result = ProviderCostObservation(
+                cost_state=copied.cost_state, amount=copied.model_cost, currency=copied.currency
+            )
+        except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
+            raise
+        except BaseException:
+            pass
+        if result is None:
+            del self, record
+            raise TelemetryError from None
+        return result
 
     def _project_chat_completion(
         self, summary: RequestAccountingSummary, elapsed_ns: object
@@ -1150,7 +1299,7 @@ class TelemetryProjector:
         duration = _duration_seconds(elapsed_ns)
         if duration is not None:
             events.append(ReadinessDurationSeconds(value=duration))
-        if len(events) > 9:
+        if len(events) > 10:
             raise TelemetryError from None
         return tuple(events)
 
@@ -1181,9 +1330,7 @@ def build_telemetry_projector(
             result = TelemetryProjector(None, None, authority=_PROJECTOR_AUTHORITY)
         else:
             policy = validate_controlled_provider_binding(settings, provider, binding)
-            selected_provider = (
-                policy.provider if policy.provider in {"ollama", "gemini"} else None
-            )
+            selected_provider = policy.provider if policy.provider in {"ollama", "gemini"} else None
             selected_model = policy.model if selected_provider is not None else None
             result = TelemetryProjector(
                 cast(Literal["ollama", "gemini"] | None, selected_provider),
@@ -1262,19 +1409,33 @@ def _elapsed(start: int | None, end: int | None) -> int | None:
 class ChatTelemetryUnit:
     """One captured request sink, clock, projector, and failure fuse."""
 
-    __slots__ = ("_projector", "_sink", "_clock", "_start", "_fused", "_finished")
+    __slots__ = (
+        "_projector",
+        "_sink",
+        "_clock",
+        "_start",
+        "_fused",
+        "_finished",
+        "_concurrency",
+        "_first_token_seen",
+        "_corpus_seen",
+    )
 
     def __init__(
         self,
         projector: object,
         sink: TelemetrySink,
         clock: Callable[[], int],
+        concurrency: ChatConcurrencyTracker | None = None,
     ) -> None:
         self._projector = projector if type(projector) is TelemetryProjector else None
         self._sink = sink
         self._clock = clock
         self._fused = self._projector is None
         self._finished = False
+        self._concurrency = None
+        self._first_token_seen = False
+        self._corpus_seen = False
         if self._projector is None:
             self._start = None
             emit_app_log(TelemetryInputRejectedLog())
@@ -1285,11 +1446,47 @@ class ChatTelemetryUnit:
         except TelemetryError:
             self._fused = True
             emit_app_log(TelemetryInputRejectedLog())
+        if type(concurrency) is ChatConcurrencyTracker:
+            self._concurrency = concurrency
+            concurrency.enter()
+            try:
+                self._emit((ChatConcurrency(value=concurrency.active),))
+            except BaseException:
+                concurrency.leave()
+                self._concurrency = None
+                raise
+
+    def _emit(self, events: tuple[ExactTelemetryEvent, ...]) -> None:
+        if not self._fused:
+            self._fused = not deliver_telemetry(self._sink, events)
+
+    def _release_concurrency(self) -> None:
+        tracker = self._concurrency
+        self._concurrency = None
+        if tracker is not None:
+            tracker.leave()
+            self._emit((ChatConcurrency(value=tracker.active),))
+
+    def first_token(self) -> None:
+        if self._first_token_seen or self._finished:
+            return
+        self._first_token_seen = True
+        duration = _duration_seconds(_elapsed(self._start, _read_clock(self._clock)))
+        if duration is not None:
+            self._emit((ChatFirstTokenSeconds(value=duration),))
+
+    def corpus(self, state: Literal["local_active", "exact_version", "unknown"]) -> None:
+        if self._corpus_seen or self._finished:
+            return
+        event = CorpusVersionState(corpus_state=state)
+        self._corpus_seen = True
+        self._emit((event,))
 
     def complete(self, summary: RequestAccountingSummary) -> None:
         if self._finished:
             raise TelemetryError from None
         self._finished = True
+        self._release_concurrency()
         if self._projector is None:
             return
         end = _read_clock(self._clock)
@@ -1301,15 +1498,67 @@ class ChatTelemetryUnit:
             return
         if not self._fused:
             self._fused = not deliver_telemetry(self._sink, events)
+        try:
+            copied = _copy_summary(summary)
+            costs = tuple(
+                self._projector.project_cost(attempt.cost_record)
+                if type(attempt) is SettledAttempt
+                else ProviderCostObservation(cost_state="uncertain")
+                for attempt in copied.attempts
+            )
+            self._emit(costs)
+        except TelemetryError:
+            emit_app_log(TelemetryInputRejectedLog())
 
     def summary_missing(self) -> None:
         if self._finished:
             raise TelemetryError from None
         self._finished = True
+        self._release_concurrency()
         if self._projector is None:
             return
         _read_clock(self._clock)
         emit_app_log(TelemetryInputRejectedLog())
+
+
+class ChatConcurrencyTracker:
+    """Per-app counter owned by synchronous request-lifetime transitions."""
+
+    __slots__ = ("_active",)
+
+    def __init__(self) -> None:
+        self._active = 0
+
+    @property
+    def active(self) -> int:
+        return self._active
+
+    def enter(self) -> None:
+        if type(self._active) is not int or not 0 <= self._active < MAX_SAFE_TOKEN_COUNT:
+            raise TelemetryError from None
+        self._active += 1
+
+    def leave(self) -> None:
+        if type(self._active) is not int or not 1 <= self._active <= MAX_SAFE_TOKEN_COUNT:
+            raise TelemetryError from None
+        self._active -= 1
+
+
+class HostLifecycleTelemetry:
+    """In-process host port; accepts only explicit bounded lifecycle evidence."""
+
+    __slots__ = ("_sink", "_fused")
+
+    def __init__(self, sink: TelemetrySink) -> None:
+        self._sink = sink
+        self._fused = False
+
+    def emit(self, signal: HostLifecycleSignal) -> None:
+        if type(signal) is not HostLifecycleSignal:
+            raise TelemetryError from None
+        copied = HostLifecycleSignal.model_validate(signal)
+        if not self._fused:
+            self._fused = not deliver_telemetry(self._sink, (copied,))
 
 
 class ReadinessTelemetryUnit:

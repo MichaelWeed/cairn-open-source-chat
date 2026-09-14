@@ -155,6 +155,7 @@ async def chat_event_stream(
     max_output_chars: int = 6000,
     accounting_session: RequestAccountingSession | None = None,
     provider_observer: ProviderAttemptObserver | None = None,
+    telemetry_unit: ChatTelemetryUnit | None = None,
 ) -> AsyncIterator[ChatEvent]:
     if provider_observer is not None and (
         accounting_session is None
@@ -168,6 +169,10 @@ async def chat_event_stream(
     grounding_bundle = None
     try:
         route = validate_route_authority(await retrieval_route_resolver.resolve_route())
+        if telemetry_unit is not None:
+            telemetry_unit.corpus(
+                "local_active" if route.scope.kind == "local_active" else "exact_version"
+            )
         retrieval_request = RetrievalRequest(
             scope=route.scope,
             query=body.message,
@@ -202,6 +207,8 @@ async def chat_event_stream(
             grounding_bundle = None
 
     if grounding_bundle is None:
+        if telemetry_unit is not None:
+            telemetry_unit.corpus("unknown")
         yield StatusEvent(state="refusing", label="No confident match found")
         yield ChunkEvent(delta=REFUSAL_MESSAGE)
         yield DoneEvent(finish_reason="refused")
@@ -232,6 +239,8 @@ async def chat_event_stream(
         )
         try:
             async for event in provider_events:
+                if telemetry_unit is not None and isinstance(event, ChunkEvent):
+                    telemetry_unit.first_token()
                 yield event
                 if isinstance(event, DoneEvent):
                     terminal_produced = True
@@ -463,6 +472,7 @@ async def _admitted_controlled_stream(
     controller: EndpointController,
     lease: ControlLease,
     response_owner: _ControlledResponseOwner,
+    telemetry_unit: ChatTelemetryUnit | None = None,
 ) -> AsyncIterator[ChatEvent]:
     settings = request.app.state.settings
     provider: Provider = request.app.state.provider
@@ -512,6 +522,7 @@ async def _admitted_controlled_stream(
         max_output_chars=settings.max_output_chars,
         accounting_session=accounting_session,
         provider_observer=provider_observer,
+        telemetry_unit=telemetry_unit,
     )
     iterator = source.__aiter__()
     next_event: asyncio.Future[ChatEvent] | None = None
@@ -527,9 +538,7 @@ async def _admitted_controlled_stream(
             yield _control_internal()
             return
         next_event = asyncio.ensure_future(iterator.__anext__())
-        renewal = asyncio.create_task(
-            controller.sleep(min(renewal_interval, remaining_authority))
-        )
+        renewal = asyncio.create_task(controller.sleep(min(renewal_interval, remaining_authority)))
         while next_event is not None and renewal is not None:
             admitted_waiters: tuple[asyncio.Future[Any], ...] = (next_event, renewal)
             done, _ = await asyncio.wait(
@@ -621,9 +630,7 @@ async def _admitted_controlled_stream(
             cleanup_futures.append(cast(asyncio.Future[object], next_event))
         if renewal is not None:
             cleanup_futures.append(cast(asyncio.Future[object], renewal))
-        primary, task_cleanup_failed = await _cancel_stream_tasks(
-            primary, *cleanup_futures
-        )
+        primary, task_cleanup_failed = await _cancel_stream_tasks(primary, *cleanup_futures)
         cleanup_uncertain = cleanup_uncertain or task_cleanup_failed
         del cleanup_futures, task_cleanup_failed
         try:
@@ -653,6 +660,7 @@ async def _queued_controlled_stream(
     controller: EndpointController,
     queued: Queued,
     response_owner: _ControlledResponseOwner,
+    telemetry_unit: ChatTelemetryUnit | None = None,
 ) -> AsyncIterator[ChatEvent]:
     poll_task: asyncio.Task[Pending | Admitted | Denied] | None = None
     timer: asyncio.Task[None] | None = None
@@ -738,6 +746,7 @@ async def _queued_controlled_stream(
                         controller=controller,
                         lease=outcome.lease,
                         response_owner=response_owner,
+                        telemetry_unit=telemetry_unit,
                     ):
                         yield event
                     return
@@ -756,9 +765,7 @@ async def _queued_controlled_stream(
             cleanup_futures.append(cast(asyncio.Future[object], poll_task))
         if timer is not None:
             cleanup_futures.append(cast(asyncio.Future[object], timer))
-        primary_failure, _ = await _cancel_stream_tasks(
-            primary_failure, *cleanup_futures
-        )
+        primary_failure, _ = await _cancel_stream_tasks(primary_failure, *cleanup_futures)
     if primary_failure is not None:
         failure = primary_failure
         del primary_failure
@@ -774,6 +781,7 @@ async def _controlled_stream(
     controller: EndpointController,
     outcome: Admitted | Queued,
     response_owner: _ControlledResponseOwner,
+    telemetry_unit: ChatTelemetryUnit | None = None,
 ) -> AsyncIterator[ChatEvent]:
     if isinstance(outcome, Admitted):
         async for event in _admitted_controlled_stream(
@@ -782,6 +790,7 @@ async def _controlled_stream(
             controller=controller,
             lease=outcome.lease,
             response_owner=response_owner,
+            telemetry_unit=telemetry_unit,
         ):
             yield event
         return
@@ -791,6 +800,7 @@ async def _controlled_stream(
         controller=controller,
         queued=outcome,
         response_owner=response_owner,
+        telemetry_unit=telemetry_unit,
     ):
         yield event
 
@@ -1022,6 +1032,7 @@ async def chat_message(request: Request, body: ChatMessageRequest) -> StreamingR
                 request.app.state.telemetry_projector,
                 request.app.state.telemetry_sink,
                 request.app.state.telemetry_monotonic_ns,
+                request.app.state.telemetry_concurrency,
             )
         except asyncio.CancelledError as error:
             primary: BaseException = error
@@ -1053,6 +1064,7 @@ async def chat_message(request: Request, body: ChatMessageRequest) -> StreamingR
                 controller=controller,
                 outcome=outcome,
                 response_owner=response_owner,
+                telemetry_unit=telemetry_unit,
             ),
             controlled_owner=response_owner,
             telemetry_unit=telemetry_unit,
@@ -1088,6 +1100,7 @@ async def chat_message(request: Request, body: ChatMessageRequest) -> StreamingR
         request.app.state.telemetry_projector,
         request.app.state.telemetry_sink,
         request.app.state.telemetry_monotonic_ns,
+        request.app.state.telemetry_concurrency,
     )
 
     return _sse_response(
@@ -1103,6 +1116,7 @@ async def chat_message(request: Request, body: ChatMessageRequest) -> StreamingR
             max_output_chars=settings.max_output_chars,
             accounting_session=accounting_session,
             provider_observer=provider_observer,
+            telemetry_unit=telemetry_unit,
         ),
         accounting_session=accounting_session,
         summary_owner=discard_accounting_summary,

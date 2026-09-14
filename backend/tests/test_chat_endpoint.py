@@ -23,9 +23,11 @@ from app.retrieval_contracts import (
     RetrievalScope,
 )
 from app.telemetry import (
+    ChatConcurrency,
     ChatDurationSeconds,
     ChatOutcomeTotal,
     ChatRequestsTotal,
+    CorpusVersionState,
     ExactTelemetryEvent,
 )
 
@@ -224,10 +226,13 @@ def test_chat_telemetry_starts_after_admission_and_preserves_public_bytes(
         )
     assert [type(event) for event in sink.events] == [
         ChatRequestsTotal,
+        ChatConcurrency,
+        CorpusVersionState,
+        ChatConcurrency,
         ChatOutcomeTotal,
         ChatDurationSeconds,
     ]
-    assert sink.events[1].chat_outcome == "refused"  # type: ignore[union-attr]
+    assert sink.events[4].chat_outcome == "refused"  # type: ignore[union-attr]
     assert response.status_code == 200
     assert parse_sse(response.text)[-1][0] == "done"
 

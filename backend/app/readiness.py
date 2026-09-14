@@ -47,6 +47,7 @@ ReadinessDimension = Literal[
     "embedding",
     "exact_corpus",
     "budget",
+    "deployment_mode",
 ]
 ReadinessReason = Literal[
     "ready",
@@ -76,6 +77,7 @@ _DIMENSION_ORDER: tuple[ReadinessDimension, ...] = (
     "embedding",
     "exact_corpus",
     "budget",
+    "deployment_mode",
 )
 _ERROR_MESSAGE = "Readiness input is invalid."
 _MISSING = object()
@@ -450,6 +452,7 @@ _NEGATIVE_REASONS: dict[ReadinessDimension, frozenset[ReadinessReason]] = {
     "embedding": frozenset(("unreachable", "model_missing")),
     "exact_corpus": frozenset(("exact_corpus_unready",)),
     "budget": frozenset(("budget_exhausted", "budget_overrun")),
+    "deployment_mode": frozenset(("unavailable",)),
 }
 
 
@@ -518,7 +521,7 @@ def _copy_check(value: object) -> ReadinessCheck:
 
 class ReadinessReport(ReadinessModel):
     contract_version: Literal["1.0"] = READINESS_CONTRACT_VERSION
-    checks: Annotated[tuple[ReadinessCheck, ...], Field(min_length=8, max_length=8)]
+    checks: Annotated[tuple[ReadinessCheck, ...], Field(min_length=9, max_length=9)]
     ready: StrictBool = False
 
     @model_validator(mode="after")
@@ -981,6 +984,7 @@ class ReadinessEvaluator:
     _gemini_probe: GeminiReadinessProbe | None
     _catalog_probe: OllamaCatalogReadinessProbe | None
     _budget_probe: BudgetReadinessProbe | None
+    _deployment_mode_probe: Callable[[], object] | None
     _sealed: bool
 
     __slots__ = (
@@ -998,6 +1002,7 @@ class ReadinessEvaluator:
         "_gemini_probe",
         "_catalog_probe",
         "_budget_probe",
+        "_deployment_mode_probe",
         "_sealed",
     )
 
@@ -1018,6 +1023,7 @@ class ReadinessEvaluator:
         ollama_catalog_probe: OllamaCatalogReadinessProbe | None,
         budget_probe: BudgetReadinessProbe | None,
         retrieval_composition_valid: bool = True,
+        deployment_mode_probe: Callable[[], object] | None = None,
     ) -> None:
         if (
             type(retrieval_profile) is not str
@@ -1050,6 +1056,7 @@ class ReadinessEvaluator:
         object.__setattr__(self, "_gemini_probe", gemini_probe)
         object.__setattr__(self, "_catalog_probe", ollama_catalog_probe)
         object.__setattr__(self, "_budget_probe", budget_probe)
+        object.__setattr__(self, "_deployment_mode_probe", deployment_mode_probe)
         object.__setattr__(self, "_sealed", True)
 
     def __setattr__(self, name: str, value: object) -> None:
@@ -1297,6 +1304,11 @@ class ReadinessEvaluator:
                     budget_result.reason,
                 )
         checks.append(budget)
+        checks.append(
+            _check("deployment_mode", "unknown", True, "misconfigured")
+            if self._deployment_mode_probe is None
+            else self._sync_boolean("deployment_mode", self._deployment_mode_probe)
+        )
         return ReadinessReport(checks=tuple(checks))
 
 
