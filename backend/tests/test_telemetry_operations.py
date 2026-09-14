@@ -164,6 +164,8 @@ def test_host_signals_are_explicit_and_revalidated() -> None:
 
 def test_request_measures_first_generated_chunk_without_changing_sse(tmp_path: Path) -> None:
     settings = Settings(
+        provider="echo",
+        embedding_provider="fake",
         database_path=tmp_path / "db.sqlite",
         chroma_path=tmp_path / "vectors",
         retrieval_max_distance=1000,
