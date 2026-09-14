@@ -52,6 +52,16 @@ no persistence, budget-enforcement, or public API seam. Safe telemetry projects 
 bounded content-free counters and histograms after private accounting ownership; its
 production sink is a no-I/O null sink, and typed application logs mechanically omit
 request, content, identity, path, endpoint, credential, and exception data.
+Operational telemetry also measures time to the first generated chunk and
+simultaneous admitted response lifetimes (including queued responses) per app
+instance. Corpus-version labels distinguish `local_active`, `exact_version`, and
+`unknown`, never raw version strings. Cost observations retain validated Decimal
+amount/currency only when accounting is priced; missing or uncertain cost remains
+explicitly unknown. There is no default price catalog or exporter.
+The in-process `app.state.host_lifecycle_telemetry.emit(HostLifecycleSignal(...))`
+port accepts only explicit `handoff_requested`, `handoff_completed`, `resolved`,
+or `unresolved` evidence from the embedding host. It does not collect browser
+events or infer resolution from generated text, and introduces no public endpoint.
 
 ## Evidence and maintenance note
 

@@ -72,6 +72,8 @@ from app.retrieval_route import (
     binding_from_firestore_adapter,
 )
 from app.telemetry import (
+    ChatConcurrencyTracker,
+    HostLifecycleTelemetry,
     NullTelemetrySink,
     ReadinessTelemetryUnit,
     TelemetrySink,
@@ -513,6 +515,8 @@ def create_app(
     app.state.telemetry_projector = telemetry_projector
     app.state.telemetry_sink = selected_telemetry_sink
     app.state.telemetry_monotonic_ns = selected_telemetry_clock
+    app.state.telemetry_concurrency = ChatConcurrencyTracker()
+    app.state.host_lifecycle_telemetry = HostLifecycleTelemetry(selected_telemetry_sink)
     app.state.retrieval_scope = selected_scope
     app.state.retrieval_distance_measure = selected_measure
     app.state.retrieval_max_distance = selected_max_distance

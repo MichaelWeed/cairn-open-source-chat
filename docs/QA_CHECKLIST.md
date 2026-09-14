@@ -60,10 +60,16 @@ The focused request-accounting matrix also verifies exact 0/1/1-to-2 attempt pol
 cumulative usage, immutable price snapshots, retry and cleanup uncertainty,
 final-send/callback ordering, cancellation identity, no public usage events, and no
 live provider or store access.
-Safe-telemetry tests additionally prove exact 17/9 event bounds, deterministic
+Safe-telemetry tests additionally prove bounded batches (17 chat, 9 readiness,
+and at most 2 separate cost observations), deterministic
 ordering, source-free accounting/readiness projection, injected monotonic timing,
 advisory sink failure containment, typed-log field allowlisting, unchanged public
 SSE/readiness bytes, and no production exporter or live network access.
+Operational checks prove a single first-generated-chunk sample, balanced per-app
+concurrency on completion and missing summaries, content-free corpus version
+state, explicit handoff/resolution signal validation, and exact Decimal cost
+reconciliation with an immutable provider-price fixture. Refusals do not produce
+first-token observations; successful chat does not imply host resolution.
 
 `backend/tests/` covers this in-process; these rows exist because the real
 ASGI server + real HTTP transport can behave differently than `TestClient`
