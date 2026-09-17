@@ -1,7 +1,7 @@
 # Cairn — Architecture
 
 What the system is, how a request moves through it, and which parts are load-bearing
-constraints rather than current implementation choices. Accurate as of 2026-09-08.
+constraints rather than current implementation choices. Accurate as of 2026-09-17.
 
 For the wire contract, configuration knobs, and operational procedures, see
 [DEVELOPER_README.md](../DEVELOPER_README.md). For the reasoning behind individual
@@ -15,23 +15,26 @@ marks which.
 
 ## 1. System context
 
-```
-   site visitor
-        │  (browser)
-        ▼
-┌──────────────────┐     operator's own infrastructure
-│  page + widget   │     ────────────────────────────────
-└────────┬─────────┘
-         │ POST /api/v1/chat/message   JSON in, SSE out
-         ▼
-┌──────────────────────────────────────────────┐
-│  Cairn backend  (FastAPI, one process)       │
-│                                              │
-│   retrieval ──▶ SQLite flat index (local)    │
-│   metadata  ──▶ SQLite (WAL, local file)     │
-│   inference ──▶ Ollama (default, local)      │
-│             └─▶ Gemini (explicit opt-in)     │
-└──────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    visitor["Site visitor"]
+
+    subgraph operator["Operator-owned infrastructure"]
+        page["Operator site<br/>and &lt;cairn-chat&gt;"]
+        api["Cairn backend<br/>FastAPI, one process"]
+        vectors[("SQLite flat-vector index")]
+        metadata[("SQLite metadata<br/>WAL")]
+        ollama["Ollama<br/>default local models"]
+
+        page -->|"POST JSON<br/>SSE response"| api
+        api -->|"retrieve"| vectors
+        api -->|"metadata"| metadata
+        api -->|"generate and embed"| ollama
+    end
+
+    gemini["Gemini API<br/>explicit generation opt-in"]
+    visitor --> page
+    api -.->|"optional external boundary"| gemini
 ```
 
 Three properties of this diagram carry most of the design weight:
@@ -75,6 +78,34 @@ Three properties of this diagram carry most of the design weight:
 ## 3. How a chat request flows
 
 Built and tested today, in order:
+
+```mermaid
+sequenceDiagram
+    actor Visitor
+    participant Widget as cairn-chat
+    participant API as FastAPI chat endpoint
+    participant Retrieval as Retrieval + evidence compiler
+    participant Index as SQLite vector index
+    participant Provider as Ollama or opt-in Gemini
+
+    Visitor->>Widget: Ask a question
+    Widget->>API: POST bounded JSON request
+    API->>API: Validate contract, origin, and rate limit
+    API->>Retrieval: Resolve one route and retrieve
+    Retrieval->>Index: Embed and query
+    Index-->>Retrieval: Candidate chunks
+    Retrieval->>Retrieval: Validate authority and compile evidence
+    alt No eligible evidence
+        Retrieval-->>API: Refusal
+        API-->>Widget: SSE refusal and done
+    else Eligible evidence
+        Retrieval-->>API: Support context and citations
+        API->>Provider: Bounded prompt with untrusted context
+        Provider-->>API: Bounded text stream
+        API-->>Widget: SSE citations, chunks, and done
+    end
+    Widget-->>Visitor: Cited answer or honest refusal
+```
 
 1. **Contract validation.** The actual request body is capped at 16,384 bytes, then
    parsed by a frozen Pydantic model with `extra="forbid"`. Session, message,
