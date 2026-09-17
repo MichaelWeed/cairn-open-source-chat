@@ -2,75 +2,84 @@
 
 [![validate](https://github.com/MichaelWeed/cairn-open-source-chat/actions/workflows/validate.yml/badge.svg)](https://github.com/MichaelWeed/cairn-open-source-chat/actions/workflows/validate.yml)
 
-**Self-hosted AI support chat that answers from your documents with citations and refuses to guess.**
+**Open-source support chat that answers from your documents, shows its sources,
+and refuses to guess.**
 
-Cairn is a free, Apache-2.0 developer preview for teams that want useful support
-answers without a SaaS subscription, per-seat pricing, or a third party holding
-their customer conversations. Point it at the documents your team trusts; Cairn
-retrieves relevant passages, cites its sources, and refuses when retrieval is below
-its configured confidence threshold. The supported default path uses local Ollama
-models, so an operator can keep the service and its data in their own infrastructure.
+Cairn gives teams a self-hosted alternative to opaque support bots. Bring the
+Markdown and PDF documents you trust, embed the chat widget in your site, and keep
+the service and its data in infrastructure you control. The default path uses
+local Ollama models; an optional Gemini generation adapter is available only when
+an operator explicitly enables it.
 
-**0.1.0 developer preview.** Cairn is a source-only, operator-owned,
-single-instance self-hosting option, not an author-hosted service or a
-production-certified offering. It provides a production-configurable shadow-DOM
-chat UI, strict capability negotiation, and cited SSE answers. An optional
-operator-owned support link is available after refusal or terminal chat failure;
-built-in ticket creation, order-status deep links, an admin experience, the
-guardrail pipeline, and any author-hosted service are planned, not available
-behavior. An optional Gemini generation adapter is available for explicit opt-in
-use; it is excluded from the local default install and does not establish
-production or hosted readiness.
-Provider adapters normalize bounded, content-free token usage in memory. Cairn
-also provides pure cost-accounting helpers for an operator-supplied immutable
-price snapshot; no prices, budget enforcement, or accounting sink are bundled.
+Cairn is free under Apache 2.0. It is source-only software, not a hosted service.
 
-It is for CTOs and support leaders evaluating a grounded, self-hosted alternative
-to an opaque support bot. The problem is practical: an unsupported answer can
-mislead a customer, while a hosted bot can turn a support conversation into someone
-else's data. Cairn's differentiators are grounded answers, visible citations,
-low-confidence refusal, and a local-model-first deployment path.
+## Why Cairn
+
+| Principle | What it means |
+| --- | --- |
+| Grounded answers | Relevant document passages support each answer. |
+| Visible citations | Visitors can inspect the sources behind a response. |
+| Honest refusal | If the available evidence is too weak, Cairn does not invent an answer. |
+| Operator-owned | You choose the models, documents, infrastructure, and data boundary. |
+| Embeddable | A framework-independent `<cairn-chat>` web component fits into an existing site. |
+
+## How it works
+
+```mermaid
+flowchart LR
+    docs["Trusted Markdown and PDFs"] --> ingest["Validate and index"]
+    ingest --> index[("Local SQLite index")]
+    visitor["Site visitor"] --> widget["&lt;cairn-chat&gt; widget"]
+    widget --> api["Cairn API"]
+    api --> index
+    index --> evidence{"Enough evidence?"}
+    evidence -- No --> refuse["Refuse safely"]
+    evidence -- Yes --> model["Ollama by default<br/>Gemini by explicit opt-in"]
+    model --> answer["Stream answer and citations"]
+    refuse --> widget
+    answer --> widget
+```
+
+The citation list and model context come from the same eligible evidence. Chat
+content is not persisted by the server, and retrieved documents are treated as
+untrusted data rather than instructions.
+
+## What ships today
+
+- A FastAPI backend with a frozen JSON and server-sent-events chat contract.
+- A local SQLite flat-vector index and versioned document provenance.
+- Markdown and PDF ingestion, retrieval, refusal, and cited answers.
+- Ollama generation and embeddings by default, plus opt-in Gemini generation.
+- A responsive, accessible, shadow-DOM web component and a local demo page.
+- Evaluation, security, privacy, compatibility, release, and supply-chain checks.
+
+Cairn 0.1.0 is a developer preview for one operator-owned instance. It does not
+include a hosted Cairn service, multi-tenancy, an admin console, built-in CRM or
+order-status integrations, or production certification.
 
 ## Try the developer preview
 
-With `uv`, Ollama, and Cairn's default models already installed, run:
+Install `uv` and Ollama, make sure the default models are available, then run:
 
 ```sh
+ollama pull llama3.1:8b-instruct
+ollama pull nomic-embed-text
 make demo
 ```
 
 Open `http://localhost:8080/demo` and ask about shipping, returns, or warranties.
-For prerequisite commands, the default model pair (`llama3.1:8b-instruct` and
-`nomic-embed-text`), `.env` overrides, `make demo` versus `make up`, architecture,
-API, security, evaluation, development, and operations, start with the
-[full technical guide](DEVELOPER_README.md). To obtain, verify, extract, and
-operate the 0.1.0 source release, follow the [operator release guide](docs/RELEASE.md).
+The command checks prerequisites and never downloads models on your behalf.
 
-## Why this problem matters
+## Choose your path
 
-“Where is my order?” tickets typically account for 30–60% of ecommerce support
-volume¹, and delayed or missing packages are a leading reason customers contact
-retail support². Those are industry benchmarks, not Cairn performance claims. They
-motivate trustworthy answers from an operator's own knowledge base, not a claim
-that Cairn provides order-status integrations today.
-
-## Learn more
-
-* [DEVELOPER_README.md](DEVELOPER_README.md) — full technical guide: setup, configuration, architecture, API, security, evaluation, development, and operations.
-* [docs/RELEASE.md](docs/RELEASE.md) — 0.1.0 artifact verification, safe extraction, operator start, backup, rollback, and weekly SBOM rescan.
-* [docs/MIGRATION-0.1.0.md](docs/MIGRATION-0.1.0.md) — operator actions for moving a 0.0.0 preview to 0.1.0.
-* [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) — machine-readable capability discovery, current compatibility versions, and pre-1.0 upgrade rules.
-* [docs/WIDGET.md](docs/WIDGET.md) - production widget attributes, events, privacy, CSP, CORS, accessibility, and migration guidance.
-* [docs/CORPUS-PROVENANCE.md](docs/CORPUS-PROVENANCE.md) - versioned startup manifest and public citation contract.
-* [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/adr/](docs/adr/) — system shape, built-versus-planned boundaries, and decisions.
-* [docs/SECURITY.md](docs/SECURITY.md) and [docs/PRIVACY.md](docs/PRIVACY.md) — security status, vulnerability reporting, and data handling.
-* [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) — supported contribution boundary and non-goals.
-* [docs/PUBLIC-AVAILABILITY.md](docs/PUBLIC-AVAILABILITY.md) — delivered public-availability record and the remaining tracking decision.
+- **Build or extend Cairn:** [DEVELOPER_README.md](DEVELOPER_README.md)
+- **Understand the architecture:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [architecture decisions](docs/adr/)
+- **Operate the source release:** [docs/RELEASE.md](docs/RELEASE.md)
+- **Embed the widget:** [docs/WIDGET.md](docs/WIDGET.md)
+- **Prepare a cited corpus:** [docs/CORPUS-PROVENANCE.md](docs/CORPUS-PROVENANCE.md)
+- **Check compatibility:** [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)
+- **Review security and privacy:** [docs/SECURITY.md](docs/SECURITY.md) and [docs/PRIVACY.md](docs/PRIVACY.md)
+- **Contribute:** [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)
 
 Built and maintained by [Michael Weed](https://github.com/MichaelWeed). See the
 [Apache-2.0 license](LICENSE).
-
----
-
-¹ [CorePiper, *What Is WISMO and How to Reduce 'Where Is My Order' Tickets*](https://corepiper.com/blog/what-is-wismo/) — WISMO tickets typically account for 30–60% of ecommerce support volume.
-² [MeasuringU, *customer service study*](https://measuringu.com/customer-service/) — a delayed package or delivery problem was the top coded reason participants contacted retail support.

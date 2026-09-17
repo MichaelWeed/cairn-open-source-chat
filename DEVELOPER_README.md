@@ -1,41 +1,49 @@
 # Cairn Technical Guide
 
-This is the full technical guide for setting up, configuring, evaluating,
-developing, and operating Cairn. The executive overview is [README.md](README.md).
+This is the technical home for setting up, configuring, evaluating, developing,
+and operating Cairn. The public project overview stays intentionally short in
+[README.md](README.md).
+
+Use the most specific guide for the job:
+
+| Need | Guide |
+| --- | --- |
+| System shape and built-versus-planned boundaries | [Architecture](docs/ARCHITECTURE.md) and [ADRs](docs/adr/) |
+| Source release verification, startup, backup, and rollback | [Release guide](docs/RELEASE.md) |
+| Widget attributes, events, privacy, CSP, CORS, and accessibility | [Widget guide](docs/WIDGET.md) |
+| Corpus manifests and public citation provenance | [Corpus provenance](docs/CORPUS-PROVENANCE.md) |
+| Compatibility versions and packaged capabilities | [Compatibility](docs/COMPATIBILITY.md) |
+| Security and data handling | [Security](docs/SECURITY.md) and [privacy](docs/PRIVACY.md) |
+| Moving from the 0.0.0 preview | [0.1.0 migration](docs/MIGRATION-0.1.0.md) |
+
 Cairn was formerly AetherChat; [project.yaml](project.yaml) is the durable identity
-record. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/adr/](docs/adr/) are
-the durable design authorities, while [docs/PUBLIC-AVAILABILITY.md](docs/PUBLIC-AVAILABILITY.md)
-records the public source-availability outcome and release boundary.
-[docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) records the exact packaged capability
-manifest, compatibility versions, and pre-1.0 upgrade rules.
-[docs/WIDGET.md](docs/WIDGET.md) is the canonical production widget configuration,
-event, privacy, CSP, CORS, accessibility, and migration guide.
-[docs/RELEASE.md](docs/RELEASE.md) is the 0.1.0 operator guide for release
-verification, extraction, starting, backup, rollback, and SBOM rescans.
-[docs/MIGRATION-0.1.0.md](docs/MIGRATION-0.1.0.md) is the 0.0.0-preview migration
-checklist.
+record. [docs/PUBLIC-AVAILABILITY.md](docs/PUBLIC-AVAILABILITY.md) records the
+public source-availability outcome and release boundary.
 
 ---
 
 ## 1. Architecture at a Glance
 
-The diagram below is the target architecture, not a statement that every box is built. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) is the fuller map — component-by-component
-built-vs-designed status, request flow, and the cost of each deliberate constraint;
+The solid path below is built. Dashed boxes are designed boundaries that do not
+ship as working product features. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+contains the component inventory, request flow, and deliberate constraints;
 [docs/adr/](docs/adr/) records why each decision was made.
 
-```
-[Widget (shadow DOM, vanilla TS)]
-        | POST /api/v1/chat/message  (JSON in, SSE out)
-        v
-[FastAPI backend]
-   Guardrail pipeline (ordered middleware, toggleable)
-   -> Router: RAG answer | tool call | refusal
-   -> Provider adapter (Ollama built | optional Gemini built)
-        |
-   [SQLite flat index]  vectors
-   [SQLite, WAL]        docs metadata, provider registry, config, metric counters
-        |
-   [Tool registry]  lookup_order_status | escalate_to_human
+```mermaid
+flowchart LR
+    browser["Browser<br/>&lt;cairn-chat&gt;"] -->|"JSON request<br/>SSE response"| api["FastAPI chat API"]
+    api --> controls["Validation, origin check,<br/>rate limit"]
+    controls --> retrieval["Retrieval and<br/>evidence compiler"]
+    retrieval --> vectors[("SQLite flat-vector index")]
+    retrieval --> decision{"Eligible evidence?"}
+    decision -- No --> refusal["Deterministic refusal"]
+    decision -- Yes --> provider["Ollama default<br/>Gemini opt-in"]
+    provider --> stream["Bounded cited stream"]
+    refusal --> stream
+    stream --> browser
+    metadata[("SQLite metadata<br/>WAL")] --- api
+    admin["Admin surface"] -.->|planned| api
+    tools["Tool registry"] -.->|planned| api
 ```
 
 The built developer-preview slice is the FastAPI chat endpoint, a local SQLite flat
@@ -382,6 +390,26 @@ uv run --extra gemini pytest -q \
 uv run --extra gemini ruff check . ../eval
 uv run --extra gemini mypy . ../eval/run_eval.py
 ```
+
+### Fresh Codeweaver context
+
+[Codeweaver](https://github.com/tesserato/CodeWeaver) can package the current
+source tree for an LLM review. Generate the snapshot outside the repository so it
+cannot become a stale duplicate of the source. The filters below exclude local
+caches, installed dependencies, run artifacts, incident material, lockfiles, and
+generated SBOMs while retaining application code, tests, configuration, and
+maintained documentation:
+
+```sh
+codeweaver \
+  -input . \
+  -output /tmp/cairn-codebase-context.md \
+  -ignore '^\.git/,^\.agent/,^\.claude/,^\.codex/,^anchor/,^bugs/,(^|/)node_modules/,(^|/)\.venv/,(^|/)\.mypy_cache/,(^|/)\.pytest_cache/,(^|/)\.ruff_cache/,^dist/,^\.DS_Store$,__pycache__/,\.pyc$,\.sqlite3$,\.db$,\.log$,\.diff$,\.headers$,\.tsbuildinfo$,sbom\.cdx\.json$,package-lock\.json$,uv\.lock$' \
+  -include '(^|/)(README\.md|DEVELOPER_README\.md|Makefile|compose\.yaml|project\.yaml|\.agent-test-contract\.yaml|Dockerfile|[^/]+\.(py|ts|mjs|html|css|md|yaml|yml|toml|json|sh))$'
+```
+
+Codeweaver is a contributor tool, not a Cairn runtime dependency. Its generated
+snapshot is intentionally not version-controlled.
 
 ## 8. Extending: Adding a Tool
 
