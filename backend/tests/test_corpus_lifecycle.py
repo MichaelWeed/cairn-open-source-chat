@@ -1656,6 +1656,47 @@ async def test_embedding_and_stored_evidence_mismatches_create_no_state() -> Non
     assert len([call for call in store.calls if call[0] == "switch"]) == writes
 
 
+def test_literal_fake_expected_embedding_identity_is_rejected_content_free() -> None:
+    store = MemoryStore()
+    verifier = CandidateVerifier()
+    private_canary = "PRIVATE-FAKE-CONSTRUCTOR-CANARY"
+    verifier.overrides[private_canary] = _candidate_evidence(version=private_canary)
+
+    with pytest.raises(CorpusLifecycleError) as caught:
+        CorpusLifecycleService(
+            store=store,
+            verify_attested_candidate=verifier,
+            expected_embedding_identity="fake",
+            expected_embedding_dimensions=3,
+            timeout_seconds=7,
+            max_retries=1,
+            sleep=asyncio.sleep,
+        )
+
+    assert caught.value.code == "invalid_request"
+    _assert_error_is_content_free(caught.value, "fake", private_canary)
+    assert verifier.calls == []
+    assert store.calls == []
+
+
+@pytest.mark.asyncio
+async def test_forged_fake_embedding_evidence_cannot_create_lifecycle_state() -> None:
+    private_canary = "private-fake-evidence-canary"
+    service, store, verifier = _service()
+    object.__setattr__(service, "_expected_embedding_identity", "fake")
+    verifier.overrides[private_canary] = _candidate_evidence(
+        version=private_canary
+    ).model_copy(update={"embedding_identity": "fake"})
+
+    with pytest.raises(CorpusLifecycleError) as caught:
+        await service.mark_ready(_ready_request(private_canary), Policy())
+
+    assert caught.value.code == "candidate_unavailable"
+    _assert_error_is_content_free(caught.value, "fake", private_canary)
+    assert len(verifier.calls) == 1
+    assert store.calls == []
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "corruption",

@@ -171,6 +171,11 @@ embedding function. Its `1.0` algorithm identities and bounded canonical SHA-256
 material make a complete candidate plan deterministic across retries and process
 hash seeds. Planning does not persist or activate a candidate.
 
+The `fake` embedding identity remains valid for deterministic development and test
+planning and retrieval. It is permanently excluded from lifecycle readiness and
+active promotion: the lifecycle service rejects `fake` as its expected identity and
+fails closed if verified candidate evidence carries that literal identity.
+
 The internal candidate persistence contract adds create-or-confirm storage, exact
 readback, canonical inventory hashing, and injected attestation verification. Its
 separate signer-free verifier accepts an exact corpus, externally selected identity,

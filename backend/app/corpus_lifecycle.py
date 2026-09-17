@@ -1079,6 +1079,7 @@ class CorpusLifecycleService:
                 and type(expected_embedding_identity) is str
                 and 1 <= len(expected_embedding_identity) <= MAX_EMBEDDING_IDENTITY_CHARS
                 and _printable(expected_embedding_identity) == expected_embedding_identity
+                and expected_embedding_identity != "fake"
                 and type(expected_embedding_dimensions) is int
                 and 1 <= expected_embedding_dimensions <= 2048
                 and type(timeout_seconds) is int
@@ -1229,7 +1230,8 @@ class CorpusLifecycleService:
         if evidence.corpus != corpus:
             raise CorpusLifecycleError("malformed_store") from None
         if (
-            evidence.embedding_identity != self._expected_embedding_identity
+            evidence.embedding_identity == "fake"
+            or evidence.embedding_identity != self._expected_embedding_identity
             or evidence.embedding_dimensions != self._expected_embedding_dimensions
         ):
             raise CorpusLifecycleError("candidate_unavailable") from None
