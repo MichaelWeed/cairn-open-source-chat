@@ -30,6 +30,7 @@ from app.corpus_lifecycle import (
     LifecycleAuditRecord,
     LifecycleSnapshot,
     MarkReadyRequest,
+    PromotionEvaluationEvidence,
     RemoveCorpusVersionRequest,
     StoreMutationResult,
     SwitchActiveRequest,
@@ -88,6 +89,25 @@ from app.retrieval_route import (
     validate_route_authority as _validate_route_authority,
 )
 from app.telemetry import ChatTelemetryUnit
+
+
+def _promotion_evaluation(
+    corpus: ExactCorpusReference,
+) -> PromotionEvaluationEvidence:
+    return PromotionEvaluationEvidence(
+        schema_version="1.0",
+        corpus=corpus,
+        evaluation_suite_sha256="e" * 64,
+        evaluation_results_sha256="f" * 64,
+        adversarial_case_count=7,
+        answer_quality_case_count=11,
+        adversarial_passed=True,
+        groundedness_passed=True,
+        citation_precision_passed=True,
+        citation_recall_passed=True,
+        correct_refusal_passed=True,
+        over_refusal_passed=True,
+    )
 
 
 @pytest.mark.asyncio
@@ -1126,6 +1146,7 @@ async def test_chat_actual_lifecycle_route_keeps_inflight_a_bound_while_next_use
             action="promote",
             target=scope_a,
             expected=None,
+            evaluation=_promotion_evaluation(scope_a),
         ),
         policy,
     )
@@ -1171,6 +1192,7 @@ async def test_chat_actual_lifecycle_route_keeps_inflight_a_bound_while_next_use
             action="promote",
             target=scope_b,
             expected=ExpectedActivePointer(target=scope_a, revision=0),
+            evaluation=_promotion_evaluation(scope_b),
         ),
         policy,
     )
