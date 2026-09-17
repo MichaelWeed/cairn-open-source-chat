@@ -181,6 +181,14 @@ and logically remove an inactive version with immutable audits. It accepts an in
 immutable trust policy but ships no real signer or production trust selection and is
 not selected by default startup or exposed through an endpoint. Its read-only active
 seam can be composed explicitly with the internal route resolver for development/tests.
+Every promotion and rollback request also requires immutable evaluation evidence at
+schema `1.0`, bound to the exact target corpus. The artifact is content-free: it
+contains only that exact corpus identity, fixed SHA-256 suite and results digests,
+bounded nonzero adversarial and answer-quality case counts, and strict outcomes for
+adversarial coverage, groundedness, citation precision, citation recall, correct
+refusal, and over-refusal. All outcomes must pass. The artifact authorizes the
+mutation but is not copied into lifecycle records, pointers, or audits, so their
+schema versions and stored shapes remain unchanged.
 That resolver's exact-version probe can be aggregated by `/readyz` when the resolver
 is explicitly injected in development/test. The public response retains only the
 existing database, vector-store, and corpus booleans; no scope, version, model,

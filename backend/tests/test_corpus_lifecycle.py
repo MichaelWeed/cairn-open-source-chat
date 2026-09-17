@@ -35,6 +35,7 @@ from app.corpus_lifecycle import (
     LifecycleMutationReceipt,
     LifecycleSnapshot,
     MarkReadyRequest,
+    PromotionEvaluationEvidence,
     RemoveCorpusVersionRequest,
     ResolvedActiveState,
     StoreMutationResult,
@@ -202,6 +203,28 @@ def _ready_audit(record: CorpusLifecycleRecord) -> LifecycleAuditRecord:
         after=None,
         resulting_revision=0,
         authorizing_attestation_payload_sha256=record.attestation_payload_sha256,
+    )
+
+
+def _promotion_evidence(
+    version: str = "v1",
+    marker: str = "e",
+    *,
+    corpus: ExactCorpusReference | None = None,
+) -> PromotionEvaluationEvidence:
+    return PromotionEvaluationEvidence(
+        schema_version="1.0",
+        corpus=_corpus(version) if corpus is None else corpus,
+        evaluation_suite_sha256=marker * 64,
+        evaluation_results_sha256="f" * 64,
+        adversarial_case_count=7,
+        answer_quality_case_count=11,
+        adversarial_passed=True,
+        groundedness_passed=True,
+        citation_precision_passed=True,
+        citation_recall_passed=True,
+        correct_refusal_passed=True,
+        over_refusal_passed=True,
     )
 
 
@@ -662,6 +685,7 @@ def _switch(
         contract_version="1.0",
         action=cast(Any, action),
         target=_corpus(target),
+        evaluation=_promotion_evidence(target),
         expected=(
             None
             if expected is None
@@ -778,6 +802,7 @@ def test_public_and_local_compatibility_surfaces_match_accepted_base_bytes(
 @pytest.mark.parametrize(
     "model,instance",
     [
+        (PromotionEvaluationEvidence, _promotion_evidence()),
         (VerifiedLifecycleEvidence, _lifecycle_evidence()),
         (CorpusLifecycleRecord, _record()),
         (
@@ -959,6 +984,106 @@ def test_nested_dependency_models_are_revalidated(
         with pytest.raises(CorpusLifecycleError) as caught:
             route()
         _assert_error_is_content_free(caught.value, "PRIVATE-FORGED-IDENTITY")
+    assert caplog.records == []
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "adversarial_passed",
+        "groundedness_passed",
+        "citation_precision_passed",
+        "citation_recall_passed",
+        "correct_refusal_passed",
+        "over_refusal_passed",
+    ],
+)
+def test_switch_requires_every_evaluation_outcome_to_pass(field: str) -> None:
+    evidence = _promotion_evidence().model_copy(update={field: False})
+    with pytest.raises(CorpusLifecycleError) as caught:
+        SwitchActiveRequest(
+            contract_version="1.0",
+            action="promote",
+            target=_corpus(),
+            evaluation=evidence,
+            expected=None,
+        )
+    assert caught.value.code == "invalid_request"
+
+
+def test_switch_requires_evaluation_evidence_for_promote_and_rollback() -> None:
+    for action, expected in (("promote", None), ("rollback", ("v2", 3))):
+        request = _switch("v1", action=action, expected=expected)
+        payload = request.model_dump(mode="python", round_trip=True)
+        del payload["evaluation"]
+        with pytest.raises(CorpusLifecycleError) as caught:
+            SwitchActiveRequest.model_validate(payload)
+        assert caught.value.code == "invalid_request"
+
+
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("schema_version", "2.0"),
+        ("evaluation_suite_sha256", "A" * 64),
+        ("evaluation_results_sha256", "f" * 63),
+        ("adversarial_case_count", 0),
+        ("answer_quality_case_count", MAX_SAFE_INTEGER + 1),
+        ("adversarial_case_count", True),
+        ("groundedness_passed", 1),
+    ],
+)
+def test_evaluation_evidence_rejects_wrong_schema_digests_counts_and_types(
+    field: str, bad: object
+) -> None:
+    valid = _promotion_evidence()
+    payload = valid.model_dump(mode="python", round_trip=True)
+    payload[field] = bad
+    _assert_invalid_python_payload_routes(
+        PromotionEvaluationEvidence, valid, payload, "PRIVATE-EVALUATION"
+    )
+
+
+def test_switch_requires_exact_bound_evaluation_and_revalidates_bypass_surfaces() -> None:
+    request = _switch("v1")
+    mismatched = _promotion_evidence("v2")
+    payload = request.model_dump(mode="python", round_trip=True)
+    payload["evaluation"] = mismatched
+    _assert_invalid_python_payload_routes(
+        SwitchActiveRequest, request, payload, "PRIVATE-EVALUATION"
+    )
+
+    forged = _promotion_evidence()
+    object.__setattr__(forged, "groundedness_passed", False)
+    forged_payload = request.model_dump(mode="python", round_trip=True)
+    forged_payload["evaluation"] = forged
+    _assert_invalid_python_payload_routes(
+        SwitchActiveRequest, request, forged_payload, "PRIVATE-EVALUATION"
+    )
+
+
+def test_evaluation_evidence_rejects_content_and_arbitrary_metadata_content_free(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    evidence = _promotion_evidence()
+    values: dict[str, Any] = evidence.model_dump(mode="python", round_trip=True)
+    forbidden = (
+        "prompt",
+        "answer",
+        "retrieved_text",
+        "citations",
+        "url",
+        "messages",
+        "credentials",
+        "metadata",
+    )
+    for field in forbidden:
+        canary = f"PRIVATE-{field.upper()}-CANARY"
+        payload: dict[str, Any] = {**values, field: canary}
+        with pytest.raises(CorpusLifecycleError) as caught:
+            PromotionEvaluationEvidence.model_construct(**payload)
+        assert caught.value.code == "invalid_request"
+        _assert_error_is_content_free(caught.value, canary)
     assert caplog.records == []
 
 
@@ -1180,6 +1305,7 @@ def test_every_corpus_containing_model_revalidates_nested_corpus_on_all_routes(
 ) -> None:
     ready = _record()
     instances = (
+        _promotion_evidence(),
         _lifecycle_evidence(),
         ready,
         ActiveCorpusPointer(
@@ -1240,6 +1366,7 @@ def test_every_corpus_containing_model_rejects_forged_exact_instances(
     )
     ready = _record()
     instances = (
+        _promotion_evidence(),
         _lifecycle_evidence(),
         ready,
         ActiveCorpusPointer(
@@ -2588,6 +2715,7 @@ async def test_cancellation_during_uncertain_confirmation_is_unchanged(
 
 def test_rebuilds_are_serialized_for_all_public_models() -> None:
     models = (
+        PromotionEvaluationEvidence,
         VerifiedLifecycleEvidence,
         CorpusLifecycleRecord,
         ActiveCorpusPointer,
@@ -3000,6 +3128,7 @@ async def test_different_corpora_have_disjoint_state_reads_writes_and_errors(
                 contract_version="1.0",
                 action="promote",
                 target=corpus,
+                evaluation=_promotion_evidence(corpus=corpus),
                 expected=None,
             ),
             Policy(),
