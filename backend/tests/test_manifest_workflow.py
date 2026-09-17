@@ -11,6 +11,7 @@ from app.ingest.manifest_workflow import (
     ManifestReviewPolicy,
     ManifestWorkflowError,
     OriginAuthorityClaim,
+    ReviewedManifestEntry,
     ReviewedManifestSnapshot,
     approve_manifest_draft,
     generate_manifest_draft,
@@ -78,6 +79,67 @@ def _approval(**changes: object) -> ManifestDocumentApproval:
     return ManifestDocumentApproval.model_validate(values)
 
 
+def _canonical_bytes(value: object) -> bytes:
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode()
+
+
+def _sha256(value: object) -> str:
+    return hashlib.sha256(_canonical_bytes(value)).hexdigest()
+
+
+def _forged_snapshot_values(
+    snapshot: ReviewedManifestSnapshot, **entry_changes: object
+) -> dict[str, object]:
+    original = snapshot.entries[0]
+    entry_values = original.model_dump(round_trip=True)
+    entry_values.update(entry_changes)
+    entry_values["entry_sha256"] = _sha256(
+        {
+            "relative_path": entry_values["relative_path"],
+            "title": entry_values["title"],
+            "url": entry_values["url"],
+            "source_sha256": entry_values["source_sha256"],
+            "authority": entry_values["authority"],
+            "reviewed_at": entry_values["reviewed_at"].isoformat(),
+            "public": True,
+        }
+    )
+    entry = ReviewedManifestEntry.model_validate(entry_values)
+    manifest_bytes = _canonical_bytes(
+        {
+            "version": 1,
+            "documents": {
+                entry.relative_path: {
+                    "title": entry.title,
+                    "url": entry.url,
+                    "sha256": entry.source_sha256,
+                    "owner": entry.authority,
+                    "reviewed_at": entry.reviewed_at.isoformat(),
+                    "public": True,
+                }
+            },
+        }
+    )
+    manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+    snapshot_sha256 = _sha256(
+        {
+            "namespace": "cairn-reviewed-manifest-v1",
+            "manifest_sha256": manifest_sha256,
+            "policy_sha256": snapshot.policy_sha256,
+        }
+    )
+    return {
+        "manifest_bytes": manifest_bytes,
+        "entries": (entry,),
+        "policy": snapshot.policy,
+        "manifest_sha256": manifest_sha256,
+        "policy_sha256": snapshot.policy_sha256,
+        "snapshot_sha256": snapshot_sha256,
+    }
+
+
 def test_reviewed_snapshot_is_format_independent_and_binds_policy() -> None:
     source = _source()
     formatted = source.model_copy(
@@ -96,6 +158,34 @@ def test_reviewed_snapshot_is_format_independent_and_binds_policy() -> None:
     with pytest.raises(ManifestWorkflowError):
         first.model_copy(update={"snapshot_sha256": "0" * 64})
     assert ReviewedManifestSnapshot.model_validate_json(first.model_dump_json()) == first
+
+
+@pytest.mark.parametrize(
+    "entry_changes",
+    (
+        {"url": "https://private.example.com/guide.md"},
+        {"authority": "Unapproved authority"},
+        {"reviewed_at": date(2026, 1, 1)},
+    ),
+)
+def test_direct_snapshot_construction_rejects_consistent_policy_forgery(
+    entry_changes: dict[str, object],
+) -> None:
+    reviewed = validate_reviewed_manifest(_source(), _policy())
+    forged = _forged_snapshot_values(reviewed, **entry_changes)
+
+    with pytest.raises(ManifestWorkflowError) as caught:
+        ReviewedManifestSnapshot.model_validate(forged)
+    assert caught.value.code == "invalid_model"
+
+
+def test_snapshot_copy_rejects_consistent_policy_forgery() -> None:
+    reviewed = validate_reviewed_manifest(_source(), _policy())
+    forged = _forged_snapshot_values(reviewed, reviewed_at=date(2026, 1, 1))
+
+    with pytest.raises(ManifestWorkflowError) as caught:
+        reviewed.model_copy(update=forged)
+    assert caught.value.code == "invalid_model"
 
 
 @pytest.mark.parametrize(

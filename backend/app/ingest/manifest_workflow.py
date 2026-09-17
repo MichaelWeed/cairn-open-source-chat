@@ -390,6 +390,7 @@ class ReviewedManifestSnapshot(ManifestWorkflowModel):
     entries: Annotated[
         tuple[ReviewedManifestEntry, ...], Field(min_length=1, max_length=MAX_DOCUMENTS)
     ]
+    policy: ManifestReviewPolicy
     manifest_sha256: str
     policy_sha256: str
     snapshot_sha256: str
@@ -401,6 +402,34 @@ class ReviewedManifestSnapshot(ManifestWorkflowModel):
 
     @model_validator(mode="after")
     def validate_identity(self) -> "ReviewedManifestSnapshot":
+        expected_policy_sha256 = _digest(_policy_material(self.policy))
+        if self.policy_sha256 != expected_policy_sha256:
+            raise ValueError
+        claims = _validated_claims(self.policy)
+        oldest: date | None = None
+        try:
+            oldest = self.policy.evaluation_date - timedelta(
+                days=self.policy.max_review_age_days
+            )
+        except (OverflowError, ValueError):
+            pass
+        if oldest is None:
+            raise ValueError
+        approved = set(self.policy.approved_authorities)
+        for entry in self.entries:
+            if (
+                entry.reviewed_at > self.policy.evaluation_date
+                or entry.reviewed_at < oldest
+                or entry.authority not in approved
+            ):
+                raise ValueError
+            origin: str | None = None
+            try:
+                origin = _canonical_origin(entry.url, origin_only=False)
+            except ValueError:
+                pass
+            if origin is None or claims.get(origin) != entry.authority:
+                raise ValueError
         paths = [entry.relative_path for entry in self.entries]
         if paths != sorted(paths, key=str.encode) or len(paths) != len(set(paths)):
             raise ValueError
@@ -652,6 +681,7 @@ def validate_reviewed_manifest(
     return ReviewedManifestSnapshot(
         manifest_bytes=canonical_manifest,
         entries=tuple(entries),
+        policy=policy,
         manifest_sha256=manifest_sha256,
         policy_sha256=policy_sha256,
         snapshot_sha256=snapshot_sha256,

@@ -109,9 +109,10 @@ accepted only when every source:
 
 Missing approval, future or stale review dates, private or unlisted origins,
 mismatched authorities, and duplicate origin claims fail with fixed content-free
-errors. The reviewed snapshot identity binds both canonical manifest semantics and
-canonical policy semantics. Policy list order and manifest JSON formatting do not
-change that identity.
+errors. The reviewed snapshot carries canonical policy material and re-checks every
+entry against it whenever the immutable model is constructed or copied. Its identity
+binds both canonical manifest semantics and canonical policy semantics. Policy list
+order and manifest JSON formatting do not change that identity.
 
 `plan_manifest_changes` compares two accepted reviewed snapshots. It returns sorted
 `create`, `update`, and `remove` operations containing only paths and entry digests.
