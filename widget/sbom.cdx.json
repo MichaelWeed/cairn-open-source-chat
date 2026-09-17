@@ -47,7 +47,7 @@
           "type": "application",
           "name": "cyclonedx-npm",
           "group": "@cyclonedx",
-          "version": "5.0.0",
+          "version": "6.0.0",
           "author": "Jan Kowalleck",
           "description": "Create CycloneDX Software Bill of Materials (SBOM) from NPM projects.",
           "licenses": [
@@ -170,8 +170,8 @@
       "type": "library",
       "name": "cyclonedx-npm",
       "group": "@cyclonedx",
-      "version": "5.0.0",
-      "bom-ref": "cairn-widget@0.0.0|@cyclonedx/cyclonedx-npm@5.0.0",
+      "version": "6.0.0",
+      "bom-ref": "cairn-widget@0.0.0|@cyclonedx/cyclonedx-npm@6.0.0",
       "author": "Jan Kowalleck",
       "description": "Create CycloneDX Software Bill of Materials (SBOM) from NPM projects.",
       "licenses": [
@@ -182,15 +182,15 @@
           }
         }
       ],
-      "purl": "pkg:npm/%40cyclonedx/cyclonedx-npm@5.0.0",
+      "purl": "pkg:npm/%40cyclonedx/cyclonedx-npm@6.0.0",
       "externalReferences": [
         {
-          "url": "https://registry.npmjs.org/@cyclonedx/cyclonedx-npm/-/cyclonedx-npm-5.0.0.tgz",
+          "url": "https://registry.npmjs.org/@cyclonedx/cyclonedx-npm/-/cyclonedx-npm-6.0.0.tgz",
           "type": "distribution",
           "hashes": [
             {
               "alg": "SHA-512",
-              "content": "a44cffa6a6091d0d19bd8e711496be190e408cd2fb24e109097087ca6bcaa36375567cca13544ea64ba676e26df1ad03ba442341f046457a2e190f71a89b4969"
+              "content": "9295a38d5d23e72d26307501e5d4b1d61c70787f0ad9b952aa481d43a787814eda0a507809c5c685b1ed198e965474a8dc0d3546ded638b6acff043513eb410e"
             }
           ],
           "comment": "as detected from npm-ls property \"resolved\" and property \"integrity\""
@@ -1442,7 +1442,7 @@
     {
       "ref": "cairn-widget@0.0.0",
       "dependsOn": [
-        "cairn-widget@0.0.0|@cyclonedx/cyclonedx-npm@5.0.0",
+        "cairn-widget@0.0.0|@cyclonedx/cyclonedx-npm@6.0.0",
         "cairn-widget@0.0.0|esbuild@0.28.1",
         "cairn-widget@0.0.0|typescript@5.9.3"
       ]
@@ -1456,7 +1456,7 @@
       ]
     },
     {
-      "ref": "cairn-widget@0.0.0|@cyclonedx/cyclonedx-npm@5.0.0",
+      "ref": "cairn-widget@0.0.0|@cyclonedx/cyclonedx-npm@6.0.0",
       "dependsOn": [
         "cairn-widget@0.0.0|@cyclonedx/cyclonedx-library@10.1.0",
         "cairn-widget@0.0.0|commander@14.0.3",

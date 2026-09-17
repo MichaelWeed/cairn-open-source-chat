@@ -17,6 +17,7 @@ from pydantic import (
     ConfigDict,
     Field,
     GetCoreSchemaHandler,
+    StrictBool,
     StrictInt,
     ValidationInfo,
     field_validator,
@@ -540,6 +541,33 @@ class MarkReadyRequest(CorpusLifecycleModel):
         return _revalidate_identity(value)
 
 
+class PromotionEvaluationEvidence(CorpusLifecycleModel):
+    """Content-free proof that one exact corpus passed promotion evaluation."""
+
+    schema_version: Literal["1.0"]
+    corpus: ExactCorpusReference
+    evaluation_suite_sha256: Annotated[str, Field(min_length=64, max_length=64)]
+    evaluation_results_sha256: Annotated[str, Field(min_length=64, max_length=64)]
+    adversarial_case_count: Annotated[StrictInt, Field(ge=1, le=MAX_SAFE_INTEGER)]
+    answer_quality_case_count: Annotated[StrictInt, Field(ge=1, le=MAX_SAFE_INTEGER)]
+    adversarial_passed: StrictBool
+    groundedness_passed: StrictBool
+    citation_precision_passed: StrictBool
+    citation_recall_passed: StrictBool
+    correct_refusal_passed: StrictBool
+    over_refusal_passed: StrictBool
+
+    @field_validator("corpus", mode="before")
+    @classmethod
+    def validate_corpus(cls, value: object) -> ExactCorpusReference:
+        return _revalidate_corpus(value)
+
+    @field_validator("evaluation_suite_sha256", "evaluation_results_sha256")
+    @classmethod
+    def validate_digest(cls, value: str) -> str:
+        return _digest(value)
+
+
 class ExpectedActivePointer(CorpusLifecycleModel):
     target: ExactCorpusReference
     revision: Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)]
@@ -554,12 +582,18 @@ class SwitchActiveRequest(CorpusLifecycleModel):
     contract_version: Literal["1.0"]
     action: Literal["promote", "rollback"]
     target: ExactCorpusReference
+    evaluation: PromotionEvaluationEvidence
     expected: ExpectedActivePointer | None
 
     @field_validator("target", mode="before")
     @classmethod
     def validate_target(cls, value: object) -> ExactCorpusReference:
         return _revalidate_corpus(value)
+
+    @field_validator("evaluation", mode="before")
+    @classmethod
+    def validate_evaluation(cls, value: object) -> PromotionEvaluationEvidence:
+        return _revalidate_model(value, PromotionEvaluationEvidence)
 
     @field_validator("expected", mode="before")
     @classmethod
@@ -568,6 +602,17 @@ class SwitchActiveRequest(CorpusLifecycleModel):
 
     @model_validator(mode="after")
     def validate_switch(self) -> "SwitchActiveRequest":
+        if self.evaluation.corpus != self.target or not all(
+            (
+                self.evaluation.adversarial_passed,
+                self.evaluation.groundedness_passed,
+                self.evaluation.citation_precision_passed,
+                self.evaluation.citation_recall_passed,
+                self.evaluation.correct_refusal_passed,
+                self.evaluation.over_refusal_passed,
+            )
+        ):
+            raise ValueError
         if self.action == "rollback" and self.expected is None:
             raise ValueError
         if self.expected is not None:
@@ -1034,6 +1079,7 @@ class CorpusLifecycleService:
                 and type(expected_embedding_identity) is str
                 and 1 <= len(expected_embedding_identity) <= MAX_EMBEDDING_IDENTITY_CHARS
                 and _printable(expected_embedding_identity) == expected_embedding_identity
+                and expected_embedding_identity != "fake"
                 and type(expected_embedding_dimensions) is int
                 and 1 <= expected_embedding_dimensions <= 2048
                 and type(timeout_seconds) is int
@@ -1184,7 +1230,8 @@ class CorpusLifecycleService:
         if evidence.corpus != corpus:
             raise CorpusLifecycleError("malformed_store") from None
         if (
-            evidence.embedding_identity != self._expected_embedding_identity
+            evidence.embedding_identity == "fake"
+            or evidence.embedding_identity != self._expected_embedding_identity
             or evidence.embedding_dimensions != self._expected_embedding_dimensions
         ):
             raise CorpusLifecycleError("candidate_unavailable") from None

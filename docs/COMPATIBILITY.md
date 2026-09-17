@@ -171,6 +171,11 @@ embedding function. Its `1.0` algorithm identities and bounded canonical SHA-256
 material make a complete candidate plan deterministic across retries and process
 hash seeds. Planning does not persist or activate a candidate.
 
+The `fake` embedding identity remains valid for deterministic development and test
+planning and retrieval. It is permanently excluded from lifecycle readiness and
+active promotion: the lifecycle service rejects `fake` as its expected identity and
+fails closed if verified candidate evidence carries that literal identity.
+
 The internal candidate persistence contract adds create-or-confirm storage, exact
 readback, canonical inventory hashing, and injected attestation verification. Its
 separate signer-free verifier accepts an exact corpus, externally selected identity,
@@ -181,6 +186,14 @@ and logically remove an inactive version with immutable audits. It accepts an in
 immutable trust policy but ships no real signer or production trust selection and is
 not selected by default startup or exposed through an endpoint. Its read-only active
 seam can be composed explicitly with the internal route resolver for development/tests.
+Every promotion and rollback request also requires immutable evaluation evidence at
+schema `1.0`, bound to the exact target corpus. The artifact is content-free: it
+contains only that exact corpus identity, fixed SHA-256 suite and results digests,
+bounded nonzero adversarial and answer-quality case counts, and strict outcomes for
+adversarial coverage, groundedness, citation precision, citation recall, correct
+refusal, and over-refusal. All outcomes must pass. The artifact authorizes the
+mutation but is not copied into lifecycle records, pointers, or audits, so their
+schema versions and stored shapes remain unchanged.
 That resolver's exact-version probe can be aggregated by `/readyz` when the resolver
 is explicitly injected in development/test. The public response retains only the
 existing database, vector-store, and corpus booleans; no scope, version, model,
