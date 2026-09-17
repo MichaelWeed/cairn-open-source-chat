@@ -92,6 +92,48 @@ use an exact revisioned pointer and audit; removal is terminal logical state for
 inactive version and never deletes candidate content, provenance, vectors, or
 attestation records. No production trust policy or public activation surface ships.
 
+## Reviewed manifest workflow
+
+The pure `app.ingest.manifest_workflow` boundary adds an operator-supplied review
+policy without changing manifest schema version 1. A policy fixes an evaluation date,
+a maximum review age, approved authority identities, and one canonical HTTP(S) origin
+claim for each authority. Canonical origins are exact lowercase origins with no path,
+query, fragment, credentials, or redundant default port. A reviewed snapshot is
+accepted only when every source:
+
+* has a review date no later than the evaluation date and no older than the allowed
+  age, inclusive;
+* names an approved authority in the existing `owner` field;
+* uses an allowlisted canonical origin; and
+* matches that origin's single authority claim.
+
+Missing approval, future or stale review dates, private or unlisted origins,
+mismatched authorities, and duplicate origin claims fail with fixed content-free
+errors. The reviewed snapshot carries canonical policy material and re-checks every
+entry against it whenever the immutable model is constructed or copied. Its identity
+binds both canonical manifest semantics and canonical policy semantics. Policy list
+order and manifest JSON formatting do not change that identity.
+
+`plan_manifest_changes` compares two accepted reviewed snapshots. It returns sorted
+`create`, `update`, and `remove` operations containing only paths and entry digests.
+This is a deterministic dry-run: it performs no file, network, provider, database,
+vector-store, lifecycle, publication, or activation work.
+
+`generate_manifest_draft` accepts exact in-memory document bytes and emits canonical
+draft JSON with their exact SHA-256 values. Drafts use `draft_version`, omit all human
+review fields, and are deliberately invalid input to the production version 1 parser.
+Generating a draft is not approval. `approve_manifest_draft` requires an explicit
+approval intent plus complete title, URL, authority, and review date for every exact
+document. It verifies the draft hashes, constructs canonical version 1 bytes, and
+returns evidence only after the result passes the same review policy.
+
+`plan_reviewed_candidate` validates that policy before delegating to the existing
+candidate planner. Existing callers of `parse_provenance_manifest` and
+`plan_candidate` remain compatible and keep their lower-level behavior; they do not
+implicitly acquire this caller-selected policy. Operators adopting the reviewed
+entrypoint need no manifest migration, reindex, persistence migration, or public API
+change.
+
 ## Citation behavior and boundary
 
 Manifested startup documents use the verified `title` and `url` in the existing
